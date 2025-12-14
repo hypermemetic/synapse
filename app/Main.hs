@@ -63,6 +63,14 @@ main = do
     ("loom":"list":_) -> runArborTreeList
     ("loom":"create":owner) -> runArborTreeCreate (T.unwords $ map T.pack owner)
 
+    -- Subcommand help
+    ["cone"] -> printConeHelp
+    ["arbor"] -> printArborHelp
+    ("arbor":"tree":_) -> printArborTreeHelp
+    ("arbor":"node":_) -> printArborNodeHelp
+    ("arbor":"context":_) -> printArborContextHelp
+    ["bash"] -> printBashHelp
+
     _ -> printUsage
   where
     listToMaybe [] = Nothing
@@ -320,3 +328,93 @@ printUsage = do
   putStrLn "  symbols-cli arbor tree list"
   putStrLn "  symbols-cli cone create mycone gpt-4o-mini"
   putStrLn "  symbols-cli cone chat <cone_id> Hello, how are you?"
+
+printConeHelp :: IO ()
+printConeHelp = do
+  putStrLn "Usage: symbols-cli cone <command> [args...]"
+  putStrLn ""
+  putStrLn "Cone Operations (LLM growth cones):"
+  putStrLn "  list                                  List all cones"
+  putStrLn "  create <name> <model> [system_prompt] Create a new cone"
+  putStrLn "  get <cone_id>                         Get cone details"
+  putStrLn "  delete <cone_id>                      Delete a cone"
+  putStrLn "  chat <cone_id> <prompt>               Chat with a cone (streams response)"
+  putStrLn "  set-head <cone_id> <node_id>          Move cone head to a node"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  symbols-cli cone list"
+  putStrLn "  symbols-cli cone create mycone gpt-4o-mini"
+  putStrLn "  symbols-cli cone create mycone gpt-4o-mini \"You are a helpful assistant\""
+  putStrLn "  symbols-cli cone chat <cone_id> Hello, how are you?"
+
+printArborHelp :: IO ()
+printArborHelp = do
+  putStrLn "Usage: symbols-cli arbor <subcommand> [args...]"
+  putStrLn ""
+  putStrLn "Subcommands:"
+  putStrLn "  tree     Tree operations (create, list, get, render, etc.)"
+  putStrLn "  node     Node operations (create, get, children, parent, etc.)"
+  putStrLn "  context  Context operations (leaves, path, handles)"
+  putStrLn ""
+  putStrLn "Run 'symbols-cli arbor <subcommand>' for more details."
+
+printArborTreeHelp :: IO ()
+printArborTreeHelp = do
+  putStrLn "Usage: symbols-cli arbor tree <command> [args...]"
+  putStrLn ""
+  putStrLn "Tree Operations:"
+  putStrLn "  list                                  List all active trees"
+  putStrLn "  list-scheduled                        List trees scheduled for deletion"
+  putStrLn "  list-archived                         List archived trees"
+  putStrLn "  create <owner>                        Create a new tree"
+  putStrLn "  get <tree_id>                         Get full tree data"
+  putStrLn "  get-skeleton <tree_id>                Get tree structure without node data"
+  putStrLn "  render <tree_id>                      Render tree as text visualization"
+  putStrLn "  update-metadata <tree_id> <desc>      Update tree metadata"
+  putStrLn "  claim <tree_id> <owner> [count]       Claim tree ownership"
+  putStrLn "  release <tree_id> <owner> [count]     Release tree ownership"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  symbols-cli arbor tree list"
+  putStrLn "  symbols-cli arbor tree create alice"
+  putStrLn "  symbols-cli arbor tree render <tree_id>"
+
+printArborNodeHelp :: IO ()
+printArborNodeHelp = do
+  putStrLn "Usage: symbols-cli arbor node <command> [args...]"
+  putStrLn ""
+  putStrLn "Node Operations:"
+  putStrLn "  create-text <tree_id> <content>                    Create root text node"
+  putStrLn "  create-text-child <tree_id> <parent> <content>     Create child text node"
+  putStrLn "  get <tree_id> <node_id>                            Get node data"
+  putStrLn "  children <tree_id> <node_id>                       Get node children"
+  putStrLn "  parent <tree_id> <node_id>                         Get node parent"
+  putStrLn "  path <tree_id> <node_id>                           Get path from root to node"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  symbols-cli arbor node create-text <tree_id> \"Hello world\""
+  putStrLn "  symbols-cli arbor node children <tree_id> <node_id>"
+
+printArborContextHelp :: IO ()
+printArborContextHelp = do
+  putStrLn "Usage: symbols-cli arbor context <command> [args...]"
+  putStrLn ""
+  putStrLn "Context Operations:"
+  putStrLn "  leaves <tree_id>                      List leaf nodes"
+  putStrLn "  path <tree_id> <node_id>              Get full path data to node"
+  putStrLn "  handles <tree_id> <node_id>           Get external handles in path"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  symbols-cli arbor context leaves <tree_id>"
+  putStrLn "  symbols-cli arbor context path <tree_id> <node_id>"
+
+printBashHelp :: IO ()
+printBashHelp = do
+  putStrLn "Usage: symbols-cli bash <command> [args...]"
+  putStrLn ""
+  putStrLn "Bash Operations:"
+  putStrLn "  execute <cmd>    Execute a shell command (streams output)"
+  putStrLn ""
+  putStrLn "Examples:"
+  putStrLn "  symbols-cli bash execute echo hello world"
+  putStrLn "  symbols-cli bash execute ls -la"
