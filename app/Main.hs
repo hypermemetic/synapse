@@ -10,73 +10,219 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import qualified Streaming.Prelude as S
-import System.Environment (getArgs)
 import System.Exit (exitWith, ExitCode(..))
-import System.IO (hPutStrLn, stderr)
+import System.IO (stderr)
+import Options.Applicative
+
+-- ============================================================================
+-- Command Types
+-- ============================================================================
+
+data Command
+  = Health
+  | Bash BashCmd
+  | Arbor ArborCmd
+  | Cone ConeCmd
+  deriving (Show)
+
+data BashCmd
+  = BashExecute [String]
+  deriving (Show)
+
+data ArborCmd
+  = ArborTree ArborTreeCmd
+  | ArborNode ArborNodeCmd
+  | ArborContext ArborContextCmd
+  deriving (Show)
+
+data ArborTreeCmd
+  = TreeList
+  | TreeListScheduled
+  | TreeListArchived
+  | TreeCreate String
+  | TreeGet String
+  | TreeGetSkeleton String
+  | TreeRender String
+  | TreeUpdateMetadata String String
+  | TreeClaim String String Int
+  | TreeRelease String String Int
+  deriving (Show)
+
+data ArborNodeCmd
+  = NodeCreateText String String
+  | NodeCreateTextChild String String String
+  | NodeGet String String
+  | NodeChildren String String
+  | NodeParent String String
+  | NodePath String String
+  deriving (Show)
+
+data ArborContextCmd
+  = ContextLeaves String
+  | ContextPath String String
+  | ContextHandles String String
+  deriving (Show)
+
+data ConeCmd
+  = ConeList
+  | ConeCreate String String (Maybe String)
+  | ConeGet String
+  | ConeDelete String
+  | ConeChat String [String]
+  | ConeSetHead String String
+  deriving (Show)
+
+-- ============================================================================
+-- Parsers
+-- ============================================================================
+
+commandParser :: Parser Command
+commandParser = subparser
+  ( command "health" (info (pure Health) (progDesc "Check plexus health status"))
+ <> command "bash" (info (Bash <$> bashParser <**> helper) (progDesc "Bash shell operations"))
+ <> command "arbor" (info (Arbor <$> arborParser <**> helper) (progDesc "Arbor tree storage operations"))
+ <> command "cone" (info (Cone <$> coneParser <**> helper) (progDesc "Cone LLM operations"))
+  )
+
+-- Bash
+bashParser :: Parser BashCmd
+bashParser = subparser
+  ( command "execute" (info executeParser (progDesc "Execute a shell command"))
+  )
+  where
+    executeParser = BashExecute <$> many (argument str (metavar "CMD..."))
+
+-- Arbor
+arborParser :: Parser ArborCmd
+arborParser = subparser
+  ( command "tree" (info (ArborTree <$> arborTreeParser <**> helper) (progDesc "Tree operations"))
+ <> command "node" (info (ArborNode <$> arborNodeParser <**> helper) (progDesc "Node operations"))
+ <> command "context" (info (ArborContext <$> arborContextParser <**> helper) (progDesc "Context operations"))
+  )
+
+arborTreeParser :: Parser ArborTreeCmd
+arborTreeParser = subparser
+  ( command "list" (info (pure TreeList) (progDesc "List all active trees"))
+ <> command "list-scheduled" (info (pure TreeListScheduled) (progDesc "List trees scheduled for deletion"))
+ <> command "list-archived" (info (pure TreeListArchived) (progDesc "List archived trees"))
+ <> command "create" (info createParser (progDesc "Create a new tree"))
+ <> command "get" (info getParser (progDesc "Get full tree data"))
+ <> command "get-skeleton" (info getSkeletonParser (progDesc "Get tree structure without node data"))
+ <> command "render" (info renderParser (progDesc "Render tree as text visualization"))
+ <> command "update-metadata" (info updateMetadataParser (progDesc "Update tree metadata"))
+ <> command "claim" (info claimParser (progDesc "Claim tree ownership"))
+ <> command "release" (info releaseParser (progDesc "Release tree ownership"))
+  )
+  where
+    createParser = TreeCreate <$> argument str (metavar "OWNER")
+    getParser = TreeGet <$> argument str (metavar "TREE_ID")
+    getSkeletonParser = TreeGetSkeleton <$> argument str (metavar "TREE_ID")
+    renderParser = TreeRender <$> argument str (metavar "TREE_ID")
+    updateMetadataParser = TreeUpdateMetadata
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "DESCRIPTION")
+    claimParser = TreeClaim
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "OWNER")
+      <*> option auto (long "count" <> short 'n' <> value 1 <> metavar "N" <> help "Claim count (default: 1)")
+    releaseParser = TreeRelease
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "OWNER")
+      <*> option auto (long "count" <> short 'n' <> value 1 <> metavar "N" <> help "Release count (default: 1)")
+
+arborNodeParser :: Parser ArborNodeCmd
+arborNodeParser = subparser
+  ( command "create-text" (info createTextParser (progDesc "Create a root text node"))
+ <> command "create-text-child" (info createTextChildParser (progDesc "Create a child text node"))
+ <> command "get" (info getParser (progDesc "Get node data"))
+ <> command "children" (info childrenParser (progDesc "Get node children"))
+ <> command "parent" (info parentParser (progDesc "Get node parent"))
+ <> command "path" (info pathParser (progDesc "Get path from root to node"))
+  )
+  where
+    createTextParser = NodeCreateText
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "CONTENT")
+    createTextChildParser = NodeCreateTextChild
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "PARENT_ID")
+      <*> argument str (metavar "CONTENT")
+    getParser = NodeGet
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+    childrenParser = NodeChildren
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+    parentParser = NodeParent
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+    pathParser = NodePath
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+
+arborContextParser :: Parser ArborContextCmd
+arborContextParser = subparser
+  ( command "leaves" (info leavesParser (progDesc "List leaf nodes"))
+ <> command "path" (info pathParser (progDesc "Get full path data to node"))
+ <> command "handles" (info handlesParser (progDesc "Get external handles in path"))
+  )
+  where
+    leavesParser = ContextLeaves <$> argument str (metavar "TREE_ID")
+    pathParser = ContextPath
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+    handlesParser = ContextHandles
+      <$> argument str (metavar "TREE_ID")
+      <*> argument str (metavar "NODE_ID")
+
+-- Cone
+coneParser :: Parser ConeCmd
+coneParser = subparser
+  ( command "list" (info (pure ConeList) (progDesc "List all cones"))
+ <> command "create" (info createParser (progDesc "Create a new cone"))
+ <> command "get" (info getParser (progDesc "Get cone details"))
+ <> command "delete" (info deleteParser (progDesc "Delete a cone"))
+ <> command "chat" (info chatParser (progDesc "Chat with a cone (streams response)"))
+ <> command "set-head" (info setHeadParser (progDesc "Move cone head to a node"))
+  )
+  where
+    createParser = ConeCreate
+      <$> argument str (metavar "NAME")
+      <*> argument str (metavar "MODEL")
+      <*> optional (argument str (metavar "SYSTEM_PROMPT"))
+    getParser = ConeGet <$> argument str (metavar "CONE_ID")
+    deleteParser = ConeDelete <$> argument str (metavar "CONE_ID")
+    chatParser = ConeChat
+      <$> argument str (metavar "CONE_ID")
+      <*> many (argument str (metavar "PROMPT..."))
+    setHeadParser = ConeSetHead
+      <$> argument str (metavar "CONE_ID")
+      <*> argument str (metavar "NODE_ID")
+
+-- ============================================================================
+-- Main
+-- ============================================================================
 
 main :: IO ()
 main = do
-  args <- getArgs
-  case args of
-    -- Health
-    ("health":_) -> runHealth
-
-    -- Bash
-    ("bash":"execute":cmd) -> runBash (T.unwords $ map T.pack cmd)
-
-    -- Arbor Tree Operations
-    ("arbor":"tree":"list":_) -> runArborTreeList
-    ("arbor":"tree":"list-scheduled":_) -> runArborTreeListScheduled
-    ("arbor":"tree":"list-archived":_) -> runArborTreeListArchived
-    ("arbor":"tree":"create":owner) -> runArborTreeCreate (T.unwords $ map T.pack owner)
-    ("arbor":"tree":"get":treeId:_) -> runArborTreeGet (T.pack treeId)
-    ("arbor":"tree":"get-skeleton":treeId:_) -> runArborTreeGetSkeleton (T.pack treeId)
-    ("arbor":"tree":"render":treeId:_) -> runArborTreeRender (T.pack treeId)
-    ("arbor":"tree":"update-metadata":treeId:rest) -> runArborTreeUpdateMetadata (T.pack treeId) (T.unwords $ map T.pack rest)
-    ("arbor":"tree":"claim":treeId:ownerId:rest) -> runArborTreeClaim (T.pack treeId) (T.pack ownerId) (parseCount rest)
-    ("arbor":"tree":"release":treeId:ownerId:rest) -> runArborTreeRelease (T.pack treeId) (T.pack ownerId) (parseCount rest)
-
-    -- Arbor Node Operations
-    ("arbor":"node":"create-text":treeId:content) -> runArborNodeCreateText (T.pack treeId) Nothing (T.unwords $ map T.pack content)
-    ("arbor":"node":"create-text-child":treeId:parentId:content) -> runArborNodeCreateText (T.pack treeId) (Just $ T.pack parentId) (T.unwords $ map T.pack content)
-    ("arbor":"node":"get":treeId:nodeId:_) -> runArborNodeGet (T.pack treeId) (T.pack nodeId)
-    ("arbor":"node":"children":treeId:nodeId:_) -> runArborNodeGetChildren (T.pack treeId) (T.pack nodeId)
-    ("arbor":"node":"parent":treeId:nodeId:_) -> runArborNodeGetParent (T.pack treeId) (T.pack nodeId)
-    ("arbor":"node":"path":treeId:nodeId:_) -> runArborNodeGetPath (T.pack treeId) (T.pack nodeId)
-
-    -- Arbor Context Operations
-    ("arbor":"context":"leaves":treeId:_) -> runArborContextListLeaves (T.pack treeId)
-    ("arbor":"context":"path":treeId:nodeId:_) -> runArborContextGetPath (T.pack treeId) (T.pack nodeId)
-    ("arbor":"context":"handles":treeId:nodeId:_) -> runArborContextGetHandles (T.pack treeId) (T.pack nodeId)
-
-    -- Cone Operations
-    ("cone":"list":_) -> runConeList
-    ("cone":"create":name:model:rest) -> runConeCreate (T.pack name) (T.pack model) (listToMaybe $ map T.pack rest)
-    ("cone":"get":coneId:_) -> runConeGet (T.pack coneId)
-    ("cone":"delete":coneId:_) -> runConeDelete (T.pack coneId)
-    ("cone":"chat":coneId:prompt) -> runConeChat (T.pack coneId) (T.unwords $ map T.pack prompt)
-    ("cone":"set-head":coneId:nodeId:_) -> runConeSetHead (T.pack coneId) (T.pack nodeId)
-
-    -- Legacy aliases (loom -> arbor)
-    ("loom":"tree":"list":_) -> runArborTreeList
-    ("loom":"tree":"create":owner) -> runArborTreeCreate (T.unwords $ map T.pack owner)
-    ("loom":"list":_) -> runArborTreeList
-    ("loom":"create":owner) -> runArborTreeCreate (T.unwords $ map T.pack owner)
-
-    -- Subcommand help
-    ["cone"] -> printConeHelp
-    ["arbor"] -> printArborHelp
-    ("arbor":"tree":_) -> printArborTreeHelp
-    ("arbor":"node":_) -> printArborNodeHelp
-    ("arbor":"context":_) -> printArborContextHelp
-    ["bash"] -> printBashHelp
-
-    _ -> printUsage
+  cmd <- execParser opts
+  runCommand cmd
   where
-    listToMaybe [] = Nothing
-    listToMaybe (x:_) = Just x
-    parseCount [] = 1
-    parseCount (x:_) = read x
+    opts = info (commandParser <**> helper)
+      ( fullDesc
+     <> progDesc "CLI for Plexus - LLM orchestration substrate"
+     <> header "symbols-cli - Haskell client for Plexus RPC"
+      )
+
+-- ============================================================================
+-- Command Runners
+-- ============================================================================
+
+runCommand :: Command -> IO ()
+runCommand Health = runHealth
+runCommand (Bash cmd) = runBashCmd cmd
+runCommand (Arbor cmd) = runArborCmd cmd
+runCommand (Cone cmd) = runConeCmd cmd
 
 -- Health
 runHealth :: IO ()
@@ -90,8 +236,9 @@ printHealthEvent (Health.Status s uptime ts) =
   putStrLn $ "Status: " <> T.unpack s <> " (uptime: " <> show uptime <> "s)"
 
 -- Bash
-runBash :: Text -> IO ()
-runBash cmd = do
+runBashCmd :: BashCmd -> IO ()
+runBashCmd (BashExecute args) = do
+  let cmd = T.unwords $ map T.pack args
   conn <- connect defaultConfig
   exitCode <- S.foldM_ handleBashEvent (pure ExitSuccess) pure $ Bash.execute conn cmd
   disconnect conn
@@ -104,105 +251,74 @@ handleBashEvent _ (Bash.Exit code)
   | code == 0 = pure ExitSuccess
   | otherwise = pure (ExitFailure code)
 
--- Arbor Tree Operations
-runArborTreeList :: IO ()
-runArborTreeList = withConn $ \conn ->
+-- Arbor
+runArborCmd :: ArborCmd -> IO ()
+runArborCmd (ArborTree cmd) = runArborTreeCmd cmd
+runArborCmd (ArborNode cmd) = runArborNodeCmd cmd
+runArborCmd (ArborContext cmd) = runArborContextCmd cmd
+
+runArborTreeCmd :: ArborTreeCmd -> IO ()
+runArborTreeCmd TreeList = withConn $ \conn ->
   S.mapM_ printArborEvent $ Arbor.treeList conn
-
-runArborTreeListScheduled :: IO ()
-runArborTreeListScheduled = withConn $ \conn ->
+runArborTreeCmd TreeListScheduled = withConn $ \conn ->
   S.mapM_ printArborEvent $ Arbor.treeListScheduled conn
-
-runArborTreeListArchived :: IO ()
-runArborTreeListArchived = withConn $ \conn ->
+runArborTreeCmd TreeListArchived = withConn $ \conn ->
   S.mapM_ printArborEvent $ Arbor.treeListArchived conn
+runArborTreeCmd (TreeCreate owner) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeCreate conn Nothing (T.pack owner)
+runArborTreeCmd (TreeGet treeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeGet conn (T.pack treeId)
+runArborTreeCmd (TreeGetSkeleton treeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeGetSkeleton conn (T.pack treeId)
+runArborTreeCmd (TreeRender treeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeRender conn (T.pack treeId)
+runArborTreeCmd (TreeUpdateMetadata treeId desc) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeUpdateMetadata conn (T.pack treeId) (object ["description" .= desc])
+runArborTreeCmd (TreeClaim treeId owner count) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeClaim conn (T.pack treeId) (T.pack owner) count
+runArborTreeCmd (TreeRelease treeId owner count) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.treeRelease conn (T.pack treeId) (T.pack owner) count
 
-runArborTreeCreate :: Text -> IO ()
-runArborTreeCreate owner = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeCreate conn Nothing owner
+runArborNodeCmd :: ArborNodeCmd -> IO ()
+runArborNodeCmd (NodeCreateText treeId content) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeCreateText conn (T.pack treeId) Nothing (T.pack content) Nothing
+runArborNodeCmd (NodeCreateTextChild treeId parentId content) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeCreateText conn (T.pack treeId) (Just $ T.pack parentId) (T.pack content) Nothing
+runArborNodeCmd (NodeGet treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeGet conn (T.pack treeId) (T.pack nodeId)
+runArborNodeCmd (NodeChildren treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeGetChildren conn (T.pack treeId) (T.pack nodeId)
+runArborNodeCmd (NodeParent treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeGetParent conn (T.pack treeId) (T.pack nodeId)
+runArborNodeCmd (NodePath treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.nodeGetPath conn (T.pack treeId) (T.pack nodeId)
 
-runArborTreeGet :: Text -> IO ()
-runArborTreeGet treeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeGet conn treeId
+runArborContextCmd :: ArborContextCmd -> IO ()
+runArborContextCmd (ContextLeaves treeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.contextListLeaves conn (T.pack treeId)
+runArborContextCmd (ContextPath treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.contextGetPath conn (T.pack treeId) (T.pack nodeId)
+runArborContextCmd (ContextHandles treeId nodeId) = withConn $ \conn ->
+  S.mapM_ printArborEvent $ Arbor.contextGetHandles conn (T.pack treeId) (T.pack nodeId)
 
-runArborTreeGetSkeleton :: Text -> IO ()
-runArborTreeGetSkeleton treeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeGetSkeleton conn treeId
-
-runArborTreeRender :: Text -> IO ()
-runArborTreeRender treeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeRender conn treeId
-
-runArborTreeUpdateMetadata :: Text -> Text -> IO ()
-runArborTreeUpdateMetadata treeId metaStr = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeUpdateMetadata conn treeId (object ["description" .= metaStr])
-
-runArborTreeClaim :: Text -> Text -> Int -> IO ()
-runArborTreeClaim treeId ownerId count = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeClaim conn treeId ownerId count
-
-runArborTreeRelease :: Text -> Text -> Int -> IO ()
-runArborTreeRelease treeId ownerId count = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeRelease conn treeId ownerId count
-
--- Arbor Node Operations
-runArborNodeCreateText :: Text -> Maybe Text -> Text -> IO ()
-runArborNodeCreateText treeId parent content = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeCreateText conn treeId parent content Nothing
-
-runArborNodeGet :: Text -> Text -> IO ()
-runArborNodeGet treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGet conn treeId nodeId
-
-runArborNodeGetChildren :: Text -> Text -> IO ()
-runArborNodeGetChildren treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetChildren conn treeId nodeId
-
-runArborNodeGetParent :: Text -> Text -> IO ()
-runArborNodeGetParent treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetParent conn treeId nodeId
-
-runArborNodeGetPath :: Text -> Text -> IO ()
-runArborNodeGetPath treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetPath conn treeId nodeId
-
--- Arbor Context Operations
-runArborContextListLeaves :: Text -> IO ()
-runArborContextListLeaves treeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextListLeaves conn treeId
-
-runArborContextGetPath :: Text -> Text -> IO ()
-runArborContextGetPath treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextGetPath conn treeId nodeId
-
-runArborContextGetHandles :: Text -> Text -> IO ()
-runArborContextGetHandles treeId nodeId = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextGetHandles conn treeId nodeId
-
--- Cone Operations
-runConeList :: IO ()
-runConeList = withConn $ \conn ->
+-- Cone
+runConeCmd :: ConeCmd -> IO ()
+runConeCmd ConeList = withConn $ \conn ->
   S.mapM_ printConeEvent $ Cone.coneList conn
+runConeCmd (ConeCreate name model systemPrompt) = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneCreate conn (T.pack name) (T.pack model) (T.pack <$> systemPrompt) Nothing
+runConeCmd (ConeGet coneId) = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneGet conn (T.pack coneId)
+runConeCmd (ConeDelete coneId) = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneDelete conn (T.pack coneId)
+runConeCmd (ConeChat coneId promptWords) = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneChat conn (T.pack coneId) (T.unwords $ map T.pack promptWords)
+runConeCmd (ConeSetHead coneId nodeId) = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneSetHead conn (T.pack coneId) (T.pack nodeId)
 
-runConeCreate :: Text -> Text -> Maybe Text -> IO ()
-runConeCreate name modelId systemPrompt = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneCreate conn name modelId systemPrompt Nothing
-
-runConeGet :: Text -> IO ()
-runConeGet coneId = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneGet conn coneId
-
-runConeDelete :: Text -> IO ()
-runConeDelete coneId = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneDelete conn coneId
-
-runConeChat :: Text -> Text -> IO ()
-runConeChat coneId prompt = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneChat conn coneId prompt
-
-runConeSetHead :: Text -> Text -> IO ()
-runConeSetHead coneId nodeId = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneSetHead conn coneId nodeId
+-- ============================================================================
+-- Event Printers
+-- ============================================================================
 
 printConeEvent :: Cone.ConeEvent -> IO ()
 printConeEvent (Cone.ConeCreated coneId pos) =
@@ -219,9 +335,9 @@ printConeEvent (Cone.ConeList cones) = do
 printConeEvent (Cone.ChatStart coneId pos) =
   putStrLn $ "Chat started: " <> T.unpack coneId
 printConeEvent (Cone.ChatContent _ content) =
-  T.putStr content  -- Stream content without newline
+  T.putStr content
 printConeEvent (Cone.ChatComplete coneId newHead usage) = do
-  putStrLn ""  -- Newline after streaming content
+  putStrLn ""
   putStrLn $ "Chat complete: head=" <> T.unpack (Cone.positionNodeId newHead)
 printConeEvent (Cone.HeadUpdated coneId oldHead newHead) =
   putStrLn $ "Head updated: " <> T.unpack (Cone.positionNodeId oldHead) <> " -> " <> T.unpack (Cone.positionNodeId newHead)
@@ -280,141 +396,3 @@ printArborEvent (Arbor.TreesArchived treeIds) =
   putStrLn $ "Archived trees: " <> show (map T.unpack treeIds)
 printArborEvent (Arbor.TreeRenderResult _ render) =
   T.putStrLn render
-
-printUsage :: IO ()
-printUsage = do
-  putStrLn "Usage: symbols-cli <command> [args...]"
-  putStrLn ""
-  putStrLn "Commands:"
-  putStrLn "  health                              Check plexus health status"
-  putStrLn "  bash execute <cmd>                  Execute a bash command"
-  putStrLn ""
-  putStrLn "Arbor Tree Operations:"
-  putStrLn "  arbor tree list                     List all active trees"
-  putStrLn "  arbor tree list-scheduled           List trees scheduled for deletion"
-  putStrLn "  arbor tree list-archived            List archived trees"
-  putStrLn "  arbor tree create <owner>           Create a new tree"
-  putStrLn "  arbor tree get <tree_id>            Get full tree data"
-  putStrLn "  arbor tree get-skeleton <tree_id>   Get tree structure without node data"
-  putStrLn "  arbor tree render <tree_id>         Render tree as text visualization"
-  putStrLn "  arbor tree update-metadata <tree_id> <desc>  Update tree metadata"
-  putStrLn "  arbor tree claim <tree_id> <owner> [count]   Claim tree ownership"
-  putStrLn "  arbor tree release <tree_id> <owner> [count] Release tree ownership"
-  putStrLn ""
-  putStrLn "Arbor Node Operations:"
-  putStrLn "  arbor node create-text <tree_id> <content>              Create root text node"
-  putStrLn "  arbor node create-text-child <tree_id> <parent> <content>  Create child text node"
-  putStrLn "  arbor node get <tree_id> <node_id>                      Get node data"
-  putStrLn "  arbor node children <tree_id> <node_id>                 Get node children"
-  putStrLn "  arbor node parent <tree_id> <node_id>                   Get node parent"
-  putStrLn "  arbor node path <tree_id> <node_id>                     Get path from root to node"
-  putStrLn ""
-  putStrLn "Arbor Context Operations:"
-  putStrLn "  arbor context leaves <tree_id>                    List leaf nodes"
-  putStrLn "  arbor context path <tree_id> <node_id>            Get full path data to node"
-  putStrLn "  arbor context handles <tree_id> <node_id>         Get external handles in path"
-  putStrLn ""
-  putStrLn "Cone Operations (LLM growth cones):"
-  putStrLn "  cone list                                         List all cones"
-  putStrLn "  cone create <name> <model> [system_prompt]        Create a new cone"
-  putStrLn "  cone get <cone_id>                                Get cone details"
-  putStrLn "  cone delete <cone_id>                             Delete a cone"
-  putStrLn "  cone chat <cone_id> <prompt>                      Chat with a cone (streams response)"
-  putStrLn "  cone set-head <cone_id> <node_id>                 Move cone head to a node"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli health"
-  putStrLn "  symbols-cli bash execute echo hello world"
-  putStrLn "  symbols-cli arbor tree list"
-  putStrLn "  symbols-cli cone create mycone gpt-4o-mini"
-  putStrLn "  symbols-cli cone chat <cone_id> Hello, how are you?"
-
-printConeHelp :: IO ()
-printConeHelp = do
-  putStrLn "Usage: symbols-cli cone <command> [args...]"
-  putStrLn ""
-  putStrLn "Cone Operations (LLM growth cones):"
-  putStrLn "  list                                  List all cones"
-  putStrLn "  create <name> <model> [system_prompt] Create a new cone"
-  putStrLn "  get <cone_id>                         Get cone details"
-  putStrLn "  delete <cone_id>                      Delete a cone"
-  putStrLn "  chat <cone_id> <prompt>               Chat with a cone (streams response)"
-  putStrLn "  set-head <cone_id> <node_id>          Move cone head to a node"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli cone list"
-  putStrLn "  symbols-cli cone create mycone gpt-4o-mini"
-  putStrLn "  symbols-cli cone create mycone gpt-4o-mini \"You are a helpful assistant\""
-  putStrLn "  symbols-cli cone chat <cone_id> Hello, how are you?"
-
-printArborHelp :: IO ()
-printArborHelp = do
-  putStrLn "Usage: symbols-cli arbor <subcommand> [args...]"
-  putStrLn ""
-  putStrLn "Subcommands:"
-  putStrLn "  tree     Tree operations (create, list, get, render, etc.)"
-  putStrLn "  node     Node operations (create, get, children, parent, etc.)"
-  putStrLn "  context  Context operations (leaves, path, handles)"
-  putStrLn ""
-  putStrLn "Run 'symbols-cli arbor <subcommand>' for more details."
-
-printArborTreeHelp :: IO ()
-printArborTreeHelp = do
-  putStrLn "Usage: symbols-cli arbor tree <command> [args...]"
-  putStrLn ""
-  putStrLn "Tree Operations:"
-  putStrLn "  list                                  List all active trees"
-  putStrLn "  list-scheduled                        List trees scheduled for deletion"
-  putStrLn "  list-archived                         List archived trees"
-  putStrLn "  create <owner>                        Create a new tree"
-  putStrLn "  get <tree_id>                         Get full tree data"
-  putStrLn "  get-skeleton <tree_id>                Get tree structure without node data"
-  putStrLn "  render <tree_id>                      Render tree as text visualization"
-  putStrLn "  update-metadata <tree_id> <desc>      Update tree metadata"
-  putStrLn "  claim <tree_id> <owner> [count]       Claim tree ownership"
-  putStrLn "  release <tree_id> <owner> [count]     Release tree ownership"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli arbor tree list"
-  putStrLn "  symbols-cli arbor tree create alice"
-  putStrLn "  symbols-cli arbor tree render <tree_id>"
-
-printArborNodeHelp :: IO ()
-printArborNodeHelp = do
-  putStrLn "Usage: symbols-cli arbor node <command> [args...]"
-  putStrLn ""
-  putStrLn "Node Operations:"
-  putStrLn "  create-text <tree_id> <content>                    Create root text node"
-  putStrLn "  create-text-child <tree_id> <parent> <content>     Create child text node"
-  putStrLn "  get <tree_id> <node_id>                            Get node data"
-  putStrLn "  children <tree_id> <node_id>                       Get node children"
-  putStrLn "  parent <tree_id> <node_id>                         Get node parent"
-  putStrLn "  path <tree_id> <node_id>                           Get path from root to node"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli arbor node create-text <tree_id> \"Hello world\""
-  putStrLn "  symbols-cli arbor node children <tree_id> <node_id>"
-
-printArborContextHelp :: IO ()
-printArborContextHelp = do
-  putStrLn "Usage: symbols-cli arbor context <command> [args...]"
-  putStrLn ""
-  putStrLn "Context Operations:"
-  putStrLn "  leaves <tree_id>                      List leaf nodes"
-  putStrLn "  path <tree_id> <node_id>              Get full path data to node"
-  putStrLn "  handles <tree_id> <node_id>           Get external handles in path"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli arbor context leaves <tree_id>"
-  putStrLn "  symbols-cli arbor context path <tree_id> <node_id>"
-
-printBashHelp :: IO ()
-printBashHelp = do
-  putStrLn "Usage: symbols-cli bash <command> [args...]"
-  putStrLn ""
-  putStrLn "Bash Operations:"
-  putStrLn "  execute <cmd>    Execute a shell command (streams output)"
-  putStrLn ""
-  putStrLn "Examples:"
-  putStrLn "  symbols-cli bash execute echo hello world"
-  putStrLn "  symbols-cli bash execute ls -la"

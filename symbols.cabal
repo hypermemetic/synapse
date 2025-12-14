@@ -51,7 +51,8 @@ executable symbols-cli
     aeson,
     text,
     bytestring,
-    streaming
+    streaming,
+    optparse-applicative >= 0.18
   hs-source-dirs:   app
   default-language: GHC2021
   default-extensions:
