@@ -205,9 +205,10 @@ coneParser = subparser
 
 main :: IO ()
 main = do
-  cmd <- execParser opts
+  cmd <- customExecParser prefs opts
   runCommand cmd
   where
+    prefs = defaultPrefs { prefShowHelpOnEmpty = True }
     opts = info (commandParser <**> helper)
       ( fullDesc
      <> progDesc "CLI for Plexus - LLM orchestration substrate"
