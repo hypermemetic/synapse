@@ -16,6 +16,13 @@ module Activation.Cone
   , ConeConfig(..)
   , ConeInfo(..)
   , ChatUsage(..)
+    -- * Registry Types
+  , RegistryExport(..)
+  , ServiceExport(..)
+  , ModelExport(..)
+  , ModelCapabilities(..)
+  , ModelPricing(..)
+  , RegistryStats(..)
 
     -- * Cone Operations
   , coneCreate
@@ -24,9 +31,11 @@ module Activation.Cone
   , coneDelete
   , coneChat
   , coneSetHead
+  , coneRegistry
   ) where
 
 import Data.Aeson
+import Data.Aeson.Types (Object, Parser)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
@@ -105,6 +114,112 @@ instance ToJSON ChatUsage where
     , "output_tokens" .= usageOutputTokens
     , "total_tokens"  .= usageTotalTokens
     ]
+
+-- ============================================================================
+-- Registry Types (from cllient::ModelRegistry)
+-- ============================================================================
+
+-- | Model capabilities
+data ModelCapabilities = ModelCapabilities
+  { capContextWindow   :: Maybe Int
+  , capMaxOutputTokens :: Maybe Int
+  , capVision          :: Maybe Bool
+  , capStreaming       :: Maybe Bool
+  , capFunctionCalling :: Maybe Bool
+  , capJsonMode        :: Maybe Bool
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ModelCapabilities where
+  parseJSON = withObject "ModelCapabilities" $ \o ->
+    ModelCapabilities
+      <$> o .:? "context_window"
+      <*> o .:? "max_output_tokens"
+      <*> o .:? "vision"
+      <*> o .:? "streaming"
+      <*> o .:? "function_calling"
+      <*> o .:? "json_mode"
+
+-- | Model pricing per 1k tokens
+data ModelPricing = ModelPricing
+  { pricingInputPer1k  :: Maybe Double
+  , pricingOutputPer1k :: Maybe Double
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ModelPricing where
+  parseJSON = withObject "ModelPricing" $ \o ->
+    ModelPricing
+      <$> o .:? "input_per_1k_tokens"
+      <*> o .:? "output_per_1k_tokens"
+
+-- | Exported model info
+data ModelExport = ModelExport
+  { modelId           :: Text
+  , modelFamily       :: Text
+  , modelService      :: Text
+  , modelCapabilities :: ModelCapabilities
+  , modelPricing      :: ModelPricing
+  , modelStatus       :: Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ModelExport where
+  parseJSON = withObject "ModelExport" $ \o ->
+    ModelExport
+      <$> o .: "id"
+      <*> o .: "family"
+      <*> o .: "service"
+      <*> o .: "capabilities"
+      <*> o .: "pricing"
+      <*> o .: "status"
+
+-- | Exported service info
+data ServiceExport = ServiceExport
+  { serviceName           :: Text
+  , serviceBaseUrl        :: Maybe Text
+  , serviceMessageBuilder :: Maybe Text
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ServiceExport where
+  parseJSON = withObject "ServiceExport" $ \o ->
+    ServiceExport
+      <$> o .: "name"
+      <*> o .:? "base_url"
+      <*> o .:? "message_builder"
+
+-- | Registry statistics
+data RegistryStats = RegistryStats
+  { statsModelCount   :: Int
+  , statsServiceCount :: Int
+  , statsFamilyCount  :: Int
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON RegistryStats where
+  parseJSON = withObject "RegistryStats" $ \o ->
+    RegistryStats
+      <$> o .: "model_count"
+      <*> o .: "service_count"
+      <*> o .: "family_count"
+
+-- | Full registry export
+data RegistryExport = RegistryExport
+  { registryServices :: [ServiceExport]
+  , registryFamilies :: [Text]
+  , registryModels   :: [ModelExport]
+  , registryStats    :: RegistryStats
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON RegistryExport where
+  parseJSON = withObject "RegistryExport" $ \o ->
+    RegistryExport
+      <$> o .: "services"
+      <*> o .: "families"
+      <*> o .: "models"
+      <*> o .: "stats"
 
 -- | Full cone configuration
 data ConeConfig = ConeConfig
@@ -193,23 +308,33 @@ data ConeEvent
   | ConeError
       { eventMessage :: Text
       }
+  | RegistryData
+      { eventRegistry :: RegistryExport
+      }
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON ConeEvent where
   parseJSON = withObject "ConeEvent" $ \o -> do
-    typ <- o .: "type"
-    case typ :: Text of
-      "cone_created"  -> ConeCreated <$> o .: "cone_id" <*> o .: "head"
-      "cone_deleted"  -> ConeDeleted <$> o .: "cone_id"
-      "cone_updated"  -> ConeUpdated <$> o .: "cone_id"
-      "cone_data"     -> ConeData <$> o .: "cone"
-      "cone_list"     -> ConeList <$> o .: "cones"
-      "chat_start"    -> ChatStart <$> o .: "cone_id" <*> o .: "user_position"
-      "chat_content"  -> ChatContent <$> o .: "cone_id" <*> o .: "content"
-      "chat_complete" -> ChatComplete <$> o .: "cone_id" <*> o .: "new_head" <*> o .:? "usage"
-      "head_updated"  -> HeadUpdated <$> o .: "cone_id" <*> o .: "old_head" <*> o .: "new_head"
-      "error"         -> ConeError <$> o .: "message"
-      _               -> fail $ "Unknown cone event type: " <> T.unpack typ
+    mTyp <- o .:? "type"
+    case mTyp :: Maybe Text of
+      Just "cone_created"  -> ConeCreated <$> o .: "cone_id" <*> o .: "head"
+      Just "cone_deleted"  -> ConeDeleted <$> o .: "cone_id"
+      Just "cone_updated"  -> ConeUpdated <$> o .: "cone_id"
+      Just "cone_data"     -> ConeData <$> o .: "cone"
+      Just "cone_list"     -> ConeList <$> o .: "cones"
+      Just "chat_start"    -> ChatStart <$> o .: "cone_id" <*> o .: "user_position"
+      Just "chat_content"  -> ChatContent <$> o .: "cone_id" <*> o .: "content"
+      Just "chat_complete" -> ChatComplete <$> o .: "cone_id" <*> o .: "new_head" <*> o .:? "usage"
+      Just "head_updated"  -> HeadUpdated <$> o .: "cone_id" <*> o .: "old_head" <*> o .: "new_head"
+      Just "error"         -> ConeError <$> o .: "message"
+      Just "registry"      -> RegistryData <$> parseJSON (Object o)
+      Just other           -> fail $ "Unknown cone event type: " <> T.unpack other
+      -- Registry data comes without a type field - detect by presence of services/models/families
+      Nothing -> do
+        mServices <- o .:? "services" :: Parser (Maybe Value)
+        case mServices of
+          Just _ -> RegistryData <$> parseJSON (Object o)
+          Nothing -> fail "ConeEvent missing 'type' field and not a registry"
 
 -- ============================================================================
 -- Helper
@@ -282,3 +407,9 @@ coneSetHead
 coneSetHead conn coneId nodeId =
   S.mapMaybe extractConeEvent $
     plexusRpc conn "cone_set_head" (toJSON [coneId, nodeId])
+
+-- | Get the model registry (available services, families, models)
+coneRegistry :: PlexusConnection -> Stream (Of ConeEvent) IO ()
+coneRegistry conn =
+  S.mapMaybe extractConeEvent $
+    plexusRpc conn "cone_registry" (toJSON ([] :: [Value]))

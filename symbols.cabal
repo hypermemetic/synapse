@@ -58,6 +58,21 @@ executable symbols-cli
   default-extensions:
     OverloadedStrings
 
+executable symbols-dyn
+  main-is:          Dyn.hs
+  build-depends:
+    base,
+    symbols,
+    aeson,
+    text,
+    bytestring,
+    streaming,
+    containers
+  hs-source-dirs:   app
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+
 test-suite arbor-test
   type:             exitcode-stdio-1.0
   main-is:          ArborTest.hs
