@@ -9,17 +9,18 @@ A CLI that discovers its command structure from the substrate at runtime, genera
 | Phase 1: Schema Types | ✅ Done | `src/Plexus/Schema.hs` - includes EnrichedSchema types |
 | Phase 2: Schema Fetching | ✅ Done | Via `plexus_schema` + `plexus_activation_schema` RPC |
 | Phase 3: Schema Caching | ✅ Done | `src/Plexus/Schema/Cache.hs` - caches enriched schemas |
-| Phase 4: Dynamic Parser | ⚠️ Partial | Infrastructure for typed flags in place |
+| Phase 4: Dynamic Parser | ✅ Done | Typed flags via index-based schema lookup |
 | Phase 5: Main Entry Point | ✅ Done | `app/Dyn.hs` |
-| Phase 6: Help Generation | ⚠️ Partial | Falls back to `--params JSON` for now |
+| Phase 6: Help Generation | ✅ Done | Typed flags with descriptions from schema |
 
-**Blocker:** Typed flags require substrate to include method name const/enum in each schema variant. Currently the method property is just `{"type": "string"}` without identifying which method each variant represents.
+**Resolved:** The enriched schema doesn't include method name identifiers (method property is just `{"type": "string"}`), but we work around this by using **index-based lookup** - the methods list in `ActivationInfo` is in the same order as the `oneOf` variants in the enriched schema.
 
-**Infrastructure Complete:**
+**Implementation:**
 - `buildTypedMethodParser` generates typed flags from `MethodSchema`
+- `parseMethodVariantByIndex` looks up schema by index, not name
 - Enriched schemas are fetched via `plexus_activation_schema` RPC
 - Schemas are cached in `~/.cache/symbols/schema.json`
-- Graceful fallback to generic `--params JSON` when method matching fails
+- Help shows typed flags: `--tree-id UUID`, `--owner-id TEXT`, etc.
 
 ## Server Schema Types
 
