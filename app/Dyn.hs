@@ -25,7 +25,7 @@ import Plexus.Client (PlexusConfig(..), plexusRpc)
 import Plexus.Types (PlexusStreamItem(..))
 import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema, ActivationSchemaEvent(..), extractSchemaEvent, extractActivationSchemaEvent)
 import Plexus.Schema.Cache
-import Plexus.Dynamic
+import Plexus.Dynamic (CommandInvocation(..), buildDynamicParserWithSchemas)
 
 -- ============================================================================
 -- Global Options (parsed before schema is available)
@@ -128,9 +128,10 @@ main = do
     Right c -> pure c
 
   let schema = cachedSchema cached
+  let enriched = cachedEnriched cached
 
-  -- Parse remaining args with dynamic parser
-  let dynamicInfo = info (buildDynamicParser schema <**> helper)
+  -- Parse remaining args with dynamic parser (using enriched schemas for typed flags)
+  let dynamicInfo = info (buildDynamicParserWithSchemas schema enriched <**> helper)
         ( fullDesc
        <> progDesc "Execute Plexus RPC methods"
         )
