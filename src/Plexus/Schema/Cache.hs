@@ -1,6 +1,6 @@
 -- | Schema caching for the dynamic CLI
 --
--- Caches the PlexusSchema to disk to avoid fetching on every invocation.
+-- Caches the PlexusSchema and enriched schemas to disk to avoid fetching on every invocation.
 module Plexus.Schema.Cache
   ( -- * Types
     CachedSchema(..)
@@ -12,18 +12,24 @@ module Plexus.Schema.Cache
   , saveCache
   , isFresh
   , loadSchemaWithCache
+    -- * Enriched Schema Lookup
+  , lookupMethodSchema
   ) where
 
 import Control.Exception (SomeException, catch)
 import Data.Aeson
 import qualified Data.ByteString.Lazy as LBS
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import GHC.Generics (Generic)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getXdgDirectory, XdgDirectory(..))
 import System.FilePath ((</>), takeDirectory)
 
-import Plexus.Schema (PlexusSchema)
+import qualified Plexus.Schema
+import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), parseMethodSchemas)
 
 -- ============================================================================
 -- Types
@@ -31,9 +37,10 @@ import Plexus.Schema (PlexusSchema)
 
 -- | Cached schema with metadata
 data CachedSchema = CachedSchema
-  { cachedAt     :: UTCTime       -- ^ When the schema was cached
-  , cachedTTL    :: Int           -- ^ TTL in seconds
-  , cachedSchema :: PlexusSchema  -- ^ The cached schema
+  { cachedAt        :: UTCTime                    -- ^ When the schema was cached
+  , cachedTTL       :: Int                        -- ^ TTL in seconds
+  , cachedSchema    :: PlexusSchema               -- ^ The cached plexus schema
+  , cachedEnriched  :: Map Text EnrichedSchema    -- ^ Enriched schemas by namespace
   }
   deriving stock (Show, Eq, Generic)
 
@@ -43,12 +50,14 @@ instance FromJSON CachedSchema where
       <$> o .: "cached_at"
       <*> o .: "ttl"
       <*> o .: "schema"
+      <*> o .:? "enriched" .!= Map.empty
 
 instance ToJSON CachedSchema where
   toJSON CachedSchema{..} = object
     [ "cached_at" .= cachedAt
     , "ttl"       .= cachedTTL
     , "schema"    .= cachedSchema
+    , "enriched"  .= cachedEnriched
     ]
 
 -- | Cache configuration
@@ -118,11 +127,12 @@ isFresh cached = do
 -- 3. If cache is fresh, return cached schema
 -- 4. Otherwise, call the fetch function to get fresh schema and cache it
 loadSchemaWithCache
-  :: Bool                        -- ^ Force refresh (--refresh flag)
-  -> CacheConfig                 -- ^ Cache configuration
-  -> IO (Either Text PlexusSchema)  -- ^ Fetch function
-  -> IO (Either Text PlexusSchema)
-loadSchemaWithCache forceRefresh config fetchSchema = do
+  :: Bool                                    -- ^ Force refresh (--refresh flag)
+  -> CacheConfig                             -- ^ Cache configuration
+  -> IO (Either Text PlexusSchema)           -- ^ Fetch plexus schema
+  -> (Text -> IO (Maybe EnrichedSchema))     -- ^ Fetch enriched schema for a namespace
+  -> IO (Either Text CachedSchema)
+loadSchemaWithCache forceRefresh config fetchSchema fetchEnriched = do
   if forceRefresh
     then fetchAndCache
     else do
@@ -132,7 +142,7 @@ loadSchemaWithCache forceRefresh config fetchSchema = do
         Just cached -> do
           fresh <- isFresh cached
           if fresh
-            then pure $ Right (cachedSchema cached)
+            then pure $ Right cached
             else fetchAndCache
   where
     fetchAndCache = do
@@ -142,14 +152,57 @@ loadSchemaWithCache forceRefresh config fetchSchema = do
           -- On fetch failure, try stale cache as fallback
           mCached <- loadCache (cachePath config)
           case mCached of
-            Just cached -> pure $ Right (cachedSchema cached)  -- Use stale cache
+            Just cached -> pure $ Right cached  -- Use stale cache
             Nothing -> pure $ Left err  -- No cache available
         Right schema -> do
+          -- Fetch enriched schemas for all activations
+          enriched <- fetchAllEnriched schema
           now <- getCurrentTime
           let cached = CachedSchema
-                { cachedAt     = now
-                , cachedTTL    = cacheTTLSecs config
-                , cachedSchema = schema
+                { cachedAt       = now
+                , cachedTTL      = cacheTTLSecs config
+                , cachedSchema   = schema
+                , cachedEnriched = enriched
                 }
           saveCache (cachePath config) cached
-          pure $ Right schema
+          pure $ Right cached
+
+    fetchAllEnriched schema = do
+      let namespaces = map activationNamespace (schemaActivations schema)
+      pairs <- mapM fetchPair namespaces
+      pure $ Map.fromList [(ns, e) | (ns, Just e) <- pairs]
+
+    fetchPair ns = do
+      mSchema <- fetchEnriched ns
+      pure (ns, mSchema)
+
+-- ============================================================================
+-- Enriched Schema Lookup
+-- ============================================================================
+
+-- | Look up a method schema from the cached enriched schemas
+-- Given "arbor_tree_create", looks up "arbor" enriched schema and finds "tree_create" method
+lookupMethodSchema :: CachedSchema -> Text -> Maybe MethodSchema
+lookupMethodSchema cached fullMethod = do
+  -- Split "arbor_tree_create" into ("arbor", "tree_create")
+  let (ns, method) = splitMethod fullMethod
+  -- Look up the enriched schema for this namespace
+  enriched <- Map.lookup ns (cachedEnriched cached)
+  -- Parse method schemas from the enriched schema
+  let methods = parseMethodSchemas enriched
+  -- Find the matching method
+  findMethod method methods
+
+-- | Split "namespace_method" into (namespace, method)
+-- e.g., "arbor_tree_create" -> ("arbor", "tree_create")
+splitMethod :: Text -> (Text, Text)
+splitMethod full =
+  case T.break (== '_') full of
+    (ns, rest) | not (T.null rest) -> (ns, T.drop 1 rest)
+    _ -> (full, "")
+
+-- | Find a method by name in a list of method schemas
+findMethod :: Text -> [MethodSchema] -> Maybe MethodSchema
+findMethod name = find (\m -> methodName m == name)
+  where
+    find f = foldr (\x acc -> if f x then Just x else acc) Nothing

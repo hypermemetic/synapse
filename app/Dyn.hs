@@ -23,7 +23,7 @@ import System.IO (hFlush, stdout, hPutStrLn, stderr)
 import Plexus (connect, disconnect, defaultConfig)
 import Plexus.Client (PlexusConfig(..), plexusRpc)
 import Plexus.Types (PlexusStreamItem(..))
-import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), extractSchemaEvent)
+import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema, ActivationSchemaEvent(..), extractSchemaEvent, extractActivationSchemaEvent)
 import Plexus.Schema.Cache
 import Plexus.Dynamic
 
@@ -90,8 +90,8 @@ main = do
 
   -- Handle --help before loading schema
   when (null remaining || remaining == ["--help"] || remaining == ["-h"]) $ do
-    schema <- loadSchema globalOpts
-    case schema of
+    cacheResult <- loadSchema globalOpts
+    case cacheResult of
       Left err -> do
         hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
         putStrLn ""
@@ -103,7 +103,7 @@ main = do
         putStrLn "  -P, --port PORT    Substrate port (default: 4444)"
         putStrLn "  -j, --json         Output raw JSON responses"
         exitFailure
-      Right s -> do
+      Right cached -> do
         putStrLn "symbols-dyn - Dynamic CLI for Plexus"
         putStrLn ""
         putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
@@ -115,17 +115,19 @@ main = do
         putStrLn "  -j, --json         Output raw JSON responses"
         putStrLn ""
         putStrLn "Available commands:"
-        mapM_ printActivation (schemaActivations s)
+        mapM_ printActivation (schemaActivations (cachedSchema cached))
         exitFailure
 
   -- Load schema (from cache or fetch fresh)
-  schemaResult <- loadSchema globalOpts
-  schema <- case schemaResult of
+  cacheResult <- loadSchema globalOpts
+  cached <- case cacheResult of
     Left err -> do
       hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
       hPutStrLn stderr "Make sure the substrate is running, or use --refresh to refetch"
       exitFailure
-    Right s -> pure s
+    Right c -> pure c
+
+  let schema = cachedSchema cached
 
   -- Parse remaining args with dynamic parser
   let dynamicInfo = info (buildDynamicParser schema <**> helper)
@@ -191,23 +193,27 @@ globalOptsInfo = info (globalOptsParser <**> helper)
 -- Schema Loading
 -- ============================================================================
 
-loadSchema :: GlobalOpts -> IO (Either Text PlexusSchema)
+loadSchema :: GlobalOpts -> IO (Either Text CachedSchema)
 loadSchema opts = do
   config <- defaultCacheConfig
-  loadSchemaWithCache (optRefresh opts) config (fetchSchemaFromSubstrate opts)
+  loadSchemaWithCache
+    (optRefresh opts)
+    config
+    (fetchSchemaFromSubstrate opts)
+    (fetchEnrichedSchema opts)
 
 -- | Fetch schema fresh from substrate
 fetchSchemaFromSubstrate :: GlobalOpts -> IO (Either Text PlexusSchema)
 fetchSchemaFromSubstrate opts = do
-  let config = defaultConfig
+  let plexusCfg = defaultConfig
         { plexusHost = optHost opts
         , plexusPort = optPort opts
         }
-  doFetch config `catch` \(e :: SomeException) ->
+  doFetch plexusCfg `catch` \(e :: SomeException) ->
     pure $ Left $ T.pack $ "Connection error: " <> show e
   where
-    doFetch config = do
-      conn <- connect config
+    doFetch cfg = do
+      conn <- connect cfg
       mSchema <- S.head_ $ S.mapMaybe extractSchemaEvent $
         plexusRpc conn "plexus_schema" (toJSON ([] :: [Value]))
       disconnect conn
@@ -215,6 +221,25 @@ fetchSchemaFromSubstrate opts = do
         Just (SchemaData s) -> pure $ Right s
         Just (SchemaError e) -> pure $ Left e
         Nothing -> pure $ Left "No schema received from substrate"
+
+-- | Fetch enriched schema for a specific namespace
+-- Gracefully returns Nothing if the endpoint doesn't exist
+fetchEnrichedSchema :: GlobalOpts -> Text -> IO (Maybe EnrichedSchema)
+fetchEnrichedSchema opts namespace = do
+  let plexusCfg = defaultConfig
+        { plexusHost = optHost opts
+        , plexusPort = optPort opts
+        }
+  doFetch plexusCfg `catch` \(_ :: SomeException) -> pure Nothing
+  where
+    doFetch cfg = do
+      conn <- connect cfg
+      mSchema <- S.head_ $ S.mapMaybe extractActivationSchemaEvent $
+        plexusRpc conn "plexus_activation_schema" (toJSON [namespace])
+      disconnect conn
+      case mSchema of
+        Just (ActivationSchemaData s) -> pure $ Just s
+        _ -> pure Nothing
 
 -- ============================================================================
 -- Command Execution

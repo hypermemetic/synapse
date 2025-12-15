@@ -7,16 +7,27 @@ module Plexus.Schema
     PlexusSchema(..)
   , ActivationInfo(..)
   , PlexusSchemaEvent(..)
-    -- * Method Schema (for enriched schemas)
+    -- * Enriched Schema Types
+  , EnrichedSchema(..)
+  , SchemaProperty(..)
+  , ActivationSchemaEvent(..)
+    -- * Method Schema (parsed from enriched)
   , MethodSchema(..)
   , ParamSchema(..)
   , ParamType(..)
-    -- * Helpers
+    -- * Parsing
+  , parseMethodSchemas
+  , parseParamType
+    -- * Stream Helpers
   , extractSchemaEvent
+  , extractActivationSchemaEvent
   ) where
 
 import Data.Aeson
 import Data.Aeson.Types (Parser)
+import Data.Map.Strict (Map)
+import qualified Data.Map.Strict as Map
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
@@ -90,7 +101,92 @@ instance FromJSON PlexusSchemaEvent where
           Nothing -> fail "PlexusSchemaEvent: expected 'activations' field"
 
 -- ============================================================================
--- Method Schema Types (for future enriched schema support)
+-- Enriched Schema Types (from plexus_activation_schema)
+-- ============================================================================
+
+-- | Enriched JSON Schema from substrate
+-- Mirrors the Rust Schema type from plexus/schema.rs
+data EnrichedSchema = EnrichedSchema
+  { schemaTitle       :: Maybe Text
+  , schemaDescription :: Maybe Text
+  , schemaType        :: Maybe Value         -- ^ "object", "string", etc.
+  , schemaProperties  :: Maybe (Map Text SchemaProperty)
+  , schemaRequired    :: Maybe [Text]
+  , schemaOneOf       :: Maybe [EnrichedSchema]  -- ^ Method variants
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON EnrichedSchema where
+  parseJSON = withObject "EnrichedSchema" $ \o ->
+    EnrichedSchema
+      <$> o .:? "title"
+      <*> o .:? "description"
+      <*> o .:? "type"
+      <*> o .:? "properties"
+      <*> o .:? "required"
+      <*> o .:? "oneOf"
+
+instance ToJSON EnrichedSchema where
+  toJSON EnrichedSchema{..} = object $ catMaybes
+    [ ("title" .=) <$> schemaTitle
+    , ("description" .=) <$> schemaDescription
+    , ("type" .=) <$> schemaType
+    , ("properties" .=) <$> schemaProperties
+    , ("required" .=) <$> schemaRequired
+    , ("oneOf" .=) <$> schemaOneOf
+    ]
+
+-- | Schema property definition
+data SchemaProperty = SchemaProperty
+  { propType        :: Maybe Value       -- ^ "string", "integer", ["string", "null"]
+  , propDescription :: Maybe Text
+  , propFormat      :: Maybe Text        -- ^ "uuid", "date-time", etc.
+  , propItems       :: Maybe SchemaProperty  -- ^ For array types
+  , propDefault     :: Maybe Value
+  , propEnum        :: Maybe [Value]
+  , propProperties  :: Maybe (Map Text SchemaProperty)  -- ^ Nested object
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON SchemaProperty where
+  parseJSON = withObject "SchemaProperty" $ \o ->
+    SchemaProperty
+      <$> o .:? "type"
+      <*> o .:? "description"
+      <*> o .:? "format"
+      <*> o .:? "items"
+      <*> o .:? "default"
+      <*> o .:? "enum"
+      <*> o .:? "properties"
+
+instance ToJSON SchemaProperty where
+  toJSON SchemaProperty{..} = object $ catMaybes
+    [ ("type" .=) <$> propType
+    , ("description" .=) <$> propDescription
+    , ("format" .=) <$> propFormat
+    , ("items" .=) <$> propItems
+    , ("default" .=) <$> propDefault
+    , ("enum" .=) <$> propEnum
+    , ("properties" .=) <$> propProperties
+    ]
+
+-- | Event wrapper for activation schema stream
+data ActivationSchemaEvent
+  = ActivationSchemaData EnrichedSchema
+  | ActivationSchemaError Text
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ActivationSchemaEvent where
+  parseJSON val = case val of
+    Object o -> do
+      mErr <- o .:? "error"
+      case mErr of
+        Just err -> pure $ ActivationSchemaError err
+        Nothing  -> ActivationSchemaData <$> parseJSON val
+    _ -> fail "ActivationSchemaEvent: expected object"
+
+-- ============================================================================
+-- Method Schema Types (parsed from EnrichedSchema)
 -- ============================================================================
 
 -- | Parameter type enumeration
@@ -138,6 +234,56 @@ parseParamType (Array types)      =
     _   -> ParamObject  -- fallback
 parseParamType _                  = ParamObject  -- fallback
 
+-- | Parse an EnrichedSchema into a list of MethodSchemas
+-- The enriched schema has oneOf containing method variants
+parseMethodSchemas :: EnrichedSchema -> [MethodSchema]
+parseMethodSchemas schema = case schemaOneOf schema of
+  Just variants -> mapMaybe parseMethodVariant variants
+  Nothing -> []
+
+-- | Parse a single method variant from the oneOf array
+parseMethodVariant :: EnrichedSchema -> Maybe MethodSchema
+parseMethodVariant variant = do
+  props <- schemaProperties variant
+  -- Get method name from "method" property's const/enum
+  methodProp <- Map.lookup "method" props
+  methodName <- extractMethodName methodProp
+  -- Get params from "params" property
+  let params = case Map.lookup "params" props of
+        Just paramsProp -> extractParams paramsProp (schemaRequired variant)
+        Nothing -> []
+  pure MethodSchema
+    { methodName = methodName
+    , methodDescription = schemaDescription variant
+    , methodParams = params
+    }
+
+-- | Extract method name from the method property
+extractMethodName :: SchemaProperty -> Maybe Text
+extractMethodName prop = case propEnum prop of
+  Just (String name : _) -> Just name
+  _ -> Nothing
+
+-- | Extract parameters from the params property
+extractParams :: SchemaProperty -> Maybe [Text] -> [ParamSchema]
+extractParams paramsProp mRequired =
+  case propProperties paramsProp of
+    Just props -> map (toParamSchema required) (Map.toList props)
+    Nothing -> []
+  where
+    required = fromMaybe [] mRequired
+
+-- | Convert a property to ParamSchema
+toParamSchema :: [Text] -> (Text, SchemaProperty) -> ParamSchema
+toParamSchema required (name, prop) = ParamSchema
+  { paramName = name
+  , paramType = maybe ParamObject parseParamType (propType prop)
+  , paramFormat = propFormat prop
+  , paramRequired = name `elem` required
+  , paramDesc = propDescription prop
+  , paramDefault = propDefault prop
+  }
+
 -- ============================================================================
 -- Stream Helpers
 -- ============================================================================
@@ -152,3 +298,15 @@ extractSchemaEvent (StreamData _ contentType dat)
         Error _     -> Nothing
   | otherwise = Nothing
 extractSchemaEvent _ = Nothing
+
+-- | Extract ActivationSchemaEvent from a stream item
+-- The plexus_activation_schema subscription uses content_type "plexus.activation_schema"
+extractActivationSchemaEvent :: PlexusStreamItem -> Maybe ActivationSchemaEvent
+extractActivationSchemaEvent (StreamData _ contentType dat)
+  | contentType == "plexus.activation_schema" =
+      case fromJSON dat of
+        Success schema -> Just (ActivationSchemaData schema)
+        Error _        -> Nothing
+  | otherwise = Nothing
+extractActivationSchemaEvent (StreamError _ err _) = Just (ActivationSchemaError err)
+extractActivationSchemaEvent _ = Nothing
