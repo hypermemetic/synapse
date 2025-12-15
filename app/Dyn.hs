@@ -38,7 +38,8 @@ data GlobalOpts = GlobalOpts
   { optRefresh :: Bool    -- ^ --refresh: force schema refetch
   , optHost    :: String  -- ^ --host: substrate host
   , optPort    :: Int     -- ^ --port: substrate port
-  , optJson    :: Bool    -- ^ --json: raw JSON output
+  , optJson    :: Bool    -- ^ --json: raw JSON output (full stream item)
+  , optRaw     :: Bool    -- ^ --raw: raw JSON data only (no headers)
   , optSchema  :: Bool    -- ^ --schema: dump JSON schema for method
   }
   deriving stock (Show)
@@ -69,7 +70,11 @@ globalOptsParser = GlobalOpts
   <*> switch
       ( long "json"
      <> short 'j'
-     <> help "Output raw JSON responses"
+     <> help "Output raw JSON responses (full stream item)"
+      )
+  <*> switch
+      ( long "raw"
+     <> help "Output raw JSON data only (no headers, no formatting)"
       )
   <*> switch
       ( long "schema"
@@ -229,7 +234,7 @@ splitArgs = go []
   where
     go acc [] = (reverse acc, [])
     go acc (x:xs)
-      | x `elem` ["--refresh", "-r", "--json", "-j", "--schema", "-s"] =
+      | x `elem` ["--refresh", "-r", "--json", "-j", "--raw", "--schema", "-s"] =
           go (x:acc) xs
       | x `elem` ["--host", "-H", "--port", "-P"] =
           case xs of
@@ -331,6 +336,11 @@ parseMethodName methodName =
 printResult :: GlobalOpts -> RendererConfig -> Text -> Text -> PlexusStreamItem -> IO ()
 printResult opts _ _ _ item
   | optJson opts = LBS.putStrLn $ encode item
+printResult opts _ _ _ item
+  | optRaw opts = case item of
+      StreamData _ _ dat -> LBS.putStrLn $ encode dat
+      StreamError _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
+      _ -> pure ()
 printResult _ rendererCfg namespace method item = case item of
   StreamProgress _ msg _ -> do
     T.putStr msg
