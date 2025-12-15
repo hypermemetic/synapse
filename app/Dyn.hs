@@ -148,25 +148,8 @@ main = do
       exitFailure
     CompletionInvoked _ -> exitFailure
 
-  -- If no params provided, show help for the method
-  when (isEmptyParams (invParams invocation)) $ do
-    -- Re-run parser with --help to show method help
-    case execParserPure defaultPrefs dynamicInfo (remaining ++ ["--help"]) of
-      Failure err -> do
-        let (msg, _) = renderFailure err "symbols-dyn"
-        putStrLn msg
-      _ -> pure ()
-    exitFailure
-
   -- Execute the RPC call
   executeCommand globalOpts invocation
-
--- | Check if params are empty (empty array or empty object)
-isEmptyParams :: Value -> Bool
-isEmptyParams (Array arr) = null arr
-isEmptyParams (Object obj) = null obj
-isEmptyParams Null = True
-isEmptyParams _ = False
 
 -- | Split args into global and remaining
 -- Global args are: --refresh, -r, --host, -H, --port, -P, --json, -j
