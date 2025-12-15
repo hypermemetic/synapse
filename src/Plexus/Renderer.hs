@@ -32,6 +32,7 @@ module Plexus.Renderer
   ) where
 
 import Control.Exception (SomeException, catch)
+import Control.Monad (guard)
 import Data.Aeson (Value(..), encode)
 import Data.Aeson.Key (fromText)
 import qualified Data.Aeson.KeyMap as KM
@@ -196,48 +197,95 @@ renderWithDefault = renderWithFormat
 
 -- | Apply a Mustache-style template to a JSON value
 -- Supports:
---   {{variable}}          - Simple substitution
---   {{nested.path}}       - Nested path lookup
---   {{#section}}...{{/section}} - Conditional/iteration (basic)
+--   {{variable}}              - Simple substitution
+--   {{nested.path}}           - Nested path lookup
+--   {{#array}}...{{/array}}   - Iterate over arrays
+--   {{.}}                     - Current item in iteration
 applyTemplate :: Text -> Value -> Text
 applyTemplate template value =
-  let vars = extractVars template
-  in foldl (substituteVar value) template vars
+  -- First expand sections, then substitute variables
+  let expanded = expandSections template value
+  in substituteVars expanded value
 
--- | Extract variable names from template (simple {{var}} pattern)
-extractVars :: Text -> [Text]
-extractVars t = case T.breakOn "{{" t of
-  (_, "") -> []
-  (_, rest) ->
-    let afterOpen = T.drop 2 rest
-    in case T.breakOn "}}" afterOpen of
-      (var, more) ->
-        let trimmed = T.strip var
-        in if T.isPrefixOf "#" trimmed || T.isPrefixOf "/" trimmed
-           then extractVars (T.drop 2 more)  -- Skip section markers for now
-           else trimmed : extractVars (T.drop 2 more)
+-- | Expand all {{#section}}...{{/section}} blocks
+expandSections :: Text -> Value -> Text
+expandSections template value = go template
+  where
+    go t = case findSection t of
+      Nothing -> t
+      Just (before, sectionName, body, after) ->
+        let sectionValue = lookupValue (T.splitOn "." sectionName) value
+            expanded = expandSection sectionValue body
+        in go (before <> expanded <> after)
 
--- | Substitute a variable in the template
-substituteVar :: Value -> Text -> Text -> Text
-substituteVar value template var =
-  let pattern = "{{" <> var <> "}}"
-      replacement = lookupPath (T.splitOn "." var) value
-  in T.replace pattern replacement template
+-- | Find the next section in template
+-- Returns (before, sectionName, body, after)
+findSection :: Text -> Maybe (Text, Text, Text, Text)
+findSection t = do
+  let (before, rest1) = T.breakOn "{{#" t
+  guard (not $ T.null rest1)
+  let afterOpen = T.drop 3 rest1
+  let (sectionName, rest2) = T.breakOn "}}" afterOpen
+  guard (not $ T.null rest2)
+  let afterTag = T.drop 2 rest2
+  let closeTag = "{{/" <> T.strip sectionName <> "}}"
+  let (body, rest3) = T.breakOn closeTag afterTag
+  guard (not $ T.null rest3)
+  let after = T.drop (T.length closeTag) rest3
+  pure (before, T.strip sectionName, body, after)
 
--- | Look up a nested path in a JSON value
-lookupPath :: [Text] -> Value -> Text
-lookupPath [] v = valueToText v
-lookupPath (k:ks) (Object obj) =
+-- | Expand a section based on its value
+expandSection :: Value -> Text -> Text
+expandSection (Array arr) body =
+  -- Iterate over array elements
+  T.concat $ map (expandItem body) (V.toList arr)
+expandSection (Bool True) body = body
+expandSection (Bool False) _ = ""
+expandSection Null _ = ""
+expandSection val body =
+  -- For objects/other values, just substitute with the value as context
+  substituteVars body val
+
+-- | Expand template body for a single array item
+expandItem :: Text -> Value -> Text
+expandItem body item =
+  -- Replace {{.}} with the item, then substitute other vars
+  let withDot = T.replace "{{.}}" (valueToText item) body
+  in substituteVars withDot item
+
+-- | Substitute all {{var}} patterns in template
+substituteVars :: Text -> Value -> Text
+substituteVars template value = go template
+  where
+    go t = case T.breakOn "{{" t of
+      (before, "") -> before
+      (before, rest) ->
+        let afterOpen = T.drop 2 rest
+        in case T.breakOn "}}" afterOpen of
+          (var, more) ->
+            let trimmed = T.strip var
+                afterClose = T.drop 2 more
+            in if T.isPrefixOf "#" trimmed || T.isPrefixOf "/" trimmed
+               then before <> "{{" <> var <> "}}" <> go afterClose
+               else before <> lookupPath (T.splitOn "." trimmed) value <> go afterClose
+
+-- | Look up a value by path (returns Value, not Text)
+lookupValue :: [Text] -> Value -> Value
+lookupValue [] v = v
+lookupValue (k:ks) (Object obj) =
   case KM.lookup (fromText k) obj of
-    Just v -> lookupPath ks v
-    Nothing -> ""
-lookupPath (k:ks) (Array arr) =
-  -- Support array indexing: items.0.name
+    Just v -> lookupValue ks v
+    Nothing -> Null
+lookupValue (k:ks) (Array arr) =
   case reads (T.unpack k) of
     [(idx, "")] | idx >= 0 && idx < V.length arr ->
-      lookupPath ks (arr V.! idx)
-    _ -> ""
-lookupPath _ _ = ""
+      lookupValue ks (arr V.! idx)
+    _ -> Null
+lookupValue _ _ = Null
+
+-- | Look up a nested path in a JSON value (returns Text)
+lookupPath :: [Text] -> Value -> Text
+lookupPath path value = valueToText (lookupValue path value)
 
 -- | Convert a JSON value to display text
 valueToText :: Value -> Text
