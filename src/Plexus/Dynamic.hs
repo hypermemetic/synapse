@@ -26,8 +26,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
 
-import qualified Plexus.Schema
-import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), ParamSchema(..), ParamType(..), parseMethodSchemas)
+import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), ParamSchema(..), ParamType(..), parseMethodVariantByIndex)
 
 -- ============================================================================
 -- Types
@@ -75,8 +74,9 @@ buildActivationParserWithSchema act mEnriched = subparser $ mconcat
   [ command (toCommandName method)
       (info (methodParser <**> helper)
             (progDesc desc))
-  | method <- sortOn id (activationMethods act)
-  , let mMethodSchema = mEnriched >>= findMethodSchema method
+  | (idx, method) <- zip [0..] (activationMethods act)
+  -- Use index to look up method schema (methods list order matches oneOf order)
+  , let mMethodSchema = mEnriched >>= \e -> parseMethodVariantByIndex e idx
         methodParser = case mMethodSchema of
           Just ms -> buildTypedMethodParser ns method ms
           Nothing -> buildMethodParser ns method
@@ -87,14 +87,6 @@ buildActivationParserWithSchema act mEnriched = subparser $ mconcat
   ]
   where
     ns = activationNamespace act
-
--- | Find a method schema by name in an enriched schema
-findMethodSchema :: Text -> EnrichedSchema -> Maybe MethodSchema
-findMethodSchema methodName enriched =
-  let methods = parseMethodSchemas enriched
-  in case filter (\m -> Plexus.Schema.methodName m == methodName) methods of
-    (m:_) -> Just m
-    [] -> Nothing
 
 -- | Build a parser for a method with generic --params JSON
 buildMethodParser :: Text -> Text -> Parser CommandInvocation

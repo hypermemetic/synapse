@@ -17,6 +17,7 @@ module Plexus.Schema
   , ParamType(..)
     -- * Parsing
   , parseMethodSchemas
+  , parseMethodVariantByIndex
   , parseParamType
     -- * Stream Helpers
   , extractSchemaEvent
@@ -245,18 +246,25 @@ parseMethodSchemas schema = case schemaOneOf schema of
 parseMethodVariant :: EnrichedSchema -> Maybe MethodSchema
 parseMethodVariant variant = do
   props <- schemaProperties variant
-  -- Get method name from "method" property's const/enum
-  methodProp <- Map.lookup "method" props
-  methodName <- extractMethodName methodProp
+  -- Get method name from "method" property's const/enum (may not exist)
+  let methodProp = Map.lookup "method" props
+      mMethodName = methodProp >>= extractMethodName
   -- Get params from "params" property
   let params = case Map.lookup "params" props of
         Just paramsProp -> extractParams paramsProp (schemaRequired variant)
         Nothing -> []
+  -- Return schema even without method name (we'll use index-based lookup)
   pure MethodSchema
-    { methodName = methodName
+    { methodName = fromMaybe "" mMethodName
     , methodDescription = schemaDescription variant
     , methodParams = params
     }
+
+-- | Parse a method variant by index (for when method names aren't in schema)
+parseMethodVariantByIndex :: EnrichedSchema -> Int -> Maybe MethodSchema
+parseMethodVariantByIndex schema idx = case schemaOneOf schema of
+  Just variants | idx < length variants -> parseMethodVariant (variants !! idx)
+  _ -> Nothing
 
 -- | Extract method name from the method property
 extractMethodName :: SchemaProperty -> Maybe Text
