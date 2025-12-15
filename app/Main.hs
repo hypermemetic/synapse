@@ -70,6 +70,7 @@ data ConeCmd
   | ConeDelete String
   | ConeChat String [String]
   | ConeSetHead String String
+  | ConeRegistry
   deriving (Show)
 
 -- ============================================================================
@@ -184,6 +185,7 @@ coneParser = subparser
  <> command "delete" (info deleteParser (progDesc "Delete a cone"))
  <> command "chat" (info chatParser (progDesc "Chat with a cone (streams response)"))
  <> command "set-head" (info setHeadParser (progDesc "Move cone head to a node"))
+ <> command "registry" (info (pure ConeRegistry) (progDesc "List available models, services, and families"))
   )
   where
     createParser = ConeCreate
@@ -316,6 +318,8 @@ runConeCmd (ConeChat coneId promptWords) = withConn $ \conn ->
   S.mapM_ printConeEvent $ Cone.coneChat conn (T.pack coneId) (T.unwords $ map T.pack promptWords)
 runConeCmd (ConeSetHead coneId nodeId) = withConn $ \conn ->
   S.mapM_ printConeEvent $ Cone.coneSetHead conn (T.pack coneId) (T.pack nodeId)
+runConeCmd ConeRegistry = withConn $ \conn ->
+  S.mapM_ printConeEvent $ Cone.coneRegistry conn
 
 -- ============================================================================
 -- Event Printers
@@ -344,6 +348,24 @@ printConeEvent (Cone.HeadUpdated coneId oldHead newHead) =
   putStrLn $ "Head updated: " <> T.unpack (Cone.positionNodeId oldHead) <> " -> " <> T.unpack (Cone.positionNodeId newHead)
 printConeEvent (Cone.ConeError msg) =
   T.hPutStrLn stderr $ "Error: " <> msg
+printConeEvent (Cone.RegistryData reg) = do
+  let stats = Cone.registryStats reg
+  putStrLn $ "Registry: " <> show (Cone.statsModelCount stats) <> " models, "
+           <> show (Cone.statsServiceCount stats) <> " services, "
+           <> show (Cone.statsFamilyCount stats) <> " families"
+  putStrLn ""
+  putStrLn "Services:"
+  mapM_ (\s -> putStrLn $ "  " <> T.unpack (Cone.serviceName s)) (Cone.registryServices reg)
+  putStrLn ""
+  putStrLn "Families:"
+  mapM_ (\f -> putStrLn $ "  " <> T.unpack f) (Cone.registryFamilies reg)
+  putStrLn ""
+  putStrLn "Models:"
+  mapM_ printModel (Cone.registryModels reg)
+  where
+    printModel m = putStrLn $ "  " <> T.unpack (Cone.modelId m)
+                            <> " (" <> T.unpack (Cone.modelFamily m)
+                            <> "/" <> T.unpack (Cone.modelService m) <> ")"
 
 -- Helpers
 withConn :: (Arbor.PlexusConnection -> IO ()) -> IO ()

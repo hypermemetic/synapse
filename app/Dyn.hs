@@ -1,177 +1,245 @@
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE RecordWildCards #-}
+
 -- | Dynamic CLI - discovers capabilities from the substrate at runtime
+--
+-- This CLI fetches the PlexusSchema from the substrate, caches it locally,
+-- and dynamically builds subcommands from the available activations and methods.
 module Main where
 
-import Plexus (connect, disconnect, defaultConfig)
-import Plexus.Client (plexusRpc)
-import Plexus.Types (PlexusStreamItem(..))
-import qualified Activation.Cone as Cone
-import qualified Data.Aeson
-import Data.Aeson (toJSON, Value, fromJSON, Result(..))
+import Control.Exception (SomeException, catch)
+import Data.Aeson (Value(..), encode, toJSON)
+import qualified Data.Aeson as Aeson
+import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
+import Options.Applicative
 import qualified Streaming.Prelude as S
-import System.Environment (getArgs)
-import System.IO (hFlush, stdout)
+import System.Environment (getArgs, withArgs)
+import System.Exit (exitFailure)
+import System.IO (hFlush, stdout, hPutStrLn, stderr)
+
+import Plexus (connect, disconnect, defaultConfig)
+import Plexus.Client (PlexusConfig(..), plexusRpc)
+import Plexus.Types (PlexusStreamItem(..))
+import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), extractSchemaEvent)
+import Plexus.Schema.Cache
+import Plexus.Dynamic
+
+-- ============================================================================
+-- Global Options (parsed before schema is available)
+-- ============================================================================
+
+data GlobalOpts = GlobalOpts
+  { optRefresh :: Bool    -- ^ --refresh: force schema refetch
+  , optHost    :: String  -- ^ --host: substrate host
+  , optPort    :: Int     -- ^ --port: substrate port
+  , optJson    :: Bool    -- ^ --json: raw JSON output
+  }
+  deriving stock (Show)
+
+globalOptsParser :: Parser GlobalOpts
+globalOptsParser = GlobalOpts
+  <$> switch
+      ( long "refresh"
+     <> short 'r'
+     <> help "Force refresh of cached schema"
+      )
+  <*> strOption
+      ( long "host"
+     <> short 'H'
+     <> metavar "HOST"
+     <> value "127.0.0.1"
+     <> showDefault
+     <> help "Substrate host"
+      )
+  <*> option auto
+      ( long "port"
+     <> short 'P'
+     <> metavar "PORT"
+     <> value 4444
+     <> showDefault
+     <> help "Substrate port"
+      )
+  <*> switch
+      ( long "json"
+     <> short 'j'
+     <> help "Output raw JSON responses"
+      )
+
+-- ============================================================================
+-- Main
+-- ============================================================================
 
 main :: IO ()
 main = do
   args <- getArgs
-  case args of
-    ["registry"] -> showRegistry
-    ["models"] -> showModels
-    ["models", family] -> showModelsByFamily (T.pack family)
-    ["services"] -> showServices
-    ["families"] -> showFamilies
-    ["debug"] -> debugRaw
-    _ -> usage
 
-usage :: IO ()
-usage = do
-  putStrLn "symbols-dyn - Dynamic CLI for Plexus"
-  putStrLn ""
-  putStrLn "Usage:"
-  putStrLn "  symbols-dyn registry         Show full registry info"
-  putStrLn "  symbols-dyn models           List all available models"
-  putStrLn "  symbols-dyn models <family>  List models for a specific family"
-  putStrLn "  symbols-dyn services         List available services"
-  putStrLn "  symbols-dyn families         List model families"
-  putStrLn ""
-  putStrLn "This CLI discovers available capabilities from the running substrate."
+  -- Parse global options, extracting remaining args for dynamic parser
+  let (globalArgs, remaining) = splitArgs args
 
-showRegistry :: IO ()
-showRegistry = do
-  putStrLn "Fetching registry from substrate..."
-  hFlush stdout
-  conn <- connect defaultConfig
-  mRegistry <- fetchRegistry conn
+  -- Parse global options
+  globalOpts <- case execParserPure defaultPrefs globalOptsInfo globalArgs of
+    Success opts -> pure opts
+    Failure err  -> do
+      let (msg, _) = renderFailure err "symbols-dyn"
+      hPutStrLn stderr msg
+      exitFailure
+    CompletionInvoked _ -> exitFailure
+
+  -- Handle --help before loading schema
+  when (null remaining || remaining == ["--help"] || remaining == ["-h"]) $ do
+    schema <- loadSchema globalOpts
+    case schema of
+      Left err -> do
+        hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
+        putStrLn ""
+        putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
+        putStrLn ""
+        putStrLn "Global options:"
+        putStrLn "  -r, --refresh      Force refresh of cached schema"
+        putStrLn "  -H, --host HOST    Substrate host (default: 127.0.0.1)"
+        putStrLn "  -P, --port PORT    Substrate port (default: 4444)"
+        putStrLn "  -j, --json         Output raw JSON responses"
+        exitFailure
+      Right s -> do
+        putStrLn "symbols-dyn - Dynamic CLI for Plexus"
+        putStrLn ""
+        putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
+        putStrLn ""
+        putStrLn "Global options:"
+        putStrLn "  -r, --refresh      Force refresh of cached schema"
+        putStrLn "  -H, --host HOST    Substrate host (default: 127.0.0.1)"
+        putStrLn "  -P, --port PORT    Substrate port (default: 4444)"
+        putStrLn "  -j, --json         Output raw JSON responses"
+        putStrLn ""
+        putStrLn "Available commands:"
+        mapM_ printActivation (schemaActivations s)
+        exitFailure
+
+  -- Load schema (from cache or fetch fresh)
+  schemaResult <- loadSchema globalOpts
+  schema <- case schemaResult of
+    Left err -> do
+      hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
+      hPutStrLn stderr "Make sure the substrate is running, or use --refresh to refetch"
+      exitFailure
+    Right s -> pure s
+
+  -- Parse remaining args with dynamic parser
+  let dynamicInfo = info (buildDynamicParser schema <**> helper)
+        ( fullDesc
+       <> progDesc "Execute Plexus RPC methods"
+        )
+
+  invocation <- case execParserPure defaultPrefs dynamicInfo remaining of
+    Success inv -> pure inv
+    Failure err -> do
+      let (msg, _) = renderFailure err "symbols-dyn"
+      hPutStrLn stderr msg
+      exitFailure
+    CompletionInvoked _ -> exitFailure
+
+  -- Execute the RPC call
+  executeCommand globalOpts invocation
+
+-- | Split args into global and remaining
+-- Global args are: --refresh, -r, --host, -H, --port, -P, --json, -j
+-- and their values
+splitArgs :: [String] -> ([String], [String])
+splitArgs = go []
+  where
+    go acc [] = (reverse acc, [])
+    go acc (x:xs)
+      | x `elem` ["--refresh", "-r", "--json", "-j"] =
+          go (x:acc) xs
+      | x `elem` ["--host", "-H", "--port", "-P"] =
+          case xs of
+            (v:rest) -> go (v:x:acc) rest
+            [] -> (reverse (x:acc), [])
+      | otherwise = (reverse acc, x:xs)
+
+globalOptsInfo :: ParserInfo GlobalOpts
+globalOptsInfo = info (globalOptsParser <**> helper)
+  ( fullDesc
+ <> progDesc "Dynamic CLI for Plexus"
+  )
+
+-- ============================================================================
+-- Schema Loading
+-- ============================================================================
+
+loadSchema :: GlobalOpts -> IO (Either Text PlexusSchema)
+loadSchema opts = do
+  config <- defaultCacheConfig
+  loadSchemaWithCache (optRefresh opts) config (fetchSchemaFromSubstrate opts)
+
+-- | Fetch schema fresh from substrate
+fetchSchemaFromSubstrate :: GlobalOpts -> IO (Either Text PlexusSchema)
+fetchSchemaFromSubstrate opts = do
+  let config = defaultConfig
+        { plexusHost = optHost opts
+        , plexusPort = optPort opts
+        }
+  doFetch config `catch` \(e :: SomeException) ->
+    pure $ Left $ T.pack $ "Connection error: " <> show e
+  where
+    doFetch config = do
+      conn <- connect config
+      mSchema <- S.head_ $ S.mapMaybe extractSchemaEvent $
+        plexusRpc conn "plexus_schema" (toJSON ([] :: [Value]))
+      disconnect conn
+      case mSchema of
+        Just (SchemaData s) -> pure $ Right s
+        Just (SchemaError e) -> pure $ Left e
+        Nothing -> pure $ Left "No schema received from substrate"
+
+-- ============================================================================
+-- Command Execution
+-- ============================================================================
+
+executeCommand :: GlobalOpts -> CommandInvocation -> IO ()
+executeCommand opts CommandInvocation{..} = do
+  let config = defaultConfig
+        { plexusHost = optHost opts
+        , plexusPort = optPort opts
+        }
+  conn <- connect config
+
+  -- Execute RPC call
+  S.mapM_ (printResult opts) $
+    plexusRpc conn invMethod invParams
+
   disconnect conn
-  case mRegistry of
-    Nothing -> putStrLn "Failed to fetch registry"
-    Just reg -> do
-      let stats = Cone.registryStats reg
-      putStrLn $ "Registry: "
-        <> show (Cone.statsModelCount stats) <> " models, "
-        <> show (Cone.statsServiceCount stats) <> " services, "
-        <> show (Cone.statsFamilyCount stats) <> " families"
-      putStrLn ""
-      putStrLn "Services:"
-      mapM_ printService (Cone.registryServices reg)
-      putStrLn ""
-      putStrLn "Families:"
-      mapM_ (\f -> putStrLn $ "  " <> T.unpack f) (Cone.registryFamilies reg)
 
-showModels :: IO ()
-showModels = do
-  conn <- connect defaultConfig
-  mRegistry <- fetchRegistry conn
-  disconnect conn
-  case mRegistry of
-    Nothing -> putStrLn "Failed to fetch registry"
-    Just reg -> do
-      putStrLn "Available models:"
-      putStrLn ""
-      mapM_ printModel (Cone.registryModels reg)
+-- | Print a stream item
+printResult :: GlobalOpts -> PlexusStreamItem -> IO ()
+printResult opts item
+  | optJson opts = LBS.putStrLn $ encode item
+  | otherwise = case item of
+      StreamProgress _ msg _ -> do
+        T.putStr msg
+        putStr "\r"
+        hFlush stdout
+      StreamData _ contentType dat -> do
+        T.putStrLn $ "=== " <> contentType <> " ==="
+        LBS.putStrLn $ Aeson.encode dat
+      StreamError _ err _ -> do
+        hPutStrLn stderr $ "Error: " <> T.unpack err
+      StreamDone _ -> pure ()
 
-showModelsByFamily :: Text -> IO ()
-showModelsByFamily family = do
-  conn <- connect defaultConfig
-  mRegistry <- fetchRegistry conn
-  disconnect conn
-  case mRegistry of
-    Nothing -> putStrLn "Failed to fetch registry"
-    Just reg -> do
-      let models = filter (\m -> Cone.modelFamily m == family) (Cone.registryModels reg)
-      if null models
-        then putStrLn $ "No models found for family: " <> T.unpack family
-        else do
-          putStrLn $ "Models in family '" <> T.unpack family <> "':"
-          putStrLn ""
-          mapM_ printModel models
+-- ============================================================================
+-- Help Formatting
+-- ============================================================================
 
-showServices :: IO ()
-showServices = do
-  conn <- connect defaultConfig
-  mRegistry <- fetchRegistry conn
-  disconnect conn
-  case mRegistry of
-    Nothing -> putStrLn "Failed to fetch registry"
-    Just reg -> do
-      putStrLn "Available services:"
-      putStrLn ""
-      mapM_ printService (Cone.registryServices reg)
+printActivation :: ActivationInfo -> IO ()
+printActivation act = do
+  let ns = activationNamespace act
+  let desc = activationDescription act
+  putStrLn $ "  " <> T.unpack ns <> replicate (14 - T.length ns) ' ' <> T.unpack desc
 
-showFamilies :: IO ()
-showFamilies = do
-  conn <- connect defaultConfig
-  mRegistry <- fetchRegistry conn
-  disconnect conn
-  case mRegistry of
-    Nothing -> putStrLn "Failed to fetch registry"
-    Just reg -> do
-      putStrLn "Model families:"
-      mapM_ (\f -> putStrLn $ "  " <> T.unpack f) (Cone.registryFamilies reg)
-
--- | Fetch registry from the plexus
-fetchRegistry :: Cone.PlexusConnection -> IO (Maybe Cone.RegistryExport)
-fetchRegistry conn = do
-  result <- S.head_ $ Cone.coneRegistry conn
-  case result of
-    Just (Cone.RegistryData reg) -> pure $ Just reg
-    Just other -> do
-      putStrLn $ "Got unexpected event: " <> show other
-      pure Nothing
-    Nothing -> do
-      putStrLn "No events received from coneRegistry"
-      pure Nothing
-
--- | Debug: show raw stream items
-debugRaw :: IO ()
-debugRaw = do
-  putStrLn "Fetching raw stream items from cone_registry..."
-  conn <- connect defaultConfig
-  S.mapM_ printStreamItem $ plexusRpc conn "cone_registry" (toJSON ([] :: [Value]))
-  disconnect conn
-
-printStreamItem :: PlexusStreamItem -> IO ()
-printStreamItem (StreamProgress prov msg pct) =
-  putStrLn $ "PROGRESS: " <> T.unpack msg
-printStreamItem (StreamData prov contentType dat) = do
-  putStrLn $ "DATA [" <> T.unpack contentType <> "]"
-  -- Try parsing as ConeEvent
-  case fromJSON dat :: Result Cone.ConeEvent of
-    Success evt -> putStrLn $ "  Parsed as ConeEvent"
-    Error err -> putStrLn $ "  Parse error: " <> err
-printStreamItem (StreamError prov err rec) =
-  putStrLn $ "ERROR: " <> T.unpack err
-printStreamItem (StreamDone prov) =
-  putStrLn "DONE"
-
-printService :: Cone.ServiceExport -> IO ()
-printService svc = do
-  putStrLn $ "  " <> T.unpack (Cone.serviceName svc)
-  case Cone.serviceBaseUrl svc of
-    Just url -> putStrLn $ "    URL: " <> T.unpack url
-    Nothing -> pure ()
-  case Cone.serviceMessageBuilder svc of
-    Just builder -> putStrLn $ "    Builder: " <> T.unpack builder
-    Nothing -> pure ()
-
-printModel :: Cone.ModelExport -> IO ()
-printModel m = do
-  let caps = Cone.modelCapabilities m
-  let pricing = Cone.modelPricing m
-  putStrLn $ "  " <> T.unpack (Cone.modelId m)
-  putStrLn $ "    Family: " <> T.unpack (Cone.modelFamily m)
-    <> " | Service: " <> T.unpack (Cone.modelService m)
-    <> " | Status: " <> T.unpack (Cone.modelStatus m)
-  case (Cone.capContextWindow caps, Cone.capMaxOutputTokens caps) of
-    (Just ctx, Just out) ->
-      putStrLn $ "    Context: " <> show ctx <> " | Max output: " <> show out
-    (Just ctx, Nothing) ->
-      putStrLn $ "    Context: " <> show ctx
-    _ -> pure ()
-  case (Cone.pricingInputPer1k pricing, Cone.pricingOutputPer1k pricing) of
-    (Just inp, Just out) ->
-      putStrLn $ "    Pricing: $" <> show inp <> "/1k in, $" <> show out <> "/1k out"
-    _ -> pure ()
+-- | when helper (not in prelude for older GHC)
+when :: Bool -> IO () -> IO ()
+when True  action = action
+when False _      = pure ()
