@@ -135,9 +135,13 @@ main = do
 
   invocation <- case execParserPure defaultPrefs dynamicInfo remaining of
     Success inv -> pure inv
-    Failure err -> do
-      let (msg, _) = renderFailure err "symbols-dyn"
-      hPutStrLn stderr msg
+    Failure _ -> do
+      -- On parse failure, show help for whatever level we're at
+      case execParserPure defaultPrefs dynamicInfo (remaining ++ ["--help"]) of
+        Failure helpErr -> do
+          let (msg, _) = renderFailure helpErr "symbols-dyn"
+          putStrLn msg
+        _ -> pure ()
       exitFailure
     CompletionInvoked _ -> exitFailure
 
