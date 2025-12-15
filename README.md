@@ -232,3 +232,70 @@ frontend-hs/
 │   └── LoomTest.hs          -- Integration tests
 └── cognition-client.cabal
 ```
+
+## Dynamic CLI (`symbols-dyn`)
+
+A schema-driven CLI that discovers commands at runtime from the substrate:
+
+```bash
+# List available commands
+cabal run symbols-dyn
+
+# Execute commands
+cabal run symbols-dyn -- arbor tree-list
+cabal run symbols-dyn -- cone list
+```
+
+### Output Modes
+
+```bash
+# Default: Template-rendered or pretty JSON
+symbols-dyn arbor tree-list
+
+# Raw JSON (for piping to jq)
+symbols-dyn --raw arbor tree-list | jq '.tree_ids[0]'
+
+# Full stream item as JSON
+symbols-dyn --json arbor tree-list
+```
+
+### Schema Introspection
+
+```bash
+# Show schema for a namespace
+symbols-dyn --schema arbor
+
+# Show schema for a specific method
+symbols-dyn --schema arbor tree-create
+```
+
+### Custom Templates
+
+Templates use Mustache syntax and are loaded from:
+1. `.substrate/templates/{namespace}/{method}.mustache` (project-local)
+2. `~/.config/symbols/templates/{namespace}/{method}.mustache` (user-global)
+
+**Template syntax:**
+```mustache
+{{variable}}              - Simple substitution
+{{nested.path}}           - Nested path lookup
+{{#array}}...{{/array}}   - Iterate over arrays
+{{.}}                     - Current item in iteration
+```
+
+**Example template** (`.substrate/templates/cone/list.mustache`):
+```mustache
+Cones:
+{{#cones}}  • {{name}} ({{id}})
+    Model: {{model_id}}
+    Tree:  {{head.tree_id}}
+{{/cones}}
+```
+
+**Edit templates:**
+```bash
+# Open/create template for a method
+symbols-dyn --template arbor tree-list
+```
+
+This opens `$EDITOR` (or vi) with the template file, creating a default template if it doesn't exist.

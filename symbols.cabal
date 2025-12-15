@@ -81,7 +81,8 @@ executable symbols-dyn
     optparse-applicative >= 0.18,
     directory >= 1.3,
     time >= 1.9,
-    filepath >= 1.4
+    filepath >= 1.4,
+    process >= 1.6
   hs-source-dirs:   app
   default-language: GHC2021
   default-extensions:

@@ -16,8 +16,10 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Options.Applicative
 import qualified Streaming.Prelude as S
-import System.Environment (getArgs, withArgs)
+import System.Environment (getArgs, withArgs, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
+import System.Process (callProcess)
+import System.Directory (createDirectoryIfMissing, doesFileExist)
 import System.IO (hFlush, stdout, hPutStrLn, stderr)
 
 import Plexus (connect, disconnect, defaultConfig)
@@ -35,12 +37,13 @@ import qualified Data.Map.Strict as Map
 -- ============================================================================
 
 data GlobalOpts = GlobalOpts
-  { optRefresh :: Bool    -- ^ --refresh: force schema refetch
-  , optHost    :: String  -- ^ --host: substrate host
-  , optPort    :: Int     -- ^ --port: substrate port
-  , optJson    :: Bool    -- ^ --json: raw JSON output (full stream item)
-  , optRaw     :: Bool    -- ^ --raw: raw JSON data only (no headers)
-  , optSchema  :: Bool    -- ^ --schema: dump JSON schema for method
+  { optRefresh   :: Bool    -- ^ --refresh: force schema refetch
+  , optHost      :: String  -- ^ --host: substrate host
+  , optPort      :: Int     -- ^ --port: substrate port
+  , optJson      :: Bool    -- ^ --json: raw JSON output (full stream item)
+  , optRaw       :: Bool    -- ^ --raw: raw JSON data only (no headers)
+  , optSchema    :: Bool    -- ^ --schema: dump JSON schema for method
+  , optTemplate  :: Bool    -- ^ --template: open template file for editing
   }
   deriving stock (Show)
 
@@ -80,6 +83,11 @@ globalOptsParser = GlobalOpts
       ( long "schema"
      <> short 's'
      <> help "Dump JSON schema for method (usage: --schema NAMESPACE METHOD)"
+      )
+  <*> switch
+      ( long "template"
+     <> short 't'
+     <> help "Open template file for editing (usage: --template NAMESPACE METHOD)"
       )
 
 -- ============================================================================
@@ -161,6 +169,30 @@ main = do
         hPutStrLn stderr "  symbols-dyn --schema arbor tree-list # Show specific method"
         exitFailure
 
+  -- Handle --template mode: open template file for editing
+  when (optTemplate globalOpts) $ do
+    case remaining of
+      [ns, method] -> do
+        let methodFile = T.replace "-" "_" (T.pack method)
+        let templateDir = ".substrate/templates/" <> ns
+        let templatePath = templateDir <> "/" <> T.unpack methodFile <> ".mustache"
+        -- Create directory if needed
+        createDirectoryIfMissing True templateDir
+        -- Create default template if it doesn't exist
+        exists <- doesFileExist templatePath
+        when (not exists) $ do
+          writeFile templatePath defaultTemplateContent
+          putStrLn $ "Created new template: " <> templatePath
+        -- Open in editor
+        editor <- getEditor
+        putStrLn $ "Opening " <> templatePath <> " in " <> editor
+        callProcess editor [templatePath]
+        exitSuccess
+      _ -> do
+        hPutStrLn stderr "Usage: symbols-dyn --template NAMESPACE METHOD"
+        hPutStrLn stderr "Example: symbols-dyn --template arbor tree-list"
+        exitFailure
+
   -- Handle --help before loading schema
   when (null remaining || remaining == ["--help"] || remaining == ["-h"]) $ do
     cacheResult <- loadSchema globalOpts
@@ -234,7 +266,7 @@ splitArgs = go []
   where
     go acc [] = (reverse acc, [])
     go acc (x:xs)
-      | x `elem` ["--refresh", "-r", "--json", "-j", "--raw", "--schema", "-s"] =
+      | x `elem` ["--refresh", "-r", "--json", "-j", "--raw", "--schema", "-s", "--template", "-t"] =
           go (x:acc) xs
       | x `elem` ["--host", "-H", "--port", "-P"] =
           case xs of
@@ -430,3 +462,26 @@ listMethodNames schema = case schemaOneOf schema of
             Nothing -> []
         Nothing -> []
       Nothing -> []
+
+-- ============================================================================
+-- Template Helpers
+-- ============================================================================
+
+-- | Get editor from environment or default
+getEditor :: IO String
+getEditor = do
+  mEditor <- lookupEnv "EDITOR"
+  pure $ case mEditor of
+    Just e -> e
+    Nothing -> "vi"
+
+-- | Default template content for new templates
+defaultTemplateContent :: String
+defaultTemplateContent = unlines
+  [ "{{! Template for this method }}"
+  , "{{! Use {{variable}} for substitution }}"
+  , "{{! Use {{#array}}...{{/array}} for iteration }}"
+  , "{{! Use {{.}} for current item in iteration }}"
+  , ""
+  , "{{type}}"
+  ]
