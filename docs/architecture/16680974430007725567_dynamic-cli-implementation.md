@@ -2,6 +2,19 @@
 
 A CLI that discovers its command structure from the substrate at runtime, generating subcommands, flags, and help text from the server's schema.
 
+## Implementation Status
+
+| Phase | Status | Notes |
+|-------|--------|-------|
+| Phase 1: Schema Types | ✅ Done | `src/Plexus/Schema.hs` |
+| Phase 2: Schema Fetching | ✅ Done | Via `plexus_schema` RPC |
+| Phase 3: Schema Caching | ✅ Done | `src/Plexus/Schema/Cache.hs` |
+| Phase 4: Dynamic Parser | ⚠️ Partial | Basic structure, no enriched params |
+| Phase 5: Main Entry Point | ✅ Done | `app/Dyn.hs` |
+| Phase 6: Help Generation | ⚠️ Partial | Generic `--params JSON` for methods |
+
+**Remaining:** Enriched schema support for typed method flags (e.g., `--tree-id UUID`).
+
 ## Server Schema Types
 
 The substrate exposes these types via `plexus_schema` subscription:
