@@ -19,13 +19,14 @@ import qualified Streaming.Prelude as S
 import System.Environment (getArgs, withArgs, lookupEnv)
 import System.Exit (exitFailure, exitSuccess)
 import System.Process (callProcess)
-import System.Directory (createDirectoryIfMissing, doesFileExist)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import qualified System.Directory
 import System.IO (hFlush, stdout, hPutStrLn, stderr)
 
 import Plexus (connect, disconnect, defaultConfig)
 import Plexus.Client (PlexusConfig(..), plexusRpc)
 import Plexus.Types (PlexusStreamItem(..))
-import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), extractSchemaEvent, extractActivationSchemaEvent, MethodSchema(..), parseMethodSchemas)
+import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), PlexusHash(..), PlexusHashEvent(..), extractSchemaEvent, extractActivationSchemaEvent, extractHashEvent, MethodSchema(..), parseMethodSchemas)
 import Plexus.Schema.Cache
 import Plexus.Dynamic (CommandInvocation(..), buildDynamicParserWithSchemas)
 import Plexus.Renderer (formatPrettyJson, RendererConfig)
@@ -193,6 +194,11 @@ main = do
         hPutStrLn stderr "Example: symbols-dyn --template arbor tree-list"
         exitFailure
 
+  -- Handle cache subcommand
+  when (not (null remaining) && head remaining == "cache") $ do
+    handleCacheCommand globalOpts (tail remaining)
+    exitSuccess
+
   -- Handle --help before loading schema
   when (null remaining || remaining == ["--help"] || remaining == ["-h"]) $ do
     cacheResult <- loadSchema globalOpts
@@ -221,7 +227,10 @@ main = do
         putStrLn "  -j, --json         Output raw JSON responses"
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         putStrLn ""
-        putStrLn "Available commands:"
+        putStrLn "Built-in commands:"
+        putStrLn "  cache              Manage schema cache (show, clear, status, refresh)"
+        putStrLn ""
+        putStrLn "Available activation commands:"
         mapM_ printActivation (schemaActivations (cachedSchema cached))
         exitFailure
 
@@ -290,8 +299,29 @@ loadSchema opts = do
   loadSchemaWithCache
     (optRefresh opts)
     config
+    (fetchHashFromSubstrate opts)
     (fetchSchemaFromSubstrate opts)
     (fetchEnrichedSchema opts)
+
+-- | Fetch plexus hash from substrate
+fetchHashFromSubstrate :: GlobalOpts -> IO (Either Text Text)
+fetchHashFromSubstrate opts = do
+  let plexusCfg = defaultConfig
+        { plexusHost = optHost opts
+        , plexusPort = optPort opts
+        }
+  doFetch plexusCfg `catch` \(e :: SomeException) ->
+    pure $ Left $ T.pack $ "Connection error: " <> show e
+  where
+    doFetch cfg = do
+      conn <- connect cfg
+      mHash <- S.head_ $ S.mapMaybe extractHashEvent $
+        plexusRpc conn "plexus_hash" (toJSON ([] :: [Value]))
+      disconnect conn
+      case mHash of
+        Just (HashData h) -> pure $ Right (plexusHash h)
+        Just (HashError e) -> pure $ Left e
+        Nothing -> pure $ Left "No hash received from substrate"
 
 -- | Fetch schema fresh from substrate
 fetchSchemaFromSubstrate :: GlobalOpts -> IO (Either Text PlexusSchema)
@@ -370,15 +400,15 @@ printResult opts _ _ _ item
   | optJson opts = LBS.putStrLn $ encode item
 printResult opts _ _ _ item
   | optRaw opts = case item of
-      StreamData _ _ dat -> LBS.putStrLn $ encode dat
-      StreamError _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
+      StreamData _ _ _ dat -> LBS.putStrLn $ encode dat
+      StreamError _ _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
 printResult _ rendererCfg namespace method item = case item of
-  StreamProgress _ msg _ -> do
+  StreamProgress _ _ msg _ -> do
     T.putStr msg
     putStr "\r"
     hFlush stdout
-  StreamData _ contentType dat -> do
+  StreamData _ _ contentType dat -> do
     -- Try to render with template
     result <- Renderer.render rendererCfg namespace method dat
     case result of
@@ -389,9 +419,87 @@ printResult _ rendererCfg namespace method item = case item of
         -- Fall back to pretty JSON
         T.putStrLn $ "=== " <> contentType <> " ==="
         T.putStrLn $ formatPrettyJson dat
-  StreamError _ err _ -> do
+  StreamError _ _ err _ -> do
     hPutStrLn stderr $ "Error: " <> T.unpack err
-  StreamDone _ -> pure ()
+  StreamDone _ _ -> pure ()
+
+-- ============================================================================
+-- Cache Command
+-- ============================================================================
+
+handleCacheCommand :: GlobalOpts -> [String] -> IO ()
+handleCacheCommand opts args = case args of
+  ["show"] -> showCache opts
+  ["clear"] -> clearCache
+  ["status"] -> cacheStatus opts
+  ["refresh"] -> refreshCache opts
+  _ -> do
+    hPutStrLn stderr "Usage: symbols-dyn cache COMMAND"
+    hPutStrLn stderr ""
+    hPutStrLn stderr "Commands:"
+    hPutStrLn stderr "  show      Show cache contents (hash, schemas)"
+    hPutStrLn stderr "  clear     Clear the cache"
+    hPutStrLn stderr "  status    Check if cache is fresh (matches current hash)"
+    hPutStrLn stderr "  refresh   Force refresh the cache"
+
+showCache :: GlobalOpts -> IO ()
+showCache _ = do
+  config <- defaultCacheConfig
+  mCached <- loadCache (cachePath config)
+  case mCached of
+    Nothing -> putStrLn "No cache found"
+    Just cached -> do
+      putStrLn "Cache contents:"
+      putStrLn $ "  Hash: " <> T.unpack (cachedHash cached)
+      putStrLn $ "  Activations: " <> show (length (schemaActivations (cachedSchema cached)))
+      putStrLn $ "  Enriched schemas: " <> show (Map.size (cachedEnriched cached))
+      putStrLn ""
+      putStrLn "Activations:"
+      mapM_ (\a -> putStrLn $ "  - " <> T.unpack (activationNamespace a) <>
+                              " (" <> show (length (activationMethods a)) <> " methods)")
+            (schemaActivations (cachedSchema cached))
+
+clearCache :: IO ()
+clearCache = do
+  config <- defaultCacheConfig
+  exists <- doesFileExist (cachePath config)
+  if exists
+    then do
+      removeFile (cachePath config)
+      putStrLn $ "Cache cleared: " <> cachePath config
+    else
+      putStrLn "No cache to clear"
+
+cacheStatus :: GlobalOpts -> IO ()
+cacheStatus opts = do
+  config <- defaultCacheConfig
+  mCached <- loadCache (cachePath config)
+  case mCached of
+    Nothing -> putStrLn "No cache found"
+    Just cached -> do
+      hashResult <- fetchHashFromSubstrate opts
+      case hashResult of
+        Left err -> do
+          hPutStrLn stderr $ "Failed to fetch current hash: " <> T.unpack err
+          putStrLn $ "Cached hash: " <> T.unpack (cachedHash cached)
+          putStrLn "Status: Unknown (can't reach substrate)"
+        Right currentHash -> do
+          putStrLn $ "Cached hash:  " <> T.unpack (cachedHash cached)
+          putStrLn $ "Current hash: " <> T.unpack currentHash
+          if isFresh currentHash cached
+            then putStrLn "Status: Fresh ✓"
+            else putStrLn "Status: Stale (hash mismatch)"
+
+refreshCache :: GlobalOpts -> IO ()
+refreshCache opts = do
+  putStrLn "Refreshing cache..."
+  result <- loadSchema (opts { optRefresh = True })
+  case result of
+    Left err -> hPutStrLn stderr $ "Failed to refresh: " <> T.unpack err
+    Right cached -> do
+      putStrLn $ "Cache refreshed successfully"
+      putStrLn $ "  Hash: " <> T.unpack (cachedHash cached)
+      putStrLn $ "  Activations: " <> show (length (schemaActivations (cachedSchema cached)))
 
 -- ============================================================================
 -- Help Formatting

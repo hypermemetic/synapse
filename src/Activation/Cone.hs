@@ -341,7 +341,7 @@ instance FromJSON ConeEvent where
 -- ============================================================================
 
 extractConeEvent :: PlexusStreamItem -> Maybe ConeEvent
-extractConeEvent (StreamData _ contentType dat)
+extractConeEvent (StreamData _ _ contentType dat)
   | contentType == "cone.event" =
       case fromJSON dat of
         Success evt -> Just evt

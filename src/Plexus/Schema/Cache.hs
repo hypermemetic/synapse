@@ -23,13 +23,13 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
 import GHC.Generics (Generic)
 import System.Directory (createDirectoryIfMissing, doesFileExist, getXdgDirectory, XdgDirectory(..))
 import System.FilePath ((</>), takeDirectory)
 
 import qualified Plexus.Schema
-import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), parseMethodSchemas)
+import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), parseMethodSchemas, PlexusHash(..), PlexusHashEvent(..), extractHashEvent)
+import Plexus.Types (PlexusStreamItem)
 
 -- ============================================================================
 -- Types
@@ -37,8 +37,7 @@ import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, Meth
 
 -- | Cached schema with metadata
 data CachedSchema = CachedSchema
-  { cachedAt        :: UTCTime                    -- ^ When the schema was cached
-  , cachedTTL       :: Int                        -- ^ TTL in seconds
+  { cachedHash      :: Text                       -- ^ Plexus hash for invalidation
   , cachedSchema    :: PlexusSchema               -- ^ The cached plexus schema
   , cachedEnriched  :: Map Text EnrichedSchema    -- ^ Enriched schemas by namespace
   }
@@ -47,23 +46,20 @@ data CachedSchema = CachedSchema
 instance FromJSON CachedSchema where
   parseJSON = withObject "CachedSchema" $ \o ->
     CachedSchema
-      <$> o .: "cached_at"
-      <*> o .: "ttl"
+      <$> o .: "hash"
       <*> o .: "schema"
       <*> o .:? "enriched" .!= Map.empty
 
 instance ToJSON CachedSchema where
   toJSON CachedSchema{..} = object
-    [ "cached_at" .= cachedAt
-    , "ttl"       .= cachedTTL
+    [ "hash"      .= cachedHash
     , "schema"    .= cachedSchema
     , "enriched"  .= cachedEnriched
     ]
 
 -- | Cache configuration
 data CacheConfig = CacheConfig
-  { cachePath    :: FilePath  -- ^ Path to cache file
-  , cacheTTLSecs :: Int       -- ^ TTL in seconds (default 3600 = 1 hour)
+  { cachePath :: FilePath  -- ^ Path to cache file
   }
   deriving stock (Show, Eq)
 
@@ -77,8 +73,7 @@ defaultCacheConfig :: IO CacheConfig
 defaultCacheConfig = do
   path <- defaultCachePath
   pure CacheConfig
-    { cachePath    = path
-    , cacheTTLSecs = 3600  -- 1 hour
+    { cachePath = path
     }
 
 -- | Get the default cache file path
@@ -113,39 +108,53 @@ saveCache path cached = do
   LBS.writeFile path (encode cached)
     `catch` \(_ :: SomeException) -> pure ()  -- Silently fail on write errors
 
--- | Check if a cached schema is still fresh
-isFresh :: CachedSchema -> IO Bool
-isFresh cached = do
-  now <- getCurrentTime
-  let age = diffUTCTime now (cachedAt cached)
-  pure $ age < fromIntegral (cachedTTL cached)
+-- | Check if a cached schema is still fresh (hash matches current hash)
+isFresh :: Text -> CachedSchema -> Bool
+isFresh currentHash cached = cachedHash cached == currentHash
 
 -- | Load schema with caching
 --
 -- 1. If forceRefresh is True, skip cache and fetch fresh
--- 2. Otherwise, try to load from cache
--- 3. If cache is fresh, return cached schema
--- 4. Otherwise, call the fetch function to get fresh schema and cache it
+-- 2. Otherwise, fetch current hash and compare with cached hash
+-- 3. If hashes match, return cached schema
+-- 4. Otherwise, fetch fresh schema and cache it with new hash
 loadSchemaWithCache
   :: Bool                                    -- ^ Force refresh (--refresh flag)
   -> CacheConfig                             -- ^ Cache configuration
+  -> IO (Either Text Text)                   -- ^ Fetch plexus hash
   -> IO (Either Text PlexusSchema)           -- ^ Fetch plexus schema
   -> (Text -> IO (Maybe EnrichedSchema))     -- ^ Fetch enriched schema for a namespace
   -> IO (Either Text CachedSchema)
-loadSchemaWithCache forceRefresh config fetchSchema fetchEnriched = do
+loadSchemaWithCache forceRefresh config fetchHash fetchSchema fetchEnriched = do
   if forceRefresh
     then fetchAndCache
     else do
-      mCached <- loadCache (cachePath config)
-      case mCached of
-        Nothing -> fetchAndCache
-        Just cached -> do
-          fresh <- isFresh cached
-          if fresh
-            then pure $ Right cached
-            else fetchAndCache
+      -- Fetch current hash
+      hashResult <- fetchHash
+      case hashResult of
+        Left err -> do
+          -- If we can't get hash, try to use cache anyway
+          mCached <- loadCache (cachePath config)
+          case mCached of
+            Just cached -> pure $ Right cached
+            Nothing -> pure $ Left err
+        Right currentHash -> do
+          -- Load cached schema
+          mCached <- loadCache (cachePath config)
+          case mCached of
+            Nothing -> fetchAndCacheWithHash currentHash
+            Just cached ->
+              if isFresh currentHash cached
+                then pure $ Right cached
+                else fetchAndCacheWithHash currentHash
   where
     fetchAndCache = do
+      hashResult <- fetchHash
+      case hashResult of
+        Left err -> pure $ Left err
+        Right hash -> fetchAndCacheWithHash hash
+
+    fetchAndCacheWithHash hash = do
       result <- fetchSchema
       case result of
         Left err -> do
@@ -157,10 +166,8 @@ loadSchemaWithCache forceRefresh config fetchSchema fetchEnriched = do
         Right schema -> do
           -- Fetch enriched schemas for all activations
           enriched <- fetchAllEnriched schema
-          now <- getCurrentTime
           let cached = CachedSchema
-                { cachedAt       = now
-                , cachedTTL      = cacheTTLSecs config
+                { cachedHash     = hash
                 , cachedSchema   = schema
                 , cachedEnriched = enriched
                 }

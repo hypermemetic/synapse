@@ -88,6 +88,19 @@ executable symbols-dyn
   default-extensions:
     OverloadedStrings
 
+executable schema-discovery
+  main-is:          SchemaDiscovery.hs
+  build-depends:
+    base,
+    symbols,
+    aeson,
+    text,
+    streaming
+  hs-source-dirs:   examples
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+
 test-suite arbor-test
   type:             exitcode-stdio-1.0
   main-is:          ArborTest.hs

@@ -16,6 +16,7 @@ module Plexus.Types
     -- * Helpers
   , mkSubscribeRequest
   , mkUnsubscribeRequest
+  , getPlexusHash
   ) where
 
 import Data.Aeson
@@ -135,82 +136,76 @@ instance ToJSON Provenance where
 -- | Unified stream item from the plexus
 data PlexusStreamItem
   = StreamProgress
-      { itemProvenance  :: Provenance
+      { itemPlexusHash  :: Text
+      , itemProvenance  :: Provenance
       , itemMessage     :: Text
       , itemPercentage  :: Maybe Double
       }
   | StreamData
-      { itemProvenance  :: Provenance
+      { itemPlexusHash  :: Text
+      , itemProvenance  :: Provenance
       , itemContentType :: Text
       , itemData        :: Value
       }
   | StreamError
-      { itemProvenance  :: Provenance
+      { itemPlexusHash  :: Text
+      , itemProvenance  :: Provenance
       , itemError       :: Text
       , itemRecoverable :: Bool
       }
   | StreamDone
-      { itemProvenance :: Provenance
+      { itemPlexusHash :: Text
+      , itemProvenance :: Provenance
       }
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON PlexusStreamItem where
   parseJSON = withObject "PlexusStreamItem" $ \o -> do
-    event <- o .: "event" :: Parser Text
-    dataObj <- o .: "data"
-    case event of
-      "progress" -> withObject "Progress" parseProgress dataObj
-      "data"     -> withObject "Data" parseData dataObj
-      "error"    -> withObject "Error" parseError dataObj
-      "done"     -> withObject "Done" parseDone dataObj
-      _          -> fail $ "Unknown event type: " <> show event
-    where
-      parseProgress o = StreamProgress
+    typ <- o .: "type" :: Parser Text
+    hash <- o .: "plexus_hash"
+    case typ of
+      "progress" -> StreamProgress hash
         <$> o .: "provenance"
         <*> o .: "message"
         <*> o .:? "percentage"
-
-      parseData o = StreamData
+      "data" -> StreamData hash
         <$> o .: "provenance"
         <*> o .: "content_type"
         <*> o .: "data"
-
-      parseError o = StreamError
+      "error" -> StreamError hash
         <$> o .: "provenance"
         <*> o .: "error"
         <*> o .: "recoverable"
-
-      parseDone o = StreamDone
+      "done" -> StreamDone hash
         <$> o .: "provenance"
+      _ -> fail $ "Unknown event type: " <> show typ
 
 instance ToJSON PlexusStreamItem where
-  toJSON (StreamProgress prov msg pct) = object
-    [ "event" .= ("progress" :: Text)
-    , "data"  .= object
-        [ "provenance" .= prov
-        , "message" .= msg
-        , "percentage" .= pct
-        ]
+  toJSON (StreamProgress hash prov msg pct) = object
+    [ "plexus_hash" .= hash
+    , "type" .= ("progress" :: Text)
+    , "provenance" .= prov
+    , "message" .= msg
+    , "percentage" .= pct
     ]
-  toJSON (StreamData prov ct dat) = object
-    [ "event" .= ("data" :: Text)
-    , "data"  .= object
-        [ "provenance" .= prov
-        , "content_type" .= ct
-        , "data" .= dat
-        ]
+  toJSON (StreamData hash prov ct dat) = object
+    [ "plexus_hash" .= hash
+    , "type" .= ("data" :: Text)
+    , "provenance" .= prov
+    , "content_type" .= ct
+    , "data" .= dat
     ]
-  toJSON (StreamError prov err rec) = object
-    [ "event" .= ("error" :: Text)
-    , "data"  .= object
-        [ "provenance" .= prov
-        , "error" .= err
-        , "recoverable" .= rec
-        ]
+  toJSON (StreamError hash prov err rec) = object
+    [ "plexus_hash" .= hash
+    , "type" .= ("error" :: Text)
+    , "provenance" .= prov
+    , "error" .= err
+    , "recoverable" .= rec
     ]
-  toJSON (StreamDone prov) = object
-    [ "event" .= ("done" :: Text)
-    , "data"  .= object ["provenance" .= prov]
+  toJSON (StreamDone hash prov) = object
+    [ "plexus_hash" .= hash
+    , "type" .= ("done" :: Text)
+    , "provenance" .= prov
     ]
 
 -- | Create a subscription request
@@ -230,3 +225,7 @@ mkUnsubscribeRequest rid unsubMethod subId = RpcRequest
   , rpcReqParams  = toJSON [unSubscriptionId subId]
   , rpcReqId      = rid
   }
+
+-- | Extract the plexus hash from a stream item
+getPlexusHash :: PlexusStreamItem -> Text
+getPlexusHash = itemPlexusHash

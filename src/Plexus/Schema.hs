@@ -11,6 +11,9 @@ module Plexus.Schema
   , EnrichedSchema(..)
   , SchemaProperty(..)
   , ActivationSchemaEvent(..)
+    -- * Hash Types
+  , PlexusHash(..)
+  , PlexusHashEvent(..)
     -- * Method Schema (parsed from enriched)
   , MethodSchema(..)
   , ParamSchema(..)
@@ -22,6 +25,7 @@ module Plexus.Schema
     -- * Stream Helpers
   , extractSchemaEvent
   , extractActivationSchemaEvent
+  , extractHashEvent
   ) where
 
 import Data.Aeson
@@ -146,6 +150,7 @@ data SchemaProperty = SchemaProperty
   , propDefault     :: Maybe Value
   , propEnum        :: Maybe [Value]
   , propProperties  :: Maybe (Map Text SchemaProperty)  -- ^ Nested object
+  , propRequired    :: Maybe [Text]      -- ^ Required fields for object types
   }
   deriving stock (Show, Eq, Generic)
 
@@ -159,6 +164,7 @@ instance FromJSON SchemaProperty where
       <*> o .:? "default"
       <*> o .:? "enum"
       <*> o .:? "properties"
+      <*> o .:? "required"
 
 instance ToJSON SchemaProperty where
   toJSON SchemaProperty{..} = object $ catMaybes
@@ -169,6 +175,7 @@ instance ToJSON SchemaProperty where
     , ("default" .=) <$> propDefault
     , ("enum" .=) <$> propEnum
     , ("properties" .=) <$> propProperties
+    , ("required" .=) <$> propRequired
     ]
 
 -- | Event wrapper for activation schema stream
@@ -185,6 +192,39 @@ instance FromJSON ActivationSchemaEvent where
         Just err -> pure $ ActivationSchemaError err
         Nothing  -> ActivationSchemaData <$> parseJSON val
     _ -> fail "ActivationSchemaEvent: expected object"
+
+-- ============================================================================
+-- Hash Types (from plexus_hash)
+-- ============================================================================
+
+-- | Plexus hash for cache invalidation
+data PlexusHash = PlexusHash
+  { plexusHash :: Text  -- ^ Hash of all activations (namespace:version:methods)
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON PlexusHash where
+  parseJSON = withObject "PlexusHash" $ \o ->
+    PlexusHash <$> o .: "hash"
+
+instance ToJSON PlexusHash where
+  toJSON PlexusHash{..} = object
+    [ "hash" .= plexusHash ]
+
+-- | Event wrapper for plexus hash stream
+data PlexusHashEvent
+  = HashData PlexusHash
+  | HashError Text
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON PlexusHashEvent where
+  parseJSON val = case val of
+    Object o -> do
+      mErr <- o .:? "error"
+      case mErr of
+        Just err -> pure $ HashError err
+        Nothing  -> HashData <$> parseJSON val
+    _ -> fail "PlexusHashEvent: expected object"
 
 -- ============================================================================
 -- Method Schema Types (parsed from EnrichedSchema)
@@ -251,7 +291,7 @@ parseMethodVariant variant = do
       mMethodName = methodProp >>= extractMethodName
   -- Get params from "params" property
   let params = case Map.lookup "params" props of
-        Just paramsProp -> extractParams paramsProp (schemaRequired variant)
+        Just paramsProp -> extractParams paramsProp (propRequired paramsProp)
         Nothing -> []
   -- Return schema even without method name (we'll use index-based lookup)
   pure MethodSchema
@@ -299,7 +339,7 @@ toParamSchema required (name, prop) = ParamSchema
 -- | Extract PlexusSchemaEvent from a stream item
 -- The plexus_schema subscription uses content_type "plexus.schema"
 extractSchemaEvent :: PlexusStreamItem -> Maybe PlexusSchemaEvent
-extractSchemaEvent (StreamData _ contentType dat)
+extractSchemaEvent (StreamData _ _ contentType dat)
   | contentType == "plexus.schema" =
       case fromJSON dat of
         Success evt -> Just evt
@@ -310,11 +350,23 @@ extractSchemaEvent _ = Nothing
 -- | Extract ActivationSchemaEvent from a stream item
 -- The plexus_activation_schema subscription uses content_type "plexus.activation_schema"
 extractActivationSchemaEvent :: PlexusStreamItem -> Maybe ActivationSchemaEvent
-extractActivationSchemaEvent (StreamData _ contentType dat)
+extractActivationSchemaEvent (StreamData _ _ contentType dat)
   | contentType == "plexus.activation_schema" =
       case fromJSON dat of
         Success schema -> Just (ActivationSchemaData schema)
         Error _        -> Nothing
   | otherwise = Nothing
-extractActivationSchemaEvent (StreamError _ err _) = Just (ActivationSchemaError err)
+extractActivationSchemaEvent (StreamError _ _ err _) = Just (ActivationSchemaError err)
 extractActivationSchemaEvent _ = Nothing
+
+-- | Extract PlexusHashEvent from a stream item
+-- The plexus_hash subscription uses content_type "plexus.hash"
+extractHashEvent :: PlexusStreamItem -> Maybe PlexusHashEvent
+extractHashEvent (StreamData _ _ contentType dat)
+  | contentType == "plexus.hash" =
+      case fromJSON dat of
+        Success hash -> Just (HashData hash)
+        Error _      -> Nothing
+  | otherwise = Nothing
+extractHashEvent (StreamError _ _ err _) = Just (HashError err)
+extractHashEvent _ = Nothing

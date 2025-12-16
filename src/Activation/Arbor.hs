@@ -283,7 +283,7 @@ instance FromJSON ArborEvent where
 -- ============================================================================
 
 extractArborEvent :: PlexusStreamItem -> Maybe ArborEvent
-extractArborEvent (StreamData _ contentType dat)
+extractArborEvent (StreamData _ _ contentType dat)
   | contentType == "arbor.event" =
       case fromJSON dat of
         Success evt -> Just evt

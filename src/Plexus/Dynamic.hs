@@ -115,8 +115,9 @@ buildMethodParser namespace method = do
 -- | Build a parser for a method with typed parameters from MethodSchema
 buildTypedMethodParser :: Text -> Text -> MethodSchema -> Parser CommandInvocation
 buildTypedMethodParser namespace method schema = do
-  -- Parse each parameter as a typed flag
-  paramValues <- sequenceA $ map buildParamParser (methodParams schema)
+  -- Parse each parameter as a typed flag (required params first)
+  let sortedParams = sortOn (not . paramRequired) (methodParams schema)
+  paramValues <- sequenceA $ map buildParamParser sortedParams
 
   -- Also allow raw JSON override
   mJsonOverride <- optional $ strOption

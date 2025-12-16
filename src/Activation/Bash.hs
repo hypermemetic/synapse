@@ -36,7 +36,7 @@ execute :: PlexusConnection -> Text -> Stream (Of BashEvent) IO ()
 execute conn cmd = S.mapMaybe extractBashEvent $ plexusRpc conn "bash_execute" (toJSON [cmd])
 
 extractBashEvent :: PlexusStreamItem -> Maybe BashEvent
-extractBashEvent (StreamData _ contentType dat)
+extractBashEvent (StreamData _ _ contentType dat)
   | contentType == "bash.event" =
       case fromJSON dat of
         Success evt -> Just evt

@@ -39,7 +39,7 @@ check :: PlexusConnection -> Stream (Of HealthEvent) IO ()
 check conn = S.mapMaybe extractHealthEvent $ plexusRpc conn "health_check" (toJSON ([] :: [Value]))
 
 extractHealthEvent :: PlexusStreamItem -> Maybe HealthEvent
-extractHealthEvent (StreamData _ contentType dat)
+extractHealthEvent (StreamData _ _ contentType dat)
   | contentType == "health.event" =
       case fromJSON dat of
         Success evt -> Just evt
