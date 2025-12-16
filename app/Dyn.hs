@@ -11,6 +11,8 @@ import Control.Exception (SomeException, catch)
 import Data.Aeson (Value(..), encode, toJSON)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as T
@@ -380,8 +382,11 @@ executeCommand opts CommandInvocation{..} = do
   -- Parse namespace and method from invMethod (e.g., "arbor_tree_list" -> ("arbor", "tree_list"))
   let (namespace, method) = parseMethodName invMethod
 
+  -- Create IORef for storing pending guidance
+  guidanceRef <- newIORef Nothing
+
   -- Execute RPC call with rendering
-  S.mapM_ (printResult opts rendererCfg namespace method) $
+  S.mapM_ (printResult opts rendererCfg namespace method guidanceRef) $
     plexusRpc conn invMethod invParams
 
   disconnect conn
@@ -395,15 +400,15 @@ parseMethodName methodName =
     _ -> (methodName, "")
 
 -- | Print a stream item with template rendering
-printResult :: GlobalOpts -> RendererConfig -> Text -> Text -> PlexusStreamItem -> IO ()
-printResult opts _ _ _ item
+printResult :: GlobalOpts -> RendererConfig -> Text -> Text -> IORef (Maybe PlexusStreamItem) -> PlexusStreamItem -> IO ()
+printResult opts _ _ _ _ item
   | optJson opts = LBS.putStrLn $ encode item
-printResult opts _ _ _ item
+printResult opts _ _ _ _ item
   | optRaw opts = case item of
       StreamData _ _ _ dat -> LBS.putStrLn $ encode dat
       StreamError _ _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
-printResult _ rendererCfg namespace method item = case item of
+printResult _ rendererCfg namespace method guidanceRef item = case item of
   StreamProgress _ _ msg _ -> do
     T.putStr msg
     putStr "\r"
@@ -419,9 +424,60 @@ printResult _ rendererCfg namespace method item = case item of
         -- Fall back to pretty JSON
         T.putStrLn $ "=== " <> contentType <> " ==="
         T.putStrLn $ formatPrettyJson dat
+  StreamGuidance{} -> do
+    -- Store guidance for pairing with next error
+    writeIORef guidanceRef (Just item)
   StreamError _ _ err _ -> do
-    hPutStrLn stderr $ "Error: " <> T.unpack err
+    -- Check if we have pending guidance
+    mbGuidance <- readIORef guidanceRef
+    writeIORef guidanceRef Nothing
+
+    case mbGuidance of
+      Just guidance -> do
+        -- Error with guidance - format with helpful suggestions
+        hPutStrLn stderr $ "Error: " <> T.unpack err
+        hPutStrLn stderr ""
+        T.hPutStrLn stderr $ formatGuidance guidance
+      Nothing -> do
+        -- ExecutionError - no guidance
+        hPutStrLn stderr $ "Error: " <> T.unpack err
   StreamDone _ _ -> pure ()
+
+-- | Format guidance into user-friendly suggestion text
+formatGuidance :: PlexusStreamItem -> Text
+formatGuidance StreamGuidance{..} =
+  case itemErrorKind of
+    "activation_not_found" ->
+      T.unlines
+        [ "Activation '" <> fromMaybe "unknown" itemActivation <> "' not found"
+        , ""
+        , "Try: symbols-dyn --help"
+        ]
+
+    "method_not_found" ->
+      let availMethods = case itemAvailableMethods of
+            Just methods -> "Available methods: " <> T.intercalate ", " methods
+            Nothing -> "Run 'symbols-dyn " <> fromMaybe "activation" itemActivation <> " --help' to see available methods"
+      in T.unlines
+        [ availMethods
+        , ""
+        , "Try: symbols-dyn " <> fromMaybe "activation" itemActivation <> " --help"
+        ]
+
+    "invalid_params" ->
+      let reason = fromMaybe "Invalid parameters" itemReason
+          namespace = fromMaybe "activation" itemNamespace
+      in T.unlines
+        [ reason
+        , ""
+        , "Try: symbols-dyn " <> namespace <> " --help"
+        ]
+
+    _ -> case itemAction of
+      "custom" -> "Suggestion: " <> fromMaybe "Check your parameters" itemGuidanceMessage
+      _ -> "Try: symbols-dyn --help"
+
+formatGuidance _ = "Try: symbols-dyn --help"
 
 -- ============================================================================
 -- Cache Command

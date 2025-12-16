@@ -22,6 +22,7 @@ module Plexus.Types
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import qualified Data.ByteString.Lazy as LBS
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
@@ -147,6 +148,20 @@ data PlexusStreamItem
       , itemContentType :: Text
       , itemData        :: Value
       }
+  | StreamGuidance
+      { itemPlexusHash        :: Text
+      , itemProvenance        :: Provenance
+      , itemErrorKind         :: Text
+      , itemAction            :: Text
+      , itemActivation        :: Maybe Text
+      , itemMethod            :: Maybe Text
+      , itemAvailableMethods  :: Maybe [Text]
+      , itemMethodSchema      :: Maybe Value
+      , itemReason            :: Maybe Text
+      , itemNamespace         :: Maybe Text
+      , itemGuidanceMessage   :: Maybe Text
+      , itemExampleParams     :: Maybe Value
+      }
   | StreamError
       { itemPlexusHash  :: Text
       , itemProvenance  :: Provenance
@@ -172,6 +187,18 @@ instance FromJSON PlexusStreamItem where
         <$> o .: "provenance"
         <*> o .: "content_type"
         <*> o .: "data"
+      "guidance" -> StreamGuidance hash
+        <$> o .: "provenance"
+        <*> o .: "error_kind"
+        <*> o .: "action"
+        <*> o .:? "activation"
+        <*> o .:? "method"
+        <*> o .:? "available_methods"
+        <*> o .:? "method_schema"
+        <*> o .:? "reason"
+        <*> o .:? "namespace"
+        <*> o .:? "message"
+        <*> o .:? "example_params"
       "error" -> StreamError hash
         <$> o .: "provenance"
         <*> o .: "error"
@@ -194,6 +221,22 @@ instance ToJSON PlexusStreamItem where
     , "provenance" .= prov
     , "content_type" .= ct
     , "data" .= dat
+    ]
+  toJSON (StreamGuidance hash prov errorKind action activation method availMethods methodSchema reason namespace msg exampleParams) = object $
+    [ "plexus_hash" .= hash
+    , "type" .= ("guidance" :: Text)
+    , "provenance" .= prov
+    , "error_kind" .= errorKind
+    , "action" .= action
+    ] <> catMaybes
+    [ ("activation" .=) <$> activation
+    , ("method" .=) <$> method
+    , ("available_methods" .=) <$> availMethods
+    , ("method_schema" .=) <$> methodSchema
+    , ("reason" .=) <$> reason
+    , ("namespace" .=) <$> namespace
+    , ("message" .=) <$> msg
+    , ("example_params" .=) <$> exampleParams
     ]
   toJSON (StreamError hash prov err rec) = object
     [ "plexus_hash" .= hash
