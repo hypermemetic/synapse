@@ -27,7 +27,7 @@ import System.IO (hFlush, stdout, hPutStrLn, stderr)
 
 import Plexus (connect, disconnect, defaultConfig)
 import Plexus.Client (PlexusConfig(..), plexusRpc)
-import Plexus.Types (PlexusStreamItem(..))
+import Plexus.Types (PlexusStreamItem(..), GuidanceErrorType(..), GuidanceSuggestion(..))
 import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), PlexusHash(..), PlexusHashEvent(..), extractSchemaEvent, extractActivationSchemaEvent, extractHashEvent, MethodSchema(..), parseMethodSchemas)
 import Plexus.Schema.Cache
 import Plexus.Dynamic (CommandInvocation(..), buildDynamicParserWithSchemas)
@@ -446,38 +446,43 @@ printResult _ rendererCfg namespace method guidanceRef item = case item of
 -- | Format guidance into user-friendly suggestion text
 formatGuidance :: PlexusStreamItem -> Text
 formatGuidance StreamGuidance{..} =
-  case itemErrorKind of
-    "activation_not_found" ->
+  case itemErrorType of
+    ActivationNotFound activation ->
       T.unlines
-        [ "Activation '" <> fromMaybe "unknown" itemActivation <> "' not found"
+        [ "Activation '" <> activation <> "' not found"
         , ""
-        , "Try: symbols-dyn --help"
+        , formatSuggestion itemSuggestion
         ]
 
-    "method_not_found" ->
+    MethodNotFound activation method ->
       let availMethods = case itemAvailableMethods of
             Just methods -> "Available methods: " <> T.intercalate ", " methods
-            Nothing -> "Run 'symbols-dyn " <> fromMaybe "activation" itemActivation <> " --help' to see available methods"
+            Nothing -> "Run 'symbols-dyn " <> activation <> " --help' to see available methods"
       in T.unlines
-        [ availMethods
+        [ "Method '" <> method <> "' not found in activation '" <> activation <> "'"
+        , availMethods
         , ""
-        , "Try: symbols-dyn " <> fromMaybe "activation" itemActivation <> " --help"
+        , formatSuggestion itemSuggestion
         ]
 
-    "invalid_params" ->
-      let reason = fromMaybe "Invalid parameters" itemReason
-          namespace = fromMaybe "activation" itemNamespace
-      in T.unlines
-        [ reason
+    InvalidParams method reason ->
+      T.unlines
+        [ "Invalid parameters for '" <> method <> "': " <> reason
         , ""
-        , "Try: symbols-dyn " <> namespace <> " --help"
+        , formatSuggestion itemSuggestion
         ]
-
-    _ -> case itemAction of
-      "custom" -> "Suggestion: " <> fromMaybe "Check your parameters" itemGuidanceMessage
-      _ -> "Try: symbols-dyn --help"
 
 formatGuidance _ = "Try: symbols-dyn --help"
+
+-- | Format suggestion into actionable CLI command
+formatSuggestion :: GuidanceSuggestion -> Text
+formatSuggestion CallPlexusSchema = "Try: symbols-dyn --help"
+formatSuggestion (CallActivationSchema namespace) = "Try: symbols-dyn " <> namespace <> " --help"
+formatSuggestion (TryMethod method mbParams) =
+  case mbParams of
+    Just params -> "Try: symbols-dyn with method '" <> method <> "' and params: " <> T.pack (show params)
+    Nothing -> "Try: symbols-dyn " <> method <> " --help"
+formatSuggestion (CustomGuidance message) = "Suggestion: " <> message
 
 -- ============================================================================
 -- Cache Command

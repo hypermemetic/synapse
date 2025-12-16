@@ -12,6 +12,8 @@ module Plexus.Types
     -- * Plexus Stream Types
   , PlexusStreamItem(..)
   , Provenance(..)
+  , GuidanceErrorType(..)
+  , GuidanceSuggestion(..)
 
     -- * Helpers
   , mkSubscribeRequest
@@ -134,6 +136,86 @@ instance FromJSON Provenance where
 instance ToJSON Provenance where
   toJSON (Provenance segs) = object ["segments" .= segs]
 
+-- | Error type from guidance events
+data GuidanceErrorType
+  = ActivationNotFound
+      { errorActivation :: Text
+      }
+  | MethodNotFound
+      { errorActivation :: Text
+      , errorMethod     :: Text
+      }
+  | InvalidParams
+      { errorMethod :: Text
+      , errorReason :: Text
+      }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON GuidanceErrorType where
+  parseJSON = withObject "GuidanceErrorType" $ \o -> do
+    kind <- o .: "error_kind" :: Parser Text
+    case kind of
+      "activation_not_found" -> ActivationNotFound <$> o .: "activation"
+      "method_not_found" -> MethodNotFound <$> o .: "activation" <*> o .: "method"
+      "invalid_params" -> InvalidParams <$> o .: "method" <*> o .: "reason"
+      _ -> fail $ "Unknown error_kind: " <> T.unpack kind
+
+instance ToJSON GuidanceErrorType where
+  toJSON (ActivationNotFound activation) = object
+    [ "error_kind" .= ("activation_not_found" :: Text)
+    , "activation" .= activation
+    ]
+  toJSON (MethodNotFound activation method) = object
+    [ "error_kind" .= ("method_not_found" :: Text)
+    , "activation" .= activation
+    , "method" .= method
+    ]
+  toJSON (InvalidParams method reason) = object
+    [ "error_kind" .= ("invalid_params" :: Text)
+    , "method" .= method
+    , "reason" .= reason
+    ]
+
+-- | Suggestion for next action from guidance events
+data GuidanceSuggestion
+  = CallPlexusSchema
+  | CallActivationSchema
+      { suggestionNamespace :: Text
+      }
+  | TryMethod
+      { suggestionMethod       :: Text
+      , suggestionExampleParams :: Maybe Value
+      }
+  | CustomGuidance
+      { suggestionMessage :: Text
+      }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON GuidanceSuggestion where
+  parseJSON = withObject "GuidanceSuggestion" $ \o -> do
+    action <- o .: "action" :: Parser Text
+    case action of
+      "call_plexus_schema" -> pure CallPlexusSchema
+      "call_activation_schema" -> CallActivationSchema <$> o .: "namespace"
+      "try_method" -> TryMethod <$> o .: "method" <*> o .:? "example_params"
+      "custom" -> CustomGuidance <$> o .: "message"
+      _ -> fail $ "Unknown action: " <> T.unpack action
+
+instance ToJSON GuidanceSuggestion where
+  toJSON CallPlexusSchema = object ["action" .= ("call_plexus_schema" :: Text)]
+  toJSON (CallActivationSchema namespace) = object
+    [ "action" .= ("call_activation_schema" :: Text)
+    , "namespace" .= namespace
+    ]
+  toJSON (TryMethod method exampleParams) = object $
+    [ "action" .= ("try_method" :: Text)
+    , "method" .= method
+    ] <> catMaybes [("example_params" .=) <$> exampleParams]
+  toJSON (CustomGuidance message) = object
+    [ "action" .= ("custom" :: Text)
+    , "message" .= message
+    ]
+
 -- | Unified stream item from the plexus
 data PlexusStreamItem
   = StreamProgress
@@ -151,16 +233,10 @@ data PlexusStreamItem
   | StreamGuidance
       { itemPlexusHash        :: Text
       , itemProvenance        :: Provenance
-      , itemErrorKind         :: Text
-      , itemAction            :: Text
-      , itemActivation        :: Maybe Text
-      , itemMethod            :: Maybe Text
+      , itemErrorType         :: GuidanceErrorType
+      , itemSuggestion        :: GuidanceSuggestion
       , itemAvailableMethods  :: Maybe [Text]
       , itemMethodSchema      :: Maybe Value
-      , itemReason            :: Maybe Text
-      , itemNamespace         :: Maybe Text
-      , itemGuidanceMessage   :: Maybe Text
-      , itemExampleParams     :: Maybe Value
       }
   | StreamError
       { itemPlexusHash  :: Text
@@ -189,16 +265,10 @@ instance FromJSON PlexusStreamItem where
         <*> o .: "data"
       "guidance" -> StreamGuidance hash
         <$> o .: "provenance"
-        <*> o .: "error_kind"
-        <*> o .: "action"
-        <*> o .:? "activation"
-        <*> o .:? "method"
+        <*> o .: "error_type"
+        <*> o .: "suggestion"
         <*> o .:? "available_methods"
         <*> o .:? "method_schema"
-        <*> o .:? "reason"
-        <*> o .:? "namespace"
-        <*> o .:? "message"
-        <*> o .:? "example_params"
       "error" -> StreamError hash
         <$> o .: "provenance"
         <*> o .: "error"
@@ -222,21 +292,15 @@ instance ToJSON PlexusStreamItem where
     , "content_type" .= ct
     , "data" .= dat
     ]
-  toJSON (StreamGuidance hash prov errorKind action activation method availMethods methodSchema reason namespace msg exampleParams) = object $
+  toJSON (StreamGuidance hash prov errorType suggestion availMethods methodSchema) = object $
     [ "plexus_hash" .= hash
     , "type" .= ("guidance" :: Text)
     , "provenance" .= prov
-    , "error_kind" .= errorKind
-    , "action" .= action
+    , "error_type" .= errorType
+    , "suggestion" .= suggestion
     ] <> catMaybes
-    [ ("activation" .=) <$> activation
-    , ("method" .=) <$> method
-    , ("available_methods" .=) <$> availMethods
+    [ ("available_methods" .=) <$> availMethods
     , ("method_schema" .=) <$> methodSchema
-    , ("reason" .=) <$> reason
-    , ("namespace" .=) <$> namespace
-    , ("message" .=) <$> msg
-    , ("example_params" .=) <$> exampleParams
     ]
   toJSON (StreamError hash prov err rec) = object
     [ "plexus_hash" .= hash
