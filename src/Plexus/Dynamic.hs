@@ -202,11 +202,7 @@ buildParamParserFromSchema required (name, schema) = do
         ( long flagName
        <> help helpText
         )
-      _ -> toJSON <$> (strOption
-        ( long flagName
-       <> metavar metaVar
-       <> help helpText
-        ) :: Parser String)
+      _ -> parseStringParam name flagName metaVar helpText
 
     optionalParser :: Parser Value
     optionalParser = case typeStr of
@@ -224,11 +220,40 @@ buildParamParserFromSchema required (name, schema) = do
         ( long flagName
        <> help helpText
         )
-      _ -> toJSON <$> (strOption
-        ( long flagName
-       <> metavar metaVar
-       <> help helpText
-        ) :: Parser String)
+      _ -> parseStringParam name flagName metaVar helpText
+
+-- | Parse a string parameter with smart transformations
+parseStringParam :: Text -> String -> String -> String -> Parser Value
+parseStringParam paramName flagName metaVar helpText =
+  case paramName of
+    "identifier" -> smartConeIdentifier <$> strOption
+      ( long flagName
+     <> metavar metaVar
+     <> help helpText
+      )
+    _ -> toJSON <$> (strOption
+      ( long flagName
+     <> metavar metaVar
+     <> help helpText
+      ) :: Parser String)
+
+-- | Smart parser for ConeIdentifier - detects UUID vs name
+smartConeIdentifier :: String -> Value
+smartConeIdentifier input
+  | looksLikeUUID (T.pack input) = object
+      [ "by_id" .= object ["id" .= input] ]
+  | otherwise = object
+      [ "by_name" .= object ["name" .= input] ]
+
+-- | Check if a string looks like a UUID (8-4-4-4-12 format)
+looksLikeUUID :: Text -> Bool
+looksLikeUUID t =
+  let parts = T.splitOn "-" t
+  in length parts == 5
+     && map T.length parts == [8, 4, 4, 4, 12]
+     && T.all isHexDigit (T.filter (/= '-') t)
+  where
+    isHexDigit c = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
 
 -- | Build a parser for a method with generic --params JSON
 buildMethodParser :: Text -> Text -> Parser CommandInvocation
@@ -303,8 +328,7 @@ buildParamParser param = do
         ( long flagName <> metavar metaVar <> help helpText ) :: Parser Integer)
       ParamNumber -> toJSON <$> (option auto
         ( long flagName <> metavar metaVar <> help helpText ) :: Parser Double)
-      _ -> toJSON <$> (strOption
-        ( long flagName <> metavar metaVar <> help helpText ) :: Parser String)
+      _ -> parseStringParam (paramName param) flagName metaVar helpText
 
     optionalParser :: Parser Value
     optionalParser = case paramType param of
@@ -314,8 +338,7 @@ buildParamParser param = do
         ( long flagName <> metavar metaVar <> help helpText ) :: Parser Integer)
       ParamNumber -> toJSON <$> (option auto
         ( long flagName <> metavar metaVar <> help helpText ) :: Parser Double)
-      _ -> toJSON <$> (strOption
-        ( long flagName <> metavar metaVar <> help helpText ) :: Parser String)
+      _ -> parseStringParam (paramName param) flagName metaVar helpText
 
 -- | Build JSON object from parsed parameter values
 buildParamsObject :: [(Text, Maybe Value)] -> Value
@@ -324,9 +347,15 @@ buildParamsObject params = Object $ KM.fromList
   | (key, Just val) <- params
   ]
 
--- | Convert parameter name to flag name (snake_case to kebab-case)
+-- | Apply parameter name aliases for better UX
+applyParamAlias :: Text -> Text
+applyParamAlias name = case name of
+  "identifier" -> "id"
+  _ -> name
+
+-- | Convert parameter name to flag name (snake_case to kebab-case, with aliases)
 toFlagName :: Text -> String
-toFlagName = T.unpack . T.replace "_" "-"
+toFlagName name = T.unpack . T.replace "_" "-" $ applyParamAlias name
 
 -- | Get metavar for a parameter based on its type
 paramMetavar :: ParamSchema -> String
