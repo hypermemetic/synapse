@@ -261,8 +261,8 @@ main = do
       exitFailure
     CompletionInvoked _ -> exitFailure
 
-  -- Execute the RPC call
-  executeCommand globalOpts invocation
+  -- Execute the RPC call (pass schema info for showing help on errors)
+  executeCommand globalOpts invocation schema fullSchemas
 
 -- | Split args into global and remaining
 -- Global args are: --refresh, -r, --host, -H, --port, -P, --json, -j
@@ -363,8 +363,8 @@ fetchFullSchema opts namespace = do
 -- Command Execution
 -- ============================================================================
 
-executeCommand :: GlobalOpts -> CommandInvocation -> IO ()
-executeCommand opts CommandInvocation{..} = do
+executeCommand :: GlobalOpts -> CommandInvocation -> PlexusSchema -> Map.Map Text ActivationFullSchema -> IO ()
+executeCommand opts CommandInvocation{..} schema fullSchemas = do
   let config = defaultConfig
         { plexusHost = optHost opts
         , plexusPort = optPort opts
@@ -381,7 +381,7 @@ executeCommand opts CommandInvocation{..} = do
   guidanceRef <- newIORef Nothing
 
   -- Execute RPC call with rendering
-  S.mapM_ (printResult opts rendererCfg namespace method guidanceRef) $
+  S.mapM_ (printResult opts rendererCfg namespace method guidanceRef schema fullSchemas) $
     plexusRpc conn invMethod invParams
 
   disconnect conn
@@ -395,15 +395,15 @@ parseMethodName methodName =
     _ -> (methodName, "")
 
 -- | Print a stream item with template rendering
-printResult :: GlobalOpts -> RendererConfig -> Text -> Text -> IORef (Maybe PlexusStreamItem) -> PlexusStreamItem -> IO ()
-printResult opts _ _ _ _ item
+printResult :: GlobalOpts -> RendererConfig -> Text -> Text -> IORef (Maybe PlexusStreamItem) -> PlexusSchema -> Map.Map Text ActivationFullSchema -> PlexusStreamItem -> IO ()
+printResult opts _ _ _ _ _ _ item
   | optJson opts = LBS.putStrLn $ encode item
-printResult opts _ _ _ _ item
+printResult opts _ _ _ _ _ _ item
   | optRaw opts = case item of
       StreamData _ _ _ dat -> LBS.putStrLn $ encode dat
       StreamError _ _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
-printResult _ rendererCfg namespace method guidanceRef item = case item of
+printResult _ rendererCfg namespace method guidanceRef schema fullSchemas item = case item of
   StreamProgress _ _ msg _ -> do
     T.putStr msg
     putStr "\r"
@@ -439,10 +439,27 @@ printResult _ rendererCfg namespace method guidanceRef item = case item of
           then do
             hPutStrLn stderr $ "Error: " <> T.unpack err
             hPutStrLn stderr ""
-            hPutStrLn stderr $ "Run 'symbols-dyn " <> T.unpack namespace <> " " <> T.unpack method <> " --help' for usage information"
+            -- Show the actual help for this command
+            showCommandHelp namespace method schema fullSchemas
           else
             hPutStrLn stderr $ "Error: " <> T.unpack err
   StreamDone _ _ -> pure ()
+
+-- | Show command-specific help when params are invalid
+showCommandHelp :: Text -> Text -> PlexusSchema -> Map.Map Text ActivationFullSchema -> IO ()
+showCommandHelp namespace method schema fullSchemas = do
+  -- Build the parser for this specific command
+  let dynamicInfo = info (buildDynamicParserWithSchemas schema fullSchemas <**> helper)
+        ( fullDesc
+       <> progDesc "Execute Plexus RPC methods"
+        )
+  -- Parse with --help to generate help output
+  let args = [T.unpack namespace, T.unpack method, "--help"]
+  case execParserPure defaultPrefs dynamicInfo args of
+    Failure helpErr -> do
+      let (msg, _) = renderFailure helpErr "symbols-dyn"
+      putStrLn msg
+    _ -> pure ()
 
 -- | Check if an error is a parameter-related error
 isParamError :: Text -> Bool
@@ -599,8 +616,8 @@ handleCallCommand opts args = case args of
         -- Create IORef for guidance tracking
         guidanceRef <- newIORef Nothing
 
-        -- Stream results
-        S.mapM_ (printResult opts rendererCfg "" (T.pack method) guidanceRef) $
+        -- Stream results (no schema for generic call command)
+        S.mapM_ (printResult opts rendererCfg "" (T.pack method) guidanceRef (PlexusSchema [] 0) Map.empty) $
           plexusRpc conn (T.pack method) params
 
         disconnect conn
