@@ -8,7 +8,7 @@
 module Main where
 
 import Control.Exception (SomeException, catch)
-import Data.Aeson (Value(..), encode, toJSON)
+import Data.Aeson (Value(..), encode, toJSON, eitherDecode)
 import qualified Data.Aeson as Aeson
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
@@ -201,6 +201,11 @@ main = do
     handleCacheCommand globalOpts (tail remaining)
     exitSuccess
 
+  -- Handle call subcommand: direct RPC invocation
+  when (not (null remaining) && head remaining == "call") $ do
+    handleCallCommand globalOpts (tail remaining)
+    exitSuccess
+
   -- Handle --help before loading schema
   when (null remaining || remaining == ["--help"] || remaining == ["-h"]) $ do
     cacheResult <- loadSchema globalOpts
@@ -231,6 +236,7 @@ main = do
         putStrLn ""
         putStrLn "Built-in commands:"
         putStrLn "  cache              Manage schema cache (show, clear, status, refresh)"
+        putStrLn "  call               Call any RPC method directly with JSON params"
         putStrLn ""
         putStrLn "Available activation commands:"
         mapM_ printActivation (schemaActivations (cachedSchema cached))
@@ -561,6 +567,48 @@ refreshCache opts = do
       putStrLn $ "Cache refreshed successfully"
       putStrLn $ "  Hash: " <> T.unpack (cachedHash cached)
       putStrLn $ "  Activations: " <> show (length (schemaActivations (cachedSchema cached)))
+
+-- ============================================================================
+-- Call Command (Direct RPC invocation)
+-- ============================================================================
+
+handleCallCommand :: GlobalOpts -> [String] -> IO ()
+handleCallCommand opts args = case args of
+  [method, paramsJson] -> do
+    -- Parse JSON params
+    case eitherDecode (LBS.pack paramsJson) of
+      Left err -> do
+        hPutStrLn stderr $ "Invalid JSON params: " <> err
+        hPutStrLn stderr "Example: symbols-dyn call plexus_schema '[]'"
+        exitFailure
+      Right params -> do
+        -- Connect and make RPC call
+        let config = defaultConfig
+              { plexusHost = optHost opts
+              , plexusPort = optPort opts
+              }
+        conn <- connect config
+
+        -- Load renderer config
+        rendererCfg <- Renderer.defaultConfig
+
+        -- Create IORef for guidance tracking
+        guidanceRef <- newIORef Nothing
+
+        -- Stream results
+        S.mapM_ (printResult opts rendererCfg "" (T.pack method) guidanceRef) $
+          plexusRpc conn (T.pack method) params
+
+        disconnect conn
+  _ -> do
+    hPutStrLn stderr "Usage: symbols-dyn call METHOD PARAMS_JSON"
+    hPutStrLn stderr ""
+    hPutStrLn stderr "Examples:"
+    hPutStrLn stderr "  symbols-dyn call plexus_schema '[]'"
+    hPutStrLn stderr "  symbols-dyn call plexus_activation_schema '[\"cone\"]'"
+    hPutStrLn stderr "  symbols-dyn call plexus_hash '[]'"
+    hPutStrLn stderr "  symbols-dyn call arbor_tree_list '{}'"
+    hPutStrLn stderr "  symbols-dyn call cone_chat '{\"identifier\":{\"by_name\":{\"name\":\"test\"}},\"prompt\":\"hi\"}'"
 
 -- ============================================================================
 -- Help Formatting

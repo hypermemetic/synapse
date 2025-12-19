@@ -22,3 +22,37 @@ print(f'{filename}_your-title.md')
 ```
 
 This "chronological bubbling" helps prioritize recent architectural decisions.
+
+## Plexus RPC Examples
+
+The plexus server runs on `ws://localhost:4444`. Use `websocat` to interact with it.
+
+### List all activations
+```bash
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_schema","params":[]}'; sleep 1) | websocat ws://localhost:4444
+```
+
+### Get activation schema (method enum style)
+```bash
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_activation_schema","params":["bash"]}'; sleep 1) | websocat ws://localhost:4444
+```
+
+### Get full schema with params and return types
+```bash
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_full_schema","params":["bash"]}'; sleep 1) | websocat ws://localhost:4444
+```
+
+### Call a method (bash execute example)
+```bash
+# Named params
+(echo '{"jsonrpc":"2.0","id":1,"method":"bash_execute","params":{"command":"echo hello"}}'; sleep 2) | websocat ws://localhost:4444
+
+# Positional params
+(echo '{"jsonrpc":"2.0","id":1,"method":"bash_execute","params":["ls -la"]}'; sleep 2) | websocat ws://localhost:4444
+```
+
+### Interactive session
+```bash
+websocat ws://localhost:4444
+# Then paste JSON-RPC calls manually
+```
