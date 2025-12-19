@@ -8,6 +8,7 @@
 module Main where
 
 import Control.Exception (SomeException, catch)
+import Control.Monad (forM_)
 import Data.Aeson (Value(..), encode, toJSON, eitherDecode)
 import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.KeyMap as KM
@@ -190,6 +191,11 @@ main = do
         hPutStrLn stderr "Example: symbols-dyn --template arbor tree-list"
         exitFailure
 
+  -- Handle splash/about subcommand
+  when (not (null remaining) && head remaining `elem` ["splash", "about", "version"]) $ do
+    handleSplashCommand globalOpts
+    exitSuccess
+
   -- Handle cache subcommand
   when (not (null remaining) && head remaining == "cache") $ do
     handleCacheCommand globalOpts (tail remaining)
@@ -231,6 +237,7 @@ main = do
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         putStrLn ""
         putStrLn "Built-in commands:"
+        putStrLn "  splash/about       Show splash screen with system info"
         putStrLn "  cache              Manage schema cache (show, clear, status, refresh)"
         putStrLn "  call               Call any RPC method directly with JSON params"
         putStrLn ""
@@ -531,6 +538,56 @@ formatSuggestion (TryMethod method mbParams) =
     Just params -> "Try: symbols-dyn with method '" <> method <> "' and params: " <> T.pack (show params)
     Nothing -> "Try: symbols-dyn " <> method <> " --help"
 formatSuggestion (CustomGuidance message) = "Suggestion: " <> message
+
+-- ============================================================================
+-- Splash/About Command
+-- ============================================================================
+
+handleSplashCommand :: GlobalOpts -> IO ()
+handleSplashCommand opts = do
+  putStrLn ""
+  putStrLn "    ███████╗██╗   ██╗███╗   ███╗██████╗  ██████╗ ██╗     ███████╗"
+  putStrLn "    ██╔════╝╚██╗ ██╔╝████╗ ████║██╔══██╗██╔═══██╗██║     ██╔════╝"
+  putStrLn "    ███████╗ ╚████╔╝ ██╔████╔██║██████╔╝██║   ██║██║     ███████╗"
+  putStrLn "    ╚════██║  ╚██╔╝  ██║╚██╔╝██║██╔══██╗██║   ██║██║     ╚════██║"
+  putStrLn "    ███████║   ██║   ██║ ╚═╝ ██║██████╔╝╚██████╔╝███████╗███████║"
+  putStrLn "    ╚══════╝   ╚═╝   ╚═╝     ╚═╝╚═════╝  ╚═════╝ ╚══════╝╚══════╝"
+  putStrLn ""
+  putStrLn "    Haskell frontend for Plexus - Typed APIs for LLM orchestration"
+  putStrLn ""
+  putStrLn "    Version:      0.1.0.0"
+  putStrLn "    License:      MIT"
+  putStrLn ""
+
+  -- Show connection info
+  putStrLn "    Configuration:"
+  putStrLn $ "      Host:       " <> optHost opts
+  putStrLn $ "      Port:       " <> show (optPort opts)
+  putStrLn $ "      Endpoint:   ws://" <> optHost opts <> ":" <> show (optPort opts)
+  putStrLn $ "      Refresh:    " <> if optRefresh opts then "enabled" else "disabled"
+  putStrLn ""
+
+  -- Try to load schema and show activations
+  result <- loadSchema opts
+  case result of
+    Right cached -> do
+      let activations = schemaActivations (cachedSchema cached)
+      putStrLn $ "    Active Plexus Activations: " <> show (length activations)
+      forM_ activations $ \act -> do
+        let ns = activationNamespace act
+        let desc = activationDescription act
+        putStrLn $ "      • " <> T.unpack ns <> " - " <> T.unpack desc
+      putStrLn ""
+    Left err -> do
+      putStrLn "    ⚠ Could not connect to Plexus server"
+      putStrLn $ "    Error: " <> T.unpack err
+      putStrLn ""
+
+  putStrLn "    Commands:"
+  putStrLn "      symbols-dyn --help         Show full help"
+  putStrLn "      symbols-dyn cache status   Check schema cache"
+  putStrLn "      symbols-dyn <activation>   Run activation commands"
+  putStrLn ""
 
 -- ============================================================================
 -- Cache Command
