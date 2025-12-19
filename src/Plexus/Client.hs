@@ -32,6 +32,7 @@ import Data.IORef
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
+import qualified Data.Text as T
 import Network.WebSockets (Connection)
 import qualified Network.WebSockets as WS
 import Streaming
@@ -219,8 +220,13 @@ plexusRpc conn method params = do
 
   case resp of
     RpcError _ err -> do
-      liftIO $ putStrLn $ "Subscription error: " <> show err
-      pure ()
+      -- Emit error as StreamError so caller can handle it properly
+      Str.yield $ StreamError
+        { itemPlexusHash = ""  -- No hash available for subscription errors
+        , itemProvenance = Provenance ["plexus"]
+        , itemError = T.pack $ "Subscription error: " <> show err
+        , itemRecoverable = False
+        }
 
     RpcSuccess _ result -> do
       -- The reader loop already registered the queue in pcSubscriptions

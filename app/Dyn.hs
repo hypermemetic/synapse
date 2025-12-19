@@ -434,9 +434,24 @@ printResult _ rendererCfg namespace method guidanceRef item = case item of
         hPutStrLn stderr ""
         T.hPutStrLn stderr $ formatGuidance guidance
       Nothing -> do
-        -- ExecutionError - no guidance
-        hPutStrLn stderr $ "Error: " <> T.unpack err
+        -- Check if this is a parameter error
+        if isParamError err
+          then do
+            hPutStrLn stderr $ "Error: " <> T.unpack err
+            hPutStrLn stderr ""
+            hPutStrLn stderr $ "Run 'symbols-dyn " <> T.unpack namespace <> " " <> T.unpack method <> " --help' for usage information"
+          else
+            hPutStrLn stderr $ "Error: " <> T.unpack err
   StreamDone _ _ -> pure ()
+
+-- | Check if an error is a parameter-related error
+isParamError :: Text -> Bool
+isParamError err =
+  T.isInfixOf "-32602" err ||  -- JSON-RPC Invalid params error code
+  T.isInfixOf "Invalid params" err ||
+  T.isInfixOf "No more params" err ||
+  T.isInfixOf "missing required" err ||
+  T.isInfixOf "required parameter" err
 
 -- | Format guidance into user-friendly suggestion text
 formatGuidance :: PlexusStreamItem -> Text
