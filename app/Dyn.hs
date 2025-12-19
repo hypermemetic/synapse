@@ -10,6 +10,7 @@ module Main where
 import Control.Exception (SomeException, catch)
 import Data.Aeson (Value(..), encode, toJSON, eitherDecode)
 import qualified Data.Aeson as Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (fromMaybe)
@@ -40,11 +41,12 @@ import qualified Data.Map.Strict as Map
 -- ============================================================================
 
 data GlobalOpts = GlobalOpts
-  { optRefresh   :: Bool    -- ^ --refresh: force schema refetch
+  { optRefresh   :: Bool    -- ^ Always refresh by default; --no-refresh: use cached schema
   , optHost      :: String  -- ^ --host: substrate host
   , optPort      :: Int     -- ^ --port: substrate port
   , optJson      :: Bool    -- ^ --json: raw JSON output (full stream item)
   , optRaw       :: Bool    -- ^ --raw: raw JSON data only (no headers)
+  , optNoRender  :: Bool    -- ^ --no-render: skip template rendering
   , optSchema    :: Bool    -- ^ --schema: dump JSON schema for method
   , optTemplate  :: Bool    -- ^ --template: open template file for editing
   }
@@ -52,10 +54,9 @@ data GlobalOpts = GlobalOpts
 
 globalOptsParser :: Parser GlobalOpts
 globalOptsParser = GlobalOpts
-  <$> switch
-      ( long "refresh"
-     <> short 'r'
-     <> help "Force refresh of cached schema"
+  <$> flag True False
+      ( long "no-refresh"
+     <> help "Use cached schema instead of fetching fresh"
       )
   <*> strOption
       ( long "host"
@@ -81,6 +82,10 @@ globalOptsParser = GlobalOpts
   <*> switch
       ( long "raw"
      <> help "Output raw JSON data only (no headers, no formatting)"
+      )
+  <*> switch
+      ( long "no-render"
+     <> help "Skip template rendering (use default JSON output)"
       )
   <*> switch
       ( long "schema"
@@ -205,10 +210,11 @@ main = do
         putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
         putStrLn ""
         putStrLn "Global options:"
-        putStrLn "  -r, --refresh      Force refresh of cached schema"
+        putStrLn "  --no-refresh       Use cached schema (default: always refresh)"
         putStrLn "  -H, --host HOST    Substrate host (default: 127.0.0.1)"
         putStrLn "  -P, --port PORT    Substrate port (default: 4444)"
         putStrLn "  -j, --json         Output raw JSON responses"
+        putStrLn "  --no-render        Skip template rendering (use JSON output)"
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         exitFailure
       Right cached -> do
@@ -217,10 +223,11 @@ main = do
         putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
         putStrLn ""
         putStrLn "Global options:"
-        putStrLn "  -r, --refresh      Force refresh of cached schema"
+        putStrLn "  --no-refresh       Use cached schema (default: always refresh)"
         putStrLn "  -H, --host HOST    Substrate host (default: 127.0.0.1)"
         putStrLn "  -P, --port PORT    Substrate port (default: 4444)"
         putStrLn "  -j, --json         Output raw JSON responses"
+        putStrLn "  --no-render        Skip template rendering (use JSON output)"
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         putStrLn ""
         putStrLn "Built-in commands:"
@@ -265,14 +272,14 @@ main = do
   executeCommand globalOpts invocation schema fullSchemas
 
 -- | Split args into global and remaining
--- Global args are: --refresh, -r, --host, -H, --port, -P, --json, -j
+-- Global args are: --no-refresh, --host, -H, --port, -P, --json, -j, --raw, --no-render, --schema, -s, --template, -t
 -- and their values
 splitArgs :: [String] -> ([String], [String])
 splitArgs = go []
   where
     go acc [] = (reverse acc, [])
     go acc (x:xs)
-      | x `elem` ["--refresh", "-r", "--json", "-j", "--raw", "--schema", "-s", "--template", "-t"] =
+      | x `elem` ["--no-refresh", "--json", "-j", "--raw", "--no-render", "--schema", "-s", "--template", "-t"] =
           go (x:acc) xs
       | x `elem` ["--host", "-H", "--port", "-P"] =
           case xs of
@@ -403,22 +410,36 @@ printResult opts _ _ _ _ _ _ item
       StreamData _ _ _ dat -> LBS.putStrLn $ encode dat
       StreamError _ _ err _ -> hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
-printResult _ rendererCfg namespace method guidanceRef schema fullSchemas item = case item of
+printResult opts rendererCfg namespace method guidanceRef schema fullSchemas item = case item of
   StreamProgress _ _ msg _ -> do
     T.putStr msg
     putStr "\r"
     hFlush stdout
   StreamData _ _ contentType dat -> do
-    -- Try to render with template
-    result <- Renderer.render rendererCfg namespace method dat
-    case result of
-      Right rendered -> do
-        T.putStrLn $ "=== " <> contentType <> " ==="
-        T.putStrLn rendered
-      Left _ -> do
-        -- Fall back to pretty JSON
+    if optNoRender opts
+      then do
+        -- Skip template rendering, use default JSON output
         T.putStrLn $ "=== " <> contentType <> " ==="
         T.putStrLn $ formatPrettyJson dat
+      else do
+        -- Enrich data for better template rendering (e.g., merge tool_name into tool_input)
+        let enrichedDat = enrichEventData dat
+        -- Try to render with template
+        result <- Renderer.render rendererCfg namespace method enrichedDat
+        case result of
+          Right rendered -> do
+            -- Template found: print without header (for clean streaming output)
+            T.putStr rendered
+            hFlush stdout
+            -- Add newline on chat completion to prevent shell % prompt
+            case Aeson.decode (encode dat) of
+              Just (Object o) | KM.lookup "type" o == Just (String "chat_complete") -> putStrLn ""
+              Just (Object o) | KM.lookup "type" o == Just (String "complete") -> putStrLn ""
+              _ -> pure ()
+          Left _ -> do
+            -- No template: fall back to pretty JSON with header
+            T.putStrLn $ "=== " <> contentType <> " ==="
+            T.putStrLn $ formatPrettyJson dat
   StreamGuidance{} -> do
     -- Store guidance for pairing with next error
     writeIORef guidanceRef (Just item)
@@ -640,6 +661,18 @@ printActivation act = do
   let ns = activationNamespace act
   let desc = activationDescription act
   putStrLn $ "  " <> T.unpack ns <> replicate (14 - T.length ns) ' ' <> T.unpack desc
+
+-- | Enrich event data for better template rendering
+-- For tool_use events, merges tool_name into tool_input for easier access in templates
+enrichEventData :: Value -> Value
+enrichEventData (Object o) =
+  case (KM.lookup "tool_name" o, KM.lookup "tool_input" o) of
+    (Just (String toolName), Just (Object toolInput)) ->
+      -- Add tool_name to tool_input for easier template access
+      let enrichedInput = KM.insert "tool_name" (String toolName) toolInput
+      in Object $ KM.insert "tool_input" (Object enrichedInput) o
+    _ -> Object o
+enrichEventData v = v
 
 -- | when helper (not in prelude for older GHC)
 when :: Bool -> IO () -> IO ()
