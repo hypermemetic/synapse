@@ -28,6 +28,7 @@ module Plexus.Schema
   , extractHashEvent
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Aeson
 import Data.Aeson.Types (Parser)
 import Data.Map.Strict (Map)
@@ -109,6 +110,87 @@ instance FromJSON PlexusSchemaEvent where
 -- Enriched Schema Types (from plexus_activation_schema)
 -- ============================================================================
 
+-- ============================================================================
+-- $ref Resolution Helpers
+-- ============================================================================
+
+-- | Resolve $ref references in a schema using $defs
+resolveSchemaRefs :: EnrichedSchema -> EnrichedSchema
+resolveSchemaRefs schema = case schemaRef schema of
+  Just ref | Just defs <- schemaDefs schema ->
+    -- Resolve the reference
+    case lookupRef ref defs of
+      Just resolved ->
+        -- Merge resolved schema with local description
+        let merged = mergeSchema schema resolved
+        -- Continue resolving recursively
+        in resolveSchemaRefs merged { schemaRef = Nothing, schemaDefs = schemaDefs schema }
+      Nothing -> schema  -- Reference not found, keep as-is
+  _ ->
+    -- No ref to resolve, but recursively resolve properties and oneOf
+    -- Propagate $defs to children so they can resolve their refs
+    let defs = schemaDefs schema
+    in schema
+      { schemaProperties = resolvePropertiesRefs defs <$> schemaProperties schema
+      , schemaOneOf = map (propagateDefsAndResolve defs) <$> schemaOneOf schema
+      }
+  where
+    -- Propagate parent $defs to child schema and resolve
+    propagateDefsAndResolve :: Maybe (Map Text Value) -> EnrichedSchema -> EnrichedSchema
+    propagateDefsAndResolve parentDefs child =
+      let childWithDefs = case (parentDefs, schemaDefs child) of
+            (Just pDefs, Nothing) -> child { schemaDefs = Just pDefs }
+            _ -> child  -- Child already has defs or parent has none
+      in resolveSchemaRefs childWithDefs
+
+-- | Look up a $ref path in definitions
+-- e.g., "#/$defs/ConeIdentifier" -> look up "ConeIdentifier" in defs
+lookupRef :: Text -> Map Text Value -> Maybe EnrichedSchema
+lookupRef ref defs
+  | T.isPrefixOf "#/$defs/" ref =
+      let defName = T.drop 8 ref  -- Drop "#/$defs/"
+      in case Map.lookup defName defs of
+        Just val -> case fromJSON val of
+          Success schema -> Just schema
+          Error _ -> Nothing
+        Nothing -> Nothing
+  | otherwise = Nothing
+
+-- | Merge a schema with a resolved reference, preserving local description
+mergeSchema :: EnrichedSchema -> EnrichedSchema -> EnrichedSchema
+mergeSchema local resolved = resolved
+  { schemaDescription = schemaDescription local <|> schemaDescription resolved
+  }
+
+-- | Resolve $refs in schema properties
+resolvePropertiesRefs :: Maybe (Map Text Value) -> Map Text SchemaProperty -> Map Text SchemaProperty
+resolvePropertiesRefs defs props = Map.map (resolvePropertyRefs defs) props
+
+-- | Resolve $ref in a single property
+resolvePropertyRefs :: Maybe (Map Text Value) -> SchemaProperty -> SchemaProperty
+resolvePropertyRefs maybeDefs prop = case (propRef prop, maybeDefs) of
+  (Just ref, Just defs) | T.isPrefixOf "#/$defs/" ref ->
+    let defName = T.drop 8 ref
+    in case Map.lookup defName defs of
+      Just val -> case fromJSON val of
+        Success resolved ->
+          -- Merge resolved with local description, then recursively resolve the result
+          let merged = resolved { propDescription = propDescription prop <|> propDescription resolved }
+          in resolvePropertyRefs maybeDefs merged { propRef = Nothing }
+        Error _ -> prop  -- Parse error, keep original
+      Nothing -> prop  -- Ref not found, keep original
+  _ ->
+    -- No ref to resolve, but recursively resolve nested properties
+    prop
+      { propProperties = resolvePropertiesRefs maybeDefs <$> propProperties prop
+      , propOneOf = map (resolvePropertyRefs maybeDefs) <$> propOneOf prop
+      , propItems = resolvePropertyRefs maybeDefs <$> propItems prop
+      }
+
+-- ============================================================================
+-- Enriched Schema Types (from plexus_activation_schema)
+-- ============================================================================
+
 -- | Enriched JSON Schema from substrate
 -- Mirrors the Rust Schema type from plexus/schema.rs
 data EnrichedSchema = EnrichedSchema
@@ -118,18 +200,26 @@ data EnrichedSchema = EnrichedSchema
   , schemaProperties  :: Maybe (Map Text SchemaProperty)
   , schemaRequired    :: Maybe [Text]
   , schemaOneOf       :: Maybe [EnrichedSchema]  -- ^ Method variants
+  , schemaDefs        :: Maybe (Map Text Value)  -- ^ Schema definitions for $ref resolution
+  , schemaRef         :: Maybe Text              -- ^ Reference to definition (e.g., "#/$defs/ConeIdentifier")
   }
   deriving stock (Show, Eq, Generic)
 
 instance FromJSON EnrichedSchema where
-  parseJSON = withObject "EnrichedSchema" $ \o ->
-    EnrichedSchema
+  parseJSON val@(Object o) = do
+    -- Parse base schema
+    base <- EnrichedSchema
       <$> o .:? "title"
       <*> o .:? "description"
       <*> o .:? "type"
       <*> o .:? "properties"
       <*> o .:? "required"
       <*> o .:? "oneOf"
+      <*> o .:? "$defs"
+      <*> o .:? "$ref"
+    -- Apply $ref resolution if needed
+    pure $ resolveSchemaRefs base
+  parseJSON _ = fail "EnrichedSchema must be an object"
 
 instance ToJSON EnrichedSchema where
   toJSON EnrichedSchema{..} = object $ catMaybes
@@ -139,6 +229,8 @@ instance ToJSON EnrichedSchema where
     , ("properties" .=) <$> schemaProperties
     , ("required" .=) <$> schemaRequired
     , ("oneOf" .=) <$> schemaOneOf
+    , ("$defs" .=) <$> schemaDefs
+    , ("$ref" .=) <$> schemaRef
     ]
 
 -- | Schema property definition
@@ -151,6 +243,8 @@ data SchemaProperty = SchemaProperty
   , propEnum        :: Maybe [Value]
   , propProperties  :: Maybe (Map Text SchemaProperty)  -- ^ Nested object
   , propRequired    :: Maybe [Text]      -- ^ Required fields for object types
+  , propOneOf       :: Maybe [SchemaProperty]  -- ^ OneOf variants (for enums)
+  , propRef         :: Maybe Text        -- ^ Reference to definition
   }
   deriving stock (Show, Eq, Generic)
 
@@ -165,6 +259,8 @@ instance FromJSON SchemaProperty where
       <*> o .:? "enum"
       <*> o .:? "properties"
       <*> o .:? "required"
+      <*> o .:? "oneOf"
+      <*> o .:? "$ref"
 
 instance ToJSON SchemaProperty where
   toJSON SchemaProperty{..} = object $ catMaybes
@@ -176,6 +272,8 @@ instance ToJSON SchemaProperty where
     , ("enum" .=) <$> propEnum
     , ("properties" .=) <$> propProperties
     , ("required" .=) <$> propRequired
+    , ("oneOf" .=) <$> propOneOf
+    , ("$ref" .=) <$> propRef
     ]
 
 -- | Event wrapper for activation schema stream
