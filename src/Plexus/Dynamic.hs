@@ -16,7 +16,7 @@ module Plexus.Dynamic
   ) where
 
 import Data.Aeson (Value(..), toJSON, eitherDecode, object, (.=))
-import Data.Aeson.Key (fromText)
+import Data.Aeson.Key (fromText, toText)
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.List (sortOn)
@@ -92,17 +92,143 @@ buildActivationParserWithSchema act mEnriched = subparser $ mconcat
 buildActivationParserWithFullSchema :: ActivationInfo -> Maybe ActivationFullSchema -> Parser CommandInvocation
 buildActivationParserWithFullSchema act mFullSchema = subparser $ mconcat
   [ command (toCommandName method)
-      (info (buildMethodParser ns method <**> helper)
+      (info (methodParser <**> helper)
             (progDesc desc))
   | method <- activationMethods act
-  -- Look up method info from full schema by name for description
+  -- Look up method info from full schema by name
   , let mMethodInfo = mFullSchema >>= \fs -> find (\m -> methodInfoName m == method) (fullSchemaMethods fs)
+        -- Check if we have params schema to generate typed flags
+        methodParser = case mMethodInfo >>= methodInfoParams of
+          Just paramsSchema -> buildTypedMethodParserFromParams ns method paramsSchema
+          Nothing -> buildMethodParser ns method
         defaultDesc = "Execute " <> T.unpack ns <> "_" <> T.unpack method
         desc = maybe defaultDesc T.unpack (mMethodInfo >>= Just . methodInfoDescription)
   ]
   where
     ns = activationNamespace act
     find f = foldr (\x acc -> if f x then Just x else acc) Nothing
+
+-- | Build a typed method parser from params JSON Schema
+buildTypedMethodParserFromParams :: Text -> Text -> Value -> Parser CommandInvocation
+buildTypedMethodParserFromParams namespace method paramsSchema = do
+  -- Extract properties and required fields from JSON Schema
+  let (properties, required) = extractSchemaInfo paramsSchema
+
+  -- Sort parameters: required first, then optional
+  let sortedParams = sortOn (\(name, _) -> name `notElem` required) (Map.toList properties)
+
+  -- Build parser for each parameter
+  paramValues <- sequenceA $ map (buildParamParserFromSchema required) sortedParams
+
+  -- Also allow raw JSON override
+  mJsonOverride <- optional $ strOption
+    ( long "params"
+   <> short 'p'
+   <> metavar "JSON"
+   <> help "Override with raw JSON object"
+   <> hidden  -- Hide from help since we have typed flags
+    )
+
+  pure $ CommandInvocation
+    { invMethod = namespace <> "_" <> method
+    , invParams = case mJsonOverride of
+        Just jsonStr -> case decodeJsonArgs jsonStr of
+          Just val -> val
+          Nothing -> buildParamsObject paramValues
+        Nothing -> buildParamsObject paramValues
+    }
+
+-- | Extract properties and required fields from JSON Schema
+extractSchemaInfo :: Value -> (Map Text Value, [Text])
+extractSchemaInfo (Object o) =
+  let properties = case KM.lookup "properties" o of
+        Just (Object props) -> Map.fromList [(toText k, v) | (k, v) <- KM.toList props]
+        _ -> Map.empty
+      required = case KM.lookup "required" o of
+        Just (Array arr) -> [t | String t <- foldr (:) [] arr]
+        _ -> []
+  in (properties, required)
+extractSchemaInfo _ = (Map.empty, [])
+
+-- | Build a parser for a single parameter from JSON Schema
+buildParamParserFromSchema :: [Text] -> (Text, Value) -> Parser (Text, Maybe Value)
+buildParamParserFromSchema required (name, schema) = do
+  mVal <- paramParser
+  pure (name, mVal)
+  where
+    nameStr = T.unpack name
+    flagName = toFlagName name
+    isRequired = name `elem` required
+
+    -- Extract type and description from schema
+    (typeStr, desc) = case schema of
+      Object o ->
+        let t = case KM.lookup "type" o of
+              Just (String s) -> s
+              _ -> "string"
+            d = case KM.lookup "description" o of
+              Just (String s) -> Just s
+              _ -> Nothing
+        in (t, d)
+      _ -> ("string", Nothing)
+
+    metaVar = case typeStr of
+      "string" -> "TEXT"
+      "integer" -> "INT"
+      "number" -> "NUM"
+      "boolean" -> "BOOL"
+      _ -> "VALUE"
+
+    helpText = maybe ("Parameter: " <> nameStr) T.unpack desc
+
+    paramParser :: Parser (Maybe Value)
+    paramParser
+      | isRequired = Just <$> requiredParser
+      | otherwise = optional optionalParser
+
+    requiredParser :: Parser Value
+    requiredParser = case typeStr of
+      "integer" -> toJSON <$> (option auto
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser Int)
+      "number" -> toJSON <$> (option auto
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser Double)
+      "boolean" -> toJSON <$> switch
+        ( long flagName
+       <> help helpText
+        )
+      _ -> toJSON <$> (strOption
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser String)
+
+    optionalParser :: Parser Value
+    optionalParser = case typeStr of
+      "integer" -> toJSON <$> (option auto
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser Int)
+      "number" -> toJSON <$> (option auto
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser Double)
+      "boolean" -> toJSON <$> switch
+        ( long flagName
+       <> help helpText
+        )
+      _ -> toJSON <$> (strOption
+        ( long flagName
+       <> metavar metaVar
+       <> help helpText
+        ) :: Parser String)
 
 -- | Build a parser for a method with generic --params JSON
 buildMethodParser :: Text -> Text -> Parser CommandInvocation
