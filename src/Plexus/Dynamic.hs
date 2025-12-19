@@ -26,7 +26,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Options.Applicative
 
-import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, MethodSchema(..), ParamSchema(..), ParamType(..), parseMethodVariantByIndex)
+import Plexus.Schema (PlexusSchema(..), ActivationInfo(..), EnrichedSchema, ActivationFullSchema(..), MethodSchemaInfo(..), MethodSchema(..), ParamSchema(..), ParamType(..), parseMethodVariantByIndex)
 
 -- ============================================================================
 -- Types
@@ -50,18 +50,18 @@ data CommandInvocation = CommandInvocation
 buildDynamicParser :: PlexusSchema -> Parser CommandInvocation
 buildDynamicParser schema = buildDynamicParserWithSchemas schema Map.empty
 
--- | Build a parser with enriched schemas for typed parameters
+-- | Build a parser with full schemas for typed parameters
 --
--- When an activation has an enriched schema, generates typed flags
+-- When an activation has a full schema, generates typed flags
 -- like --owner-id TEXT instead of generic --params JSON.
-buildDynamicParserWithSchemas :: PlexusSchema -> Map Text EnrichedSchema -> Parser CommandInvocation
-buildDynamicParserWithSchemas schema enriched = subparser $ mconcat
+buildDynamicParserWithSchemas :: PlexusSchema -> Map Text ActivationFullSchema -> Parser CommandInvocation
+buildDynamicParserWithSchemas schema fullSchemas = subparser $ mconcat
   [ command (T.unpack ns)
-      (info (buildActivationParserWithSchema act mEnriched <**> helper)
+      (info (buildActivationParserWithFullSchema act mFullSchema <**> helper)
             (progDesc (T.unpack $ activationDescription act)))
   | act <- sortOn activationNamespace (schemaActivations schema)
   , let ns = activationNamespace act
-  , let mEnriched = Map.lookup ns enriched
+  , let mFullSchema = Map.lookup ns fullSchemas
   ]
 
 -- | Build a parser for a single activation
@@ -87,6 +87,22 @@ buildActivationParserWithSchema act mEnriched = subparser $ mconcat
   ]
   where
     ns = activationNamespace act
+
+-- | Build a parser for an activation with optional full schema
+buildActivationParserWithFullSchema :: ActivationInfo -> Maybe ActivationFullSchema -> Parser CommandInvocation
+buildActivationParserWithFullSchema act mFullSchema = subparser $ mconcat
+  [ command (toCommandName method)
+      (info (buildMethodParser ns method <**> helper)
+            (progDesc desc))
+  | method <- activationMethods act
+  -- Look up method info from full schema by name for description
+  , let mMethodInfo = mFullSchema >>= \fs -> find (\m -> methodInfoName m == method) (fullSchemaMethods fs)
+        defaultDesc = "Execute " <> T.unpack ns <> "_" <> T.unpack method
+        desc = maybe defaultDesc T.unpack (mMethodInfo >>= Just . methodInfoDescription)
+  ]
+  where
+    ns = activationNamespace act
+    find f = foldr (\x acc -> if f x then Just x else acc) Nothing
 
 -- | Build a parser for a method with generic --params JSON
 buildMethodParser :: Text -> Text -> Parser CommandInvocation

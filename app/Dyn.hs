@@ -28,7 +28,7 @@ import System.IO (hFlush, stdout, hPutStrLn, stderr)
 import Plexus (connect, disconnect, defaultConfig)
 import Plexus.Client (PlexusConfig(..), plexusRpc)
 import Plexus.Types (PlexusStreamItem(..), GuidanceErrorType(..), GuidanceSuggestion(..))
-import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), PlexusHash(..), PlexusHashEvent(..), extractSchemaEvent, extractActivationSchemaEvent, extractHashEvent, MethodSchema(..), parseMethodSchemas)
+import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), ActivationFullSchema(..), MethodSchemaInfo(..), FullSchemaEvent(..), PlexusHash(..), PlexusHashEvent(..), extractSchemaEvent, extractActivationSchemaEvent, extractFullSchemaEvent, extractHashEvent, MethodSchema(..), parseMethodSchemas)
 import Plexus.Schema.Cache
 import Plexus.Dynamic (CommandInvocation(..), buildDynamicParserWithSchemas)
 import Plexus.Renderer (formatPrettyJson, RendererConfig)
@@ -118,53 +118,42 @@ main = do
     case remaining of
       [ns] -> do
         -- Just namespace: show all methods in this activation
-        mEnriched <- fetchEnrichedSchema globalOpts (T.pack ns)
-        case mEnriched of
+        mFullSchema <- fetchFullSchema globalOpts (T.pack ns)
+        case mFullSchema of
           Nothing -> do
             hPutStrLn stderr $ "No schema found for namespace: " <> ns
             exitFailure
-          Just enriched -> do
-            T.putStrLn $ formatPrettyJson (toJSON enriched)
+          Just fullSchema -> do
+            T.putStrLn $ formatPrettyJson (toJSON fullSchema)
             exitSuccess
       [ns, method] -> do
-        -- Load both base schema (for method list) and enriched schema
+        -- Load both base schema and full schema
         cacheResult <- loadSchema globalOpts
         case cacheResult of
           Left err -> do
             hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
             exitFailure
           Right cached -> do
-            -- Find the activation in base schema to get method list
-            let schema = cachedSchema cached
-            let mActivation = find (\a -> activationNamespace a == T.pack ns)
-                                   (schemaActivations schema)
-            case mActivation of
+            -- Method name format: just method (with dashes converted to underscores)
+            let methodName = T.replace "-" "_" (T.pack method)
+            -- Get full schema for this namespace
+            let mFullSchema = Map.lookup (T.pack ns) (cachedFullSchemas cached)
+            case mFullSchema of
               Nothing -> do
-                hPutStrLn stderr $ "No activation found for namespace: " <> ns
+                hPutStrLn stderr $ "No schema found for namespace: " <> ns
                 exitFailure
-              Just activation -> do
-                -- Method name format: just method (with dashes converted to underscores)
-                let methodName = T.replace "-" "_" (T.pack method)
-                let methods = activationMethods activation
-                -- Find method index
-                case findIndex (== methodName) methods of
+              Just fullSchema -> do
+                -- Find the method in the full schema
+                let methods = fullSchemaMethods fullSchema
+                case find (\m -> methodInfoName m == methodName) methods of
                   Nothing -> do
                     hPutStrLn stderr $ "No method found: " <> T.unpack methodName
-                    hPutStrLn stderr $ "Available methods: " <> T.unpack (T.intercalate ", " methods)
+                    let availableMethods = map methodInfoName methods
+                    hPutStrLn stderr $ "Available methods: " <> T.unpack (T.intercalate ", " availableMethods)
                     exitFailure
-                  Just idx -> do
-                    -- Get enriched schema and index into oneOf
-                    let mEnriched = Map.lookup (T.pack ns) (cachedEnriched cached)
-                    case mEnriched >>= schemaOneOf of
-                      Nothing -> do
-                        hPutStrLn stderr $ "No enriched schema for: " <> ns
-                        exitFailure
-                      Just variants | idx < length variants -> do
-                        T.putStrLn $ formatPrettyJson (toJSON (variants !! idx))
-                        exitSuccess
-                      Just _ -> do
-                        hPutStrLn stderr $ "Method index out of range: " <> show idx
-                        exitFailure
+                  Just methodInfo -> do
+                    T.putStrLn $ formatPrettyJson (toJSON methodInfo)
+                    exitSuccess
       _ -> do
         hPutStrLn stderr "Usage: symbols-dyn --schema NAMESPACE [METHOD]"
         hPutStrLn stderr "Examples:"
@@ -252,10 +241,10 @@ main = do
     Right c -> pure c
 
   let schema = cachedSchema cached
-  let enriched = cachedEnriched cached
+  let fullSchemas = cachedFullSchemas cached
 
-  -- Parse remaining args with dynamic parser (using enriched schemas for typed flags)
-  let dynamicInfo = info (buildDynamicParserWithSchemas schema enriched <**> helper)
+  -- Parse remaining args with dynamic parser (using full schemas for descriptions)
+  let dynamicInfo = info (buildDynamicParserWithSchemas schema fullSchemas <**> helper)
         ( fullDesc
        <> progDesc "Execute Plexus RPC methods"
         )
@@ -309,7 +298,7 @@ loadSchema opts = do
     config
     (fetchHashFromSubstrate opts)
     (fetchSchemaFromSubstrate opts)
-    (fetchEnrichedSchema opts)
+    (fetchFullSchema opts)
 
 -- | Fetch plexus hash from substrate
 fetchHashFromSubstrate :: GlobalOpts -> IO (Either Text Text)
@@ -353,8 +342,8 @@ fetchSchemaFromSubstrate opts = do
 
 -- | Fetch enriched schema for a specific namespace
 -- Gracefully returns Nothing if the endpoint doesn't exist
-fetchEnrichedSchema :: GlobalOpts -> Text -> IO (Maybe EnrichedSchema)
-fetchEnrichedSchema opts namespace = do
+fetchFullSchema :: GlobalOpts -> Text -> IO (Maybe ActivationFullSchema)
+fetchFullSchema opts namespace = do
   let plexusCfg = defaultConfig
         { plexusHost = optHost opts
         , plexusPort = optPort opts
@@ -363,11 +352,11 @@ fetchEnrichedSchema opts namespace = do
   where
     doFetch cfg = do
       conn <- connect cfg
-      mSchema <- S.head_ $ S.mapMaybe extractActivationSchemaEvent $
-        plexusRpc conn "plexus_activation_schema" (toJSON [namespace])
+      mSchema <- S.head_ $ S.mapMaybe extractFullSchemaEvent $
+        plexusRpc conn "plexus_full_schema" (toJSON [namespace])
       disconnect conn
       case mSchema of
-        Just (ActivationSchemaData s) -> pure $ Just s
+        Just (FullSchemaData s) -> pure $ Just s
         _ -> pure Nothing
 
 -- ============================================================================
@@ -519,7 +508,7 @@ showCache _ = do
       putStrLn "Cache contents:"
       putStrLn $ "  Hash: " <> T.unpack (cachedHash cached)
       putStrLn $ "  Activations: " <> show (length (schemaActivations (cachedSchema cached)))
-      putStrLn $ "  Enriched schemas: " <> show (Map.size (cachedEnriched cached))
+      putStrLn $ "  Full schemas: " <> show (Map.size (cachedFullSchemas cached))
       putStrLn ""
       putStrLn "Activations:"
       mapM_ (\a -> putStrLn $ "  - " <> T.unpack (activationNamespace a) <>

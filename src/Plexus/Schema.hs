@@ -7,10 +7,14 @@ module Plexus.Schema
     PlexusSchema(..)
   , ActivationInfo(..)
   , PlexusSchemaEvent(..)
-    -- * Enriched Schema Types
+    -- * Enriched Schema Types (deprecated - use Full Schema)
   , EnrichedSchema(..)
   , SchemaProperty(..)
   , ActivationSchemaEvent(..)
+    -- * Full Schema Types (from plexus_full_schema)
+  , ActivationFullSchema(..)
+  , MethodSchemaInfo(..)
+  , FullSchemaEvent(..)
     -- * Hash Types
   , PlexusHash(..)
   , PlexusHashEvent(..)
@@ -25,6 +29,7 @@ module Plexus.Schema
     -- * Stream Helpers
   , extractSchemaEvent
   , extractActivationSchemaEvent
+  , extractFullSchemaEvent
   , extractHashEvent
   ) where
 
@@ -292,6 +297,75 @@ instance FromJSON ActivationSchemaEvent where
     _ -> fail "ActivationSchemaEvent: expected object"
 
 -- ============================================================================
+-- Full Schema Types (from plexus_full_schema)
+-- ============================================================================
+
+-- | Schema info for a single method
+data MethodSchemaInfo = MethodSchemaInfo
+  { methodInfoName        :: Text
+  , methodInfoDescription :: Text
+  , methodInfoParams      :: Maybe Value  -- ^ JSON Schema for params
+  , methodInfoReturns     :: Maybe Value  -- ^ JSON Schema for return/stream events
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON MethodSchemaInfo where
+  parseJSON = withObject "MethodSchemaInfo" $ \o ->
+    MethodSchemaInfo
+      <$> o .: "name"
+      <*> o .: "description"
+      <*> o .:? "params"
+      <*> o .:? "returns"
+
+instance ToJSON MethodSchemaInfo where
+  toJSON MethodSchemaInfo{..} = object $ catMaybes
+    [ Just ("name" .= methodInfoName)
+    , Just ("description" .= methodInfoDescription)
+    , ("params" .=) <$> methodInfoParams
+    , ("returns" .=) <$> methodInfoReturns
+    ]
+
+-- | Full schema for an activation
+data ActivationFullSchema = ActivationFullSchema
+  { fullSchemaNamespace   :: Text
+  , fullSchemaVersion     :: Text
+  , fullSchemaDescription :: Text
+  , fullSchemaMethods     :: [MethodSchemaInfo]
+  }
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON ActivationFullSchema where
+  parseJSON = withObject "ActivationFullSchema" $ \o ->
+    ActivationFullSchema
+      <$> o .: "namespace"
+      <*> o .: "version"
+      <*> o .: "description"
+      <*> o .: "methods"
+
+instance ToJSON ActivationFullSchema where
+  toJSON ActivationFullSchema{..} = object
+    [ "namespace"   .= fullSchemaNamespace
+    , "version"     .= fullSchemaVersion
+    , "description" .= fullSchemaDescription
+    , "methods"     .= fullSchemaMethods
+    ]
+
+-- | Event wrapper for full schema stream
+data FullSchemaEvent
+  = FullSchemaData ActivationFullSchema
+  | FullSchemaError Text
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON FullSchemaEvent where
+  parseJSON val = case val of
+    Object o -> do
+      mErr <- o .:? "error"
+      case mErr of
+        Just err -> pure $ FullSchemaError err
+        Nothing  -> FullSchemaData <$> parseJSON val
+    _ -> fail "FullSchemaEvent: expected object"
+
+-- ============================================================================
 -- Hash Types (from plexus_hash)
 -- ============================================================================
 
@@ -456,6 +530,18 @@ extractActivationSchemaEvent (StreamData _ _ contentType dat)
   | otherwise = Nothing
 extractActivationSchemaEvent (StreamError _ _ err _) = Just (ActivationSchemaError err)
 extractActivationSchemaEvent _ = Nothing
+
+-- | Extract FullSchemaEvent from a stream item
+-- The plexus_full_schema subscription uses content_type "plexus.full_schema"
+extractFullSchemaEvent :: PlexusStreamItem -> Maybe FullSchemaEvent
+extractFullSchemaEvent (StreamData _ _ contentType dat)
+  | contentType == "plexus.full_schema" =
+      case fromJSON dat of
+        Success schema -> Just (FullSchemaData schema)
+        Error _        -> Nothing
+  | otherwise = Nothing
+extractFullSchemaEvent (StreamError _ _ err _) = Just (FullSchemaError err)
+extractFullSchemaEvent _ = Nothing
 
 -- | Extract PlexusHashEvent from a stream item
 -- The plexus_hash subscription uses content_type "plexus.hash"
