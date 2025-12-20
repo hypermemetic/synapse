@@ -114,7 +114,7 @@ main = do
   globalOpts <- case execParserPure defaultPrefs globalOptsInfo globalArgs of
     Success opts -> pure opts
     Failure err  -> do
-      let (msg, _) = renderFailure err "symbols-dyn"
+      let (msg, _) = renderFailure err "symbols"
       hPutStrLn stderr msg
       exitFailure
     CompletionInvoked _ -> exitFailure
@@ -161,10 +161,10 @@ main = do
                     T.putStrLn $ formatPrettyJson (toJSON methodInfo)
                     exitSuccess
       _ -> do
-        hPutStrLn stderr "Usage: symbols-dyn --schema NAMESPACE [METHOD]"
+        hPutStrLn stderr "Usage: symbols --schema NAMESPACE [METHOD]"
         hPutStrLn stderr "Examples:"
-        hPutStrLn stderr "  symbols-dyn --schema arbor           # Show all arbor methods"
-        hPutStrLn stderr "  symbols-dyn --schema arbor tree-list # Show specific method"
+        hPutStrLn stderr "  symbols --schema arbor           # Show all arbor methods"
+        hPutStrLn stderr "  symbols --schema arbor tree-list # Show specific method"
         exitFailure
 
   -- Handle --template mode: open template file for editing
@@ -187,8 +187,8 @@ main = do
         callProcess editor [templatePath]
         exitSuccess
       _ -> do
-        hPutStrLn stderr "Usage: symbols-dyn --template NAMESPACE METHOD"
-        hPutStrLn stderr "Example: symbols-dyn --template arbor tree-list"
+        hPutStrLn stderr "Usage: symbols --template NAMESPACE METHOD"
+        hPutStrLn stderr "Example: symbols --template arbor tree-list"
         exitFailure
 
   -- Handle info/about/version subcommand
@@ -213,7 +213,7 @@ main = do
       Left err -> do
         hPutStrLn stderr $ "Failed to load schema: " <> T.unpack err
         putStrLn ""
-        putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
+        putStrLn "Usage: symbols [GLOBAL_OPTIONS] COMMAND [ARGS...]"
         putStrLn ""
         putStrLn "Global options:"
         putStrLn "  --no-refresh       Use cached schema (default: always refresh)"
@@ -224,9 +224,9 @@ main = do
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         exitFailure
       Right cached -> do
-        putStrLn "symbols-dyn - Dynamic CLI for Plexus"
+        putStrLn "symbols - Dynamic CLI for Plexus"
         putStrLn ""
-        putStrLn "Usage: symbols-dyn [GLOBAL_OPTIONS] COMMAND [ARGS...]"
+        putStrLn "Usage: symbols [GLOBAL_OPTIONS] COMMAND [ARGS...]"
         putStrLn ""
         putStrLn "Global options:"
         putStrLn "  --no-refresh       Use cached schema (default: always refresh)"
@@ -269,7 +269,7 @@ main = do
       -- On parse failure, show help for whatever level we're at
       case execParserPure defaultPrefs dynamicInfo (remaining ++ ["--help"]) of
         Failure helpErr -> do
-          let (msg, _) = renderFailure helpErr "symbols-dyn"
+          let (msg, _) = renderFailure helpErr "symbols"
           putStrLn msg
         _ -> pure ()
       exitFailure
@@ -485,7 +485,7 @@ showCommandHelp namespace method schema fullSchemas = do
   let args = [T.unpack namespace, T.unpack method, "--help"]
   case execParserPure defaultPrefs dynamicInfo args of
     Failure helpErr -> do
-      let (msg, _) = renderFailure helpErr "symbols-dyn"
+      let (msg, _) = renderFailure helpErr "symbols"
       putStrLn msg
     _ -> pure ()
 
@@ -512,7 +512,7 @@ formatGuidance StreamGuidance{..} =
     MethodNotFound activation method ->
       let availMethods = case itemAvailableMethods of
             Just methods -> "Available methods: " <> T.intercalate ", " methods
-            Nothing -> "Run 'symbols-dyn " <> activation <> " --help' to see available methods"
+            Nothing -> "Run 'symbols " <> activation <> " --help' to see available methods"
       in T.unlines
         [ "Method '" <> method <> "' not found in activation '" <> activation <> "'"
         , availMethods
@@ -527,16 +527,16 @@ formatGuidance StreamGuidance{..} =
         , formatSuggestion itemSuggestion
         ]
 
-formatGuidance _ = "Try: symbols-dyn --help"
+formatGuidance _ = "Try: symbols --help"
 
 -- | Format suggestion into actionable CLI command
 formatSuggestion :: GuidanceSuggestion -> Text
-formatSuggestion CallPlexusSchema = "Try: symbols-dyn --help"
-formatSuggestion (CallActivationSchema namespace) = "Try: symbols-dyn " <> namespace <> " --help"
+formatSuggestion CallPlexusSchema = "Try: symbols --help"
+formatSuggestion (CallActivationSchema namespace) = "Try: symbols " <> namespace <> " --help"
 formatSuggestion (TryMethod method mbParams) =
   case mbParams of
-    Just params -> "Try: symbols-dyn with method '" <> method <> "' and params: " <> T.pack (show params)
-    Nothing -> "Try: symbols-dyn " <> method <> " --help"
+    Just params -> "Try: symbols with method '" <> method <> "' and params: " <> T.pack (show params)
+    Nothing -> "Try: symbols " <> method <> " --help"
 formatSuggestion (CustomGuidance message) = "Suggestion: " <> message
 
 -- ============================================================================
@@ -585,9 +585,9 @@ handleInfoCommand opts = do
       putStrLn ""
 
   putStrLn "    Commands:"
-  putStrLn "      symbols-dyn --help         Show full help"
-  putStrLn "      symbols-dyn cache status   Check schema cache"
-  putStrLn "      symbols-dyn <activation>   Run activation commands"
+  putStrLn "      symbols --help         Show full help"
+  putStrLn "      symbols cache status   Check schema cache"
+  putStrLn "      symbols <activation>   Run activation commands"
   putStrLn ""
 
 -- ============================================================================
@@ -601,7 +601,7 @@ handleCacheCommand opts args = case args of
   ["status"] -> cacheStatus opts
   ["refresh"] -> refreshCache opts
   _ -> do
-    hPutStrLn stderr "Usage: symbols-dyn cache COMMAND"
+    hPutStrLn stderr "Usage: symbols cache COMMAND"
     hPutStrLn stderr ""
     hPutStrLn stderr "Commands:"
     hPutStrLn stderr "  show      Show cache contents (hash, schemas)"
@@ -679,7 +679,7 @@ handleCallCommand opts args = case args of
     case eitherDecode (LBS.pack paramsJson) of
       Left err -> do
         hPutStrLn stderr $ "Invalid JSON params: " <> err
-        hPutStrLn stderr "Example: symbols-dyn call plexus_schema '[]'"
+        hPutStrLn stderr "Example: symbols call plexus_schema '[]'"
         exitFailure
       Right params -> do
         -- Connect and make RPC call
@@ -701,14 +701,14 @@ handleCallCommand opts args = case args of
 
         disconnect conn
   _ -> do
-    hPutStrLn stderr "Usage: symbols-dyn call METHOD PARAMS_JSON"
+    hPutStrLn stderr "Usage: symbols call METHOD PARAMS_JSON"
     hPutStrLn stderr ""
     hPutStrLn stderr "Examples:"
-    hPutStrLn stderr "  symbols-dyn call plexus_schema '[]'"
-    hPutStrLn stderr "  symbols-dyn call plexus_activation_schema '[\"cone\"]'"
-    hPutStrLn stderr "  symbols-dyn call plexus_hash '[]'"
-    hPutStrLn stderr "  symbols-dyn call arbor_tree_list '{}'"
-    hPutStrLn stderr "  symbols-dyn call cone_chat '{\"identifier\":{\"by_name\":{\"name\":\"test\"}},\"prompt\":\"hi\"}'"
+    hPutStrLn stderr "  symbols call plexus_schema '[]'"
+    hPutStrLn stderr "  symbols call plexus_activation_schema '[\"cone\"]'"
+    hPutStrLn stderr "  symbols call plexus_hash '[]'"
+    hPutStrLn stderr "  symbols call arbor_tree_list '{}'"
+    hPutStrLn stderr "  symbols call cone_chat '{\"identifier\":{\"by_name\":{\"name\":\"test\"}},\"prompt\":\"hi\"}'"
 
 -- ============================================================================
 -- Help Formatting
