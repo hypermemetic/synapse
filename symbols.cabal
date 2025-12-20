@@ -57,7 +57,7 @@ library
     LambdaCase
     RecordWildCards
 
-executable symbols
+executable semantics
   main-is:          Dyn.hs
   build-depends:
     base,

@@ -1,301 +1,206 @@
-# Cognition Client (Haskell)
+# Semantics
 
-Haskell client library for the Cognition Pipeline hub. Provides typed APIs for all hub plugins over WebSocket JSON-RPC.
+```
+███████╗██╗   ██╗███╗   ███╗██████╗  ██████╗ ██╗     ███████╗
+██╔════╝╚██╗ ██╔╝████╗ ████║██╔══██╗██╔═══██╗██║     ██╔════╝
+███████╗ ╚████╔╝ ██╔████╔██║██████╔╝██║   ██║██║     ███████╗
+╚════██║  ╚██╔╝  ██║╚██╔╝██║██╔══██╗██║   ██║██║     ╚════██║
+███████║   ██║   ██║ ╚═╝ ██║██████╔╝╚██████╔╝███████╗███████║
+╚══════╝   ╚═╝   ╚═╝     ╚═╝╚═════╝  ╚═════╝ ╚══════╝╚══════╝
+```
+
+**Haskell frontend for Plexus - Typed APIs for LLM orchestration**
+
+Semantics is a dynamic CLI that discovers and exposes backend capabilities at runtime, providing type-safe command-line interfaces to LLM orchestration systems.
+
+## Features
+
+- **Dynamic Schema Discovery**: Automatically discovers available activations and methods from the Plexus backend
+- **Typed CLI Flags**: Generates typed command-line flags from JSON Schema definitions
+- **Template Rendering**: Customizable Mustache templates for clean output formatting
+- **Smart Caching**: Efficient schema caching with hash-based invalidation
+- **Live System Info**: Real-time backend health and activation status
+
+## Installation
+
+```bash
+cabal install semantics
+```
+
+Or build from source:
+
+```bash
+git clone https://codeberg.org/hypermemetic/symbols
+cd symbols
+cabal build
+cabal run semantics -- info
+```
 
 ## Quick Start
 
-```haskell
-import Cognition.Rpc (connect, disconnect, defaultConfig)
-import qualified Cognition.Loom as Loom
-import qualified Cognition.Bash as Bash
-import qualified Streaming.Prelude as S
-
-main :: IO ()
-main = do
-  conn <- connect defaultConfig
-
-  -- Create a conversation tree
-  S.mapM_ print $ Loom.treeCreate conn Nothing "my-agent"
-
-  -- Execute a bash command
-  S.mapM_ print $ Bash.execute conn "echo hello"
-
-  disconnect conn
+**View system info:**
+```bash
+semantics info
 ```
 
-## Building
-
+**List available activations:**
 ```bash
-cabal build
+semantics --help
 ```
 
-## CLI Usage
-
-The `cognition-cli` executable provides command-line access to all hub plugins:
-
+**Interact with Claude Code:**
 ```bash
-# Build the CLI
-cabal build cognition-cli
+semantics claudecode chat --name my-session --prompt "hello"
+```
 
-# Check hub health
-cabal run cognition-cli -- health
+**Manage conversation trees:**
+```bash
+semantics arbor tree-create --description "My conversation"
+semantics arbor tree-list
+```
 
-# Execute bash commands
-cabal run cognition-cli -- bash execute echo hello world
+**Chat with Cone:**
+```bash
+semantics cone chat --id my-cone --prompt "What is the meaning of life?"
+```
 
-# Loom tree operations
-cabal run cognition-cli -- loom tree list
-cabal run cognition-cli -- loom tree create alice
-cabal run cognition-cli -- loom tree render <tree_id>
-cabal run cognition-cli -- loom tree get-skeleton <tree_id>
-
-# Loom node operations
-cabal run cognition-cli -- loom node create-text <tree_id> Hello world
-cabal run cognition-cli -- loom node create-text-child <tree_id> <parent_id> Response text
-cabal run cognition-cli -- loom node children <tree_id> <node_id>
-
-# Loom context operations
-cabal run cognition-cli -- loom context leaves <tree_id>
-cabal run cognition-cli -- loom context path <tree_id> <node_id>
+**Execute bash commands:**
+```bash
+semantics bash execute --command "echo hello world"
 ```
 
 ## Architecture
 
-```
-┌──────────────────────────────────────────────┐
-│              Your Application                │
-├──────────────────────────────────────────────┤
-│  Cognition.Loom   Cognition.Bash   Cognition.Health  │  Typed Plugin APIs
-├──────────────────────────────────────────────┤
-│              Cognition.Rpc                   │  Core RPC (hubRpc)
-├──────────────────────────────────────────────┤
-│           WebSocket JSON-RPC                 │
-└──────────────────────────────────────────────┘
-                     │
-                     ▼
-              Hub (Rust server)
-```
+Semantics consists of two packages:
 
-### Core Primitive
+- **`meaning`**: Core types and schemas (Plexus.Types, Plexus.Schema)
+- **`symbols`**: Client library and CLI implementation
 
-All plugin APIs are built on a single streaming RPC primitive:
+The CLI dynamically builds subcommands by:
+1. Fetching the Plexus schema (`plexus_schema`)
+2. Generating typed CLI parsers from JSON Schema
+3. Mapping CLI args to RPC method calls
 
-```haskell
-hubRpc :: HubConnection -> Text -> Value -> Stream (Of HubStreamItem) IO ()
-```
+## Configuration
 
-This sends a JSON-RPC subscription request and yields `HubStreamItem` values as they arrive from the hub.
+**Default endpoint:** `ws://127.0.0.1:4444`
 
-## Modules
-
-### Cognition.Rpc
-
-Low-level WebSocket JSON-RPC client:
-
-- `connect` / `disconnect` - Connection management
-- `hubRpc` - Core streaming RPC call
-- `HubStreamItem` - Stream events (Progress, Data, Error, Done)
-
-### Cognition.Loom
-
-Typed API for conversation tree management:
-
-**Tree Operations:**
-- `treeCreate` - Create a new tree
-- `treeGet` - Get complete tree with all nodes
-- `treeGetSkeleton` - Get lightweight structure (no node data)
-- `treeList` / `treeListScheduled` / `treeListArchived`
-- `treeRender` - ASCII visualization of tree
-- `treeClaim` / `treeRelease` - Reference counting
-- `treeUpdateMetadata`
-
-**Node Operations:**
-- `nodeCreateText` - Create text node
-- `nodeCreateExternal` - Create node with external handle
-- `nodeGet` / `nodeGetChildren` / `nodeGetParent` / `nodeGetPath`
-
-**Context Operations:**
-- `contextListLeaves` - All leaf nodes
-- `contextGetPath` - Full path data from root to node
-- `contextGetHandles` - External handles in path
-
-**Types:**
-- `Tree`, `Node`, `NodeType` (Text | External)
-- `Handle` - External data reference with source, version, identifier, metadata
-- `TreeSkeleton`, `NodeSkeleton` - Lightweight representations
-- `LoomEvent` - All event types for streaming responses
-
-### Cognition.Bash
-
-Execute bash commands with streaming output:
-
-```haskell
-execute :: HubConnection -> Text -> Stream (Of BashEvent) IO ()
-
-data BashEvent
-  = Stdout Text
-  | Stderr Text
-  | Exit Int
-```
-
-### Cognition.Health
-
-Check hub health:
-
-```haskell
-check :: HubConnection -> Stream (Of HealthEvent) IO ()
-
-data HealthEvent = Status
-  { status        :: Text
-  , uptimeSeconds :: Int
-  , timestamp     :: Int
-  }
-```
-
-## Testing
-
-Run the integration test suite (requires hub to be running):
-
+Override with flags:
 ```bash
-cabal test loom-test
+semantics --host 192.168.1.100 --port 5555 cone chat --prompt "hello"
 ```
 
-Or directly:
+**Template customization:**
 
+Create custom output templates in `.substrate/templates/`:
+```
+.substrate/templates/
+├── claudecode/
+│   └── chat.mustache
+└── cone/
+    └── chat.mustache
+```
+
+**Schema caching:**
+
+View cache status:
 ```bash
-cabal run cognition-cli -- health  # Verify hub is up
-runhaskell test/LoomTest.hs
+semantics cache status
 ```
 
-## RPC Method Naming
-
-The hub uses underscore-separated method names:
-
-| Haskell Function | RPC Method |
-|-----------------|------------|
-| `treeCreate` | `loom_tree_create` |
-| `nodeCreateText` | `loom_node_create_text` |
-| `Bash.execute` | `bash_execute` |
-| `Health.check` | `health_check` |
-
-## Example: Building a Conversation
-
-```haskell
-import Cognition.Rpc (connect, disconnect, defaultConfig)
-import qualified Cognition.Loom as Loom
-import qualified Streaming.Prelude as S
-
-main :: IO ()
-main = do
-  conn <- connect defaultConfig
-
-  -- Create tree
-  Just (Loom.TreeCreated treeId) <- S.head_ $ Loom.treeCreate conn Nothing "agent"
-
-  -- Get root node
-  Just (Loom.TreeSkeletonData skel) <- S.head_ $ Loom.treeGetSkeleton conn treeId
-  let rootId = Loom.treeSkeletonRoot skel
-
-  -- Add messages
-  Just (Loom.NodeCreated _ n1 _) <- S.head_ $
-    Loom.nodeCreateText conn treeId (Just rootId) "User: Hello!" Nothing
-
-  Just (Loom.NodeCreated _ n2 _) <- S.head_ $
-    Loom.nodeCreateText conn treeId (Just n1) "Assistant: Hi there!" Nothing
-
-  -- Render tree
-  S.mapM_ (\(Loom.TreeRenderResult _ r) -> putStrLn r) $ Loom.treeRender conn treeId
-  -- Output:
-  -- └──
-  --     └── User: Hello!
-  --         └── Assistant: Hi there!
-
-  disconnect conn
-```
-
-## File Structure
-
-```
-frontend-hs/
-├── app/
-│   └── Main.hs              -- CLI entry point
-├── src/
-│   └── Cognition/
-│       ├── Rpc.hs           -- Re-exports
-│       ├── Rpc/
-│       │   ├── Types.hs     -- JSON-RPC types
-│       │   └── Client.hs    -- WebSocket client
-│       ├── Bash.hs          -- Bash plugin API
-│       ├── Health.hs        -- Health plugin API
-│       └── Loom.hs          -- Loom plugin API
-├── test/
-│   └── LoomTest.hs          -- Integration tests
-└── cognition-client.cabal
-```
-
-## Dynamic CLI (`symbols-dyn`)
-
-A schema-driven CLI that discovers commands at runtime from the substrate:
-
+Force refresh:
 ```bash
-# List available commands
-cabal run symbols-dyn
+# Refresh is default behavior
+semantics cone chat --prompt "hello"
 
-# Execute commands
-cabal run symbols-dyn -- arbor tree-list
-cabal run symbols-dyn -- cone list
+# Use cached schema (faster):
+semantics --no-refresh cone chat --prompt "hello"
 ```
 
-### Output Modes
+## Available Activations
 
-```bash
-# Default: Template-rendered or pretty JSON
-symbols-dyn arbor tree-list
+- **arbor**: Manage conversation trees with context tracking
+- **bash**: Execute bash commands and stream output
+- **claudecode**: Manage Claude Code sessions with Arbor-backed conversation history
+- **cone**: LLM cone with persistent conversation context
+- **health**: Check hub health and uptime
 
-# Raw JSON (for piping to jq)
-symbols-dyn --raw arbor tree-list | jq '.tree_ids[0]'
+Each activation provides multiple methods. Use `semantics <activation> --help` to see available commands.
 
-# Full stream item as JSON
-symbols-dyn --json arbor tree-list
-```
+## Template Rendering
 
-### Schema Introspection
+Semantics uses Mustache templates to format output. Example template for `claudecode chat`:
 
-```bash
-# Show schema for a namespace
-symbols-dyn --schema arbor
-
-# Show schema for a specific method
-symbols-dyn --schema arbor tree-create
-```
-
-### Custom Templates
-
-Templates use Mustache syntax and are loaded from:
-1. `.substrate/templates/{namespace}/{method}.mustache` (project-local)
-2. `~/.config/symbols/templates/{namespace}/{method}.mustache` (user-global)
-
-**Template syntax:**
 ```mustache
-{{variable}}              - Simple substitution
-{{nested.path}}           - Nested path lookup
-{{#array}}...{{/array}}   - Iterate over arrays
-{{.}}                     - Current item in iteration
+{{{text}}}{{#tool_input}}
+
+🔧 {{tool_name}} {{file_path}}{{#command}}"{{.}}"{{/command}}{{pattern}}
+{{/tool_input}}
 ```
 
-**Example template** (`.substrate/templates/cone/list.mustache`):
-```mustache
-Cones:
-{{#cones}}  • {{name}} ({{id}})
-    Model: {{model_id}}
-    Tree:  {{head.tree_id}}
-{{/cones}}
-```
+This renders:
+- Chat content as plain text
+- Tool uses with formatted parameters
+- Clean streaming output
 
-**Edit templates:**
+Disable rendering with `--no-render` for raw JSON output.
+
+## Examples
+
+**Start a chat session:**
 ```bash
-# Open/create template for a method
-symbols-dyn --template arbor tree-list
+semantics claudecode chat --name dev-session --prompt "create a fibonacci function"
 ```
 
-This opens `$EDITOR` (or vi) with the template file, creating a default template if it doesn't exist.
+**List conversation trees:**
+```bash
+semantics arbor tree-list --template pretty
+```
+
+**Get method schema:**
+```bash
+semantics --schema cone chat
+```
+
+**Direct RPC calls:**
+```bash
+semantics call plexus_schema '[]'
+semantics call cone_chat '{"identifier":{"by_name":{"name":"test"}},"prompt":"hi"}'
+```
+
+## Development
+
+**Build with examples:**
+```bash
+cabal build --flag=build-examples all
+cabal run schema-discovery
+```
+
+**Run tests:**
+```bash
+cabal test all
+```
+
+**Check code:**
+```bash
+cabal check
+```
+
+## Documentation
+
+- Architecture docs: `docs/architecture/`
+- Cleanup plan: `docs/CLEANUP-PLAN.md`
+- Haddock: `cabal haddock all`
+
+## License
+
+MIT
+
+## Links
+
+- Repository: https://codeberg.org/hypermemetic/symbols
+- Issues: https://codeberg.org/hypermemetic/symbols/issues
+
+---
+
+Built with ❤️ for the Plexus ecosystem
