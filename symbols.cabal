@@ -11,10 +11,7 @@ library
   exposed-modules:
     -- Plexus - the nerve center (RPC layer)
     Plexus
-    Plexus.Types
     Plexus.Client
-    Plexus.Schema
-    Plexus.Schema.Cache
     Plexus.Dynamic
     Plexus.Renderer
     -- Activation APIs - capabilities the plexus can perform
@@ -25,6 +22,7 @@ library
   other-modules:
   build-depends:
     base ^>=4.17 || ^>=4.18 || ^>=4.19,
+    meaning,
     aeson >= 2.0,
     aeson-pretty >= 0.8,
     text >= 2.0,
@@ -54,25 +52,11 @@ library
     LambdaCase
     RecordWildCards
 
-executable symbols-cli
-  main-is:          Main.hs
-  build-depends:
-    base,
-    symbols,
-    aeson,
-    text,
-    bytestring,
-    streaming,
-    optparse-applicative >= 0.18
-  hs-source-dirs:   app
-  default-language: GHC2021
-  default-extensions:
-    OverloadedStrings
-
-executable symbols-dyn
+executable symbols
   main-is:          Dyn.hs
   build-depends:
     base,
+    meaning,
     symbols,
     aeson,
     text,
@@ -93,6 +77,7 @@ executable schema-discovery
   main-is:          SchemaDiscovery.hs
   build-depends:
     base,
+    meaning,
     symbols,
     aeson,
     text,
@@ -107,6 +92,7 @@ test-suite arbor-test
   main-is:          ArborTest.hs
   build-depends:
     base,
+    meaning,
     symbols,
     text,
     streaming
@@ -120,6 +106,7 @@ test-suite guidance-test
   main-is:          GuidanceSpec.hs
   build-depends:
     base,
+    meaning,
     symbols,
     aeson >= 2.0,
     aeson-qq >= 0.8,
@@ -141,6 +128,7 @@ test-suite cache-invalidation-test
   main-is:          CacheInvalidationSpec.hs
   build-depends:
     base,
+    meaning,
     symbols,
     aeson >= 2.0,
     text >= 2.0,
@@ -160,6 +148,7 @@ test-suite renderer-test
   main-is:          RendererSpec.hs
   build-depends:
     base,
+    meaning,
     symbols,
     aeson >= 2.0,
     aeson-qq >= 0.8,
