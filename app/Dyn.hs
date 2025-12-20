@@ -191,9 +191,9 @@ main = do
         hPutStrLn stderr "Example: symbols-dyn --template arbor tree-list"
         exitFailure
 
-  -- Handle splash/about subcommand
-  when (not (null remaining) && head remaining `elem` ["splash", "about", "version"]) $ do
-    handleSplashCommand globalOpts
+  -- Handle info/about/version subcommand
+  when (not (null remaining) && head remaining `elem` ["info", "about", "version"]) $ do
+    handleInfoCommand globalOpts
     exitSuccess
 
   -- Handle cache subcommand
@@ -237,7 +237,7 @@ main = do
         putStrLn "  -s, --schema       Dump JSON schema for a method"
         putStrLn ""
         putStrLn "Built-in commands:"
-        putStrLn "  splash/about       Show splash screen with system info"
+        putStrLn "  info               Show system info (aliases: about, version)"
         putStrLn "  cache              Manage schema cache (show, clear, status, refresh)"
         putStrLn "  call               Call any RPC method directly with JSON params"
         putStrLn ""
@@ -540,11 +540,11 @@ formatSuggestion (TryMethod method mbParams) =
 formatSuggestion (CustomGuidance message) = "Suggestion: " <> message
 
 -- ============================================================================
--- Splash/About Command
+-- Info/About Command
 -- ============================================================================
 
-handleSplashCommand :: GlobalOpts -> IO ()
-handleSplashCommand opts = do
+handleInfoCommand :: GlobalOpts -> IO ()
+handleInfoCommand opts = do
   putStrLn ""
   putStrLn "    ███████╗██╗   ██╗███╗   ███╗██████╗  ██████╗ ██╗     ███████╗"
   putStrLn "    ██╔════╝╚██╗ ██╔╝████╗ ████║██╔══██╗██╔═══██╗██║     ██╔════╝"
@@ -559,18 +559,17 @@ handleSplashCommand opts = do
   putStrLn "    License:      MIT"
   putStrLn ""
 
-  -- Show connection info
-  putStrLn "    Configuration:"
-  putStrLn $ "      Host:       " <> optHost opts
-  putStrLn $ "      Port:       " <> show (optPort opts)
-  putStrLn $ "      Endpoint:   ws://" <> optHost opts <> ":" <> show (optPort opts)
-  putStrLn $ "      Refresh:    " <> if optRefresh opts then "enabled" else "disabled"
-  putStrLn ""
-
-  -- Try to load schema and show activations
+  -- Try to load schema and show live backend info (always fetches fresh data)
   result <- loadSchema opts
   case result of
     Right cached -> do
+      -- Show connection info with live backend hash
+      putStrLn "    Connection:"
+      putStrLn $ "      Endpoint:      ws://" <> optHost opts <> ":" <> show (optPort opts)
+      putStrLn $ "      Backend Hash:  " <> T.unpack (cachedHash cached)
+      putStrLn ""
+
+      -- Show active activations (fresh from server)
       let activations = schemaActivations (cachedSchema cached)
       putStrLn $ "    Active Plexus Activations: " <> show (length activations)
       forM_ activations $ \act -> do
@@ -579,8 +578,10 @@ handleSplashCommand opts = do
         putStrLn $ "      • " <> T.unpack ns <> " - " <> T.unpack desc
       putStrLn ""
     Left err -> do
-      putStrLn "    ⚠ Could not connect to Plexus server"
-      putStrLn $ "    Error: " <> T.unpack err
+      -- Could not connect - show minimal info
+      putStrLn "    ⚠  Could not connect to Plexus server"
+      putStrLn $ "    Endpoint: ws://" <> optHost opts <> ":" <> show (optPort opts)
+      putStrLn $ "    Error:    " <> T.unpack err
       putStrLn ""
 
   putStrLn "    Commands:"
