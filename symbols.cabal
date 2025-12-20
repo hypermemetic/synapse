@@ -7,6 +7,11 @@ author:
 maintainer:
 build-type:         Simple
 
+flag build-examples
+  description: Build example programs (schema-discovery)
+  default:     False
+  manual:      True
+
 library
   exposed-modules:
     -- Plexus - the nerve center (RPC layer)
@@ -86,6 +91,8 @@ executable schema-discovery
   default-language: GHC2021
   default-extensions:
     OverloadedStrings
+  if !flag(build-examples)
+    buildable: False
 
 test-suite arbor-test
   type:             exitcode-stdio-1.0
