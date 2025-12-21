@@ -227,10 +227,10 @@ main = do
 Help text derived from schema:
 
 ```
-$ symbols-dyn --help
-symbols-dyn - Dynamic CLI for Plexus
+$ synapse --help
+synapse - Dynamic CLI for Plexus
 
-Usage: symbols-dyn [--refresh] [--host HOST] [--port PORT] COMMAND
+Usage: synapse [--refresh] [--host HOST] [--port PORT] COMMAND
 
 Commands:
   health    Health check
@@ -238,7 +238,7 @@ Commands:
   arbor     Arbor tree storage operations
   cone      Cone LLM operations
 
-$ symbols-dyn arbor --help
+$ synapse arbor --help
 Arbor tree storage operations
 
 Commands:
@@ -248,7 +248,7 @@ Commands:
   node-create-text  Create a text node
   ...
 
-$ symbols-dyn arbor tree-create --help
+$ synapse arbor tree-create --help
 Create a new conversation tree
 
 Options:

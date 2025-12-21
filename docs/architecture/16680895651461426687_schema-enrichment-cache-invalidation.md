@@ -104,14 +104,14 @@ The Haskell client's `SchemaProperty` type was missing the `propRequired` field,
 
 **Before:**
 ```
-Usage: symbols-dyn arbor node-create-text
+Usage: synapse arbor node-create-text
          [--content TEXT] [--metadata JSON] [--parent UUID] [--tree-id UUID]
          ^^^^^^^^^^^^^^^^^^^^^ all optional (all in brackets)
 ```
 
 **After:**
 ```
-Usage: symbols-dyn arbor node-create-text
+Usage: synapse arbor node-create-text
          --content TEXT --tree-id UUID [--metadata JSON] [--parent UUID]
          ^^^^^^^^^^^^^^ ^^^^^^^^^^^^^^  required first, no brackets
 ```
@@ -226,7 +226,7 @@ echo '{"jsonrpc":"2.0","id":1,"method":"plexus_activation_schema","params":["arb
 # Expected: ["tree_id", "content"]
 
 # Verify frontend help shows required params first
-cabal run symbols-dyn -- arbor node-create-text --help
+cabal run synapse -- arbor node-create-text --help
 # Expected: --content TEXT --tree-id UUID [--metadata JSON] [--parent UUID]
 ```
 

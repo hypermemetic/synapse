@@ -362,7 +362,7 @@ The new system provides **everything the middleware did, plus more:**
 
 **Request:**
 ```bash
-symbols-dyn foo bar
+synapse foo bar
 ```
 
 **Expected Stream:**
@@ -395,7 +395,7 @@ symbols-dyn foo bar
 
 **Request:**
 ```bash
-symbols-dyn bash nonexistent
+synapse bash nonexistent
 ```
 
 **Expected Stream:**
@@ -421,7 +421,7 @@ symbols-dyn bash nonexistent
 
 **Request:**
 ```bash
-symbols-dyn bash execute
+synapse bash execute
 ```
 (Missing required `command` parameter)
 
