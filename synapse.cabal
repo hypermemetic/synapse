@@ -1,5 +1,5 @@
 cabal-version:      3.0
-name:               symbols
+name:               synapse
 version:            0.1.0.0
 synopsis:           Haskell frontend for Plexus - typed APIs for LLM orchestration
 license:            MIT
@@ -57,12 +57,12 @@ library
     LambdaCase
     RecordWildCards
 
-executable semantics
+executable synapse
   main-is:          Dyn.hs
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     aeson,
     text,
     bytestring,
@@ -83,7 +83,7 @@ executable schema-discovery
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     aeson,
     text,
     streaming
@@ -100,7 +100,7 @@ test-suite arbor-test
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     text,
     streaming
   hs-source-dirs:   test
@@ -114,7 +114,7 @@ test-suite guidance-test
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     aeson >= 2.0,
     aeson-qq >= 0.8,
     text >= 2.0,
@@ -136,7 +136,7 @@ test-suite cache-invalidation-test
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     aeson >= 2.0,
     text >= 2.0,
     bytestring >= 0.11,
@@ -156,7 +156,7 @@ test-suite renderer-test
   build-depends:
     base,
     meaning,
-    symbols,
+    synapse,
     aeson >= 2.0,
     aeson-qq >= 0.8,
     text >= 2.0,

@@ -343,12 +343,12 @@ Currently we resolve but don't use the full structure. Could improve CLI:
 
 ```bash
 # Current
-symbols-dyn cone chat --identifier JSON
+synapse cone chat --identifier JSON
 
 # With resolved oneOf
-symbols-dyn cone chat --identifier-by-name TEXT
+synapse cone chat --identifier-by-name TEXT
 # OR
-symbols-dyn cone chat --identifier-by-id UUID
+synapse cone chat --identifier-by-id UUID
 ```
 
 Implementation would need to detect `oneOf` in parameter parsing:
@@ -468,7 +468,7 @@ Test with real substrate schemas:
 
 ```bash
 # Get cone schema from substrate
-symbols-dyn --schema cone chat > cone_chat.json
+synapse --schema cone chat > cone_chat.json
 
 # Verify $refs are resolved
 jq '.params.properties.identifier | has("$ref")' cone_chat.json

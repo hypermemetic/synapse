@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document analyzes what is required to automatically generate typed client code from the introspection protocol, what already exists in the substrate/symbols architecture, and what gaps remain.
+This document analyzes what is required to automatically generate typed client code from the introspection protocol, what already exists in the substrate/synapse architecture, and what gaps remain.
 
 ## Goal
 

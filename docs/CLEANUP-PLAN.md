@@ -1,14 +1,12 @@
-# Semantics Package Cleanup Plan
+# Symbols Package Cleanup Plan
 
 This document outlines the cleanup tasks required before publishing to Hackage.
-
-**Note**: The main executable has been renamed from `symbols` to `semantics` to avoid conflicting with `/usr/bin/symbols` on macOS.
 
 ## Summary
 
 - **Total Haskell Files**: 18
 - **Compiler Warnings**: 13
-- **Cabal Check Issues**: 23 (symbols) + 9 (meaning)
+- **Cabal Check Issues**: 23 (synapse) + 9 (meaning)
 - **Dead Code**: App/Main.hs (unused)
 - **Missing Documentation**: Multiple modules
 
@@ -57,12 +55,12 @@ This document outlines the cleanup tasks required before publishing to Hackage.
 ### 2.1 Unused Executables
 
 **app/Main.hs**
-- [ ] Remove `app/Main.hs` (was old symbols-cli, no longer referenced in cabal file)
+- [ ] Remove `app/Main.hs` (was old synapse-cli, no longer referenced in cabal file)
 - [ ] Verify removal: `rm app/Main.hs && cabal build all` succeeds
 
 ## Phase 3: Cabal File Metadata ✓ Complete when: `cabal check` shows 0 errors
 
-### 3.1 symbols.cabal Required Metadata
+### 3.1 synapse.cabal Required Metadata
 
 - [ ] Add `category` field (suggestion: "Network, Development, LLM")
 - [ ] Add `maintainer` field
@@ -74,7 +72,7 @@ This document outlines the cleanup tasks required before publishing to Hackage.
   ```cabal
   source-repository head
     type:     git
-    location: https://codeberg.org/hypermemetic/symbols
+    location: https://codeberg.org/hypermemetic/synapse
   ```
 
 ### 3.2 meaning.cabal Required Metadata
@@ -89,7 +87,7 @@ This document outlines the cleanup tasks required before publishing to Hackage.
 
 ### 3.3 Upper Bounds (PVP Compliance)
 
-**symbols.cabal** - Add upper bounds to all dependencies:
+**synapse.cabal** - Add upper bounds to all dependencies:
 - [ ] meaning (e.g., `meaning >= 0.1 && < 0.2`)
 - [ ] aeson (e.g., `>= 2.0 && < 2.3`)
 - [ ] aeson-pretty
@@ -133,7 +131,7 @@ Add module-level haddock (-- |) to:
 - [ ] meaning/src/Plexus/Schema.hs
 - [ ] meaning/src/Plexus/Schema/Cache.hs
 
-**symbols package:**
+**synapse package:**
 - [ ] src/Plexus.hs
 - [ ] src/Plexus/Client.hs
 - [ ] src/Plexus/Dynamic.hs
@@ -154,7 +152,7 @@ Add module-level haddock (-- |) to:
 
 ### 4.3 CHANGELOG
 
-- [ ] Create `CHANGELOG.md` for symbols (version 0.1.0.0 initial release)
+- [ ] Create `CHANGELOG.md` for synapse (version 0.1.0.0 initial release)
 - [ ] Create `meaning/CHANGELOG.md`
 
 ## Phase 5: Final Verification ✓ Complete when: All checks pass
@@ -173,7 +171,7 @@ Add module-level haddock (-- |) to:
 - [ ] meaning sdist builds: `cd meaning && cabal sdist`
 - [ ] Can install from tarball:
   ```bash
-  cabal install dist-newstyle/sdist/symbols-0.1.0.0.tar.gz
+  cabal install dist-newstyle/sdist/synapse-0.1.0.0.tar.gz
   cabal install meaning/dist-newstyle/sdist/meaning-0.1.0.0.tar.gz
   ```
 
@@ -200,7 +198,7 @@ Add module-level haddock (-- |) to:
 - [ ] Upload candidate to Hackage (dry run):
   ```bash
   cabal upload --publish meaning/dist-newstyle/sdist/meaning-0.1.0.0.tar.gz
-  cabal upload --publish dist-newstyle/sdist/symbols-0.1.0.0.tar.gz
+  cabal upload --publish dist-newstyle/sdist/synapse-0.1.0.0.tar.gz
   ```
 - [ ] Review package on Hackage candidate server
 - [ ] Verify documentation rendered correctly
@@ -209,7 +207,7 @@ Add module-level haddock (-- |) to:
 ### 6.4 Official Upload
 
 - [ ] Upload meaning to Hackage (for real)
-- [ ] Upload symbols to Hackage (for real)
+- [ ] Upload synapse to Hackage (for real)
 - [ ] Announce on Haskell Discourse / Reddit / etc.
 
 ## Success Criteria

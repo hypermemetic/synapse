@@ -5,7 +5,7 @@
 When a user omits a required parameter, they get an unhelpful server error:
 
 ```bash
-$ symbols-dyn arbor node-create-text
+$ synapse arbor node-create-text
 Subscription error: RpcErrorObj {errCode = -32602, errMessage = "Invalid params",
   errData = Just (String "missing field `tree_id` at line 1 column 2")}
 ```
@@ -13,10 +13,10 @@ Subscription error: RpcErrorObj {errCode = -32602, errMessage = "Invalid params"
 Instead, they should get a helpful CLI error:
 
 ```bash
-$ symbols-dyn arbor node-create-text
+$ synapse arbor node-create-text
 Missing required option: --tree-id
 
-Usage: symbols-dyn arbor node-create-text --tree-id UUID --content TEXT [OPTIONS]
+Usage: synapse arbor node-create-text --tree-id UUID --content TEXT [OPTIONS]
 ```
 
 ## Current Architecture
@@ -187,10 +187,10 @@ This matches user intuition: if a param can't be null and has no default, you mu
 ## Expected Result
 
 ```bash
-$ symbols-dyn arbor node-create-text
+$ synapse arbor node-create-text
 Missing: --tree-id UUID --content TEXT
 
-Usage: symbols-dyn arbor node-create-text --tree-id UUID --content TEXT
+Usage: synapse arbor node-create-text --tree-id UUID --content TEXT
                                           [--parent UUID] [--metadata JSON]
 
   Create a text node in a tree

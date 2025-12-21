@@ -73,7 +73,7 @@ This document describes the complete architecture of the self-documenting RPC sy
 │                             │                                        │
 │                             ▼                                        │
 │  4. CLI Execution                                                    │
-│     $ symbols-dyn arbor tree-get --tree-id <UUID>                   │
+│     $ synapse arbor tree-get --tree-id <UUID>                   │
 │                                                                       │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -280,20 +280,20 @@ if cachedHash == currentHash
 
 ```bash
 # Show cache contents
-symbols-dyn cache show
+synapse cache show
 
 # Check if cache is fresh
-symbols-dyn cache status
+synapse cache status
 # Output:
 #   Cached hash:  7a1a43920ee194e1
 #   Current hash: 7a1a43920ee194e1
 #   Status: Fresh ✓
 
 # Clear cache
-symbols-dyn cache clear
+synapse cache clear
 
 # Force refresh
-symbols-dyn cache refresh
+synapse cache refresh
 ```
 
 ## Phase 4: Dynamic Parser Generation
@@ -349,7 +349,7 @@ Result:
 
 ```bash
 # Required params (no brackets)
-symbols-dyn arbor node-create-text --content TEXT --tree-id UUID
+synapse arbor node-create-text --content TEXT --tree-id UUID
 
 # Then optional params (in brackets)
 [--metadata JSON] [--parent UUID]
@@ -364,8 +364,8 @@ Generated help includes:
 - Which parameters are required
 
 ```bash
-$ symbols-dyn arbor tree-get --help
-Usage: symbols-dyn arbor tree-get --tree-id UUID
+$ synapse arbor tree-get --help
+Usage: synapse arbor tree-get --tree-id UUID
 
   Get a complete tree with all nodes
 
@@ -406,12 +406,12 @@ Frontends can check the hash on every response and refresh cache if it changes.
 
 ```bash
 # Current (generic)
-$ symbols-dyn bash execute --help
-Usage: symbols-dyn bash execute [-p|--params JSON] [ARG...]
+$ synapse bash execute --help
+Usage: synapse bash execute [-p|--params JSON] [ARG...]
 
 # Would be better with type-driven schema
-$ symbols-dyn bash execute --help
-Usage: symbols-dyn bash execute --command TEXT
+$ synapse bash execute --help
+Usage: synapse bash execute --command TEXT
 ```
 
 ### Frontend Features
@@ -429,7 +429,7 @@ Usage: symbols-dyn bash execute --command TEXT
 
 ```bash
 # 1. First run - fetch and cache schemas
-$ symbols-dyn arbor tree-list
+$ synapse arbor tree-list
 # → Calls plexus_hash
 # → Calls plexus_schema
 # → Calls plexus_activation_schema for each activation
@@ -437,7 +437,7 @@ $ symbols-dyn arbor tree-list
 # → Executes command
 
 # 2. Second run - use cache
-$ symbols-dyn arbor tree-get --tree-id 00000000-0000-0000-0000-000000000000
+$ synapse arbor tree-get --tree-id 00000000-0000-0000-0000-000000000000
 # → Calls plexus_hash
 # → Compares with cached hash
 # → Hash matches, uses cache
@@ -445,7 +445,7 @@ $ symbols-dyn arbor tree-get --tree-id 00000000-0000-0000-0000-000000000000
 
 # 3. After schema change on substrate
 # (New method added to arbor, hash changes)
-$ symbols-dyn arbor tree-list
+$ synapse arbor tree-list
 # → Calls plexus_hash
 # → Hash differs from cache
 # → Refetches all schemas
@@ -453,12 +453,12 @@ $ symbols-dyn arbor tree-list
 # → Executes command
 
 # 4. Check cache status
-$ symbols-dyn cache status
+$ synapse cache status
 Cached hash:  7a1a43920ee194e1
 Current hash: 8b2b54a30ff295f2
 Status: Stale (hash mismatch)
 
-$ symbols-dyn cache refresh
+$ synapse cache refresh
 Refreshing cache...
 Cache refreshed successfully
   Hash: 8b2b54a30ff295f2

@@ -1,17 +1,17 @@
-# Semantics
+# Synapse
 
 ```
-███████╗███████╗███╗   ███╗ █████╗ ███╗   ██╗████████╗██╗ ██████╗███████╗
-██╔════╝██╔════╝████╗ ████║██╔══██╗████╗  ██║╚══██╔══╝██║██╔════╝██╔════╝
-███████╗█████╗  ██╔████╔██║███████║██╔██╗ ██║   ██║   ██║██║     ███████╗
-╚════██║██╔══╝  ██║╚██╔╝██║██╔══██║██║╚██╗██║   ██║   ██║██║     ╚════██║
-███████║███████╗██║ ╚═╝ ██║██║  ██║██║ ╚████║   ██║   ██║╚██████╗███████║
-╚══════╝╚══════╝╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═══╝   ╚═╝   ╚═╝ ╚═════╝╚══════╝
+███████╗██╗   ██╗███╗   ██╗ █████╗ ██████╗ ███████╗███████╗
+██╔════╝╚██╗ ██╔╝████╗  ██║██╔══██╗██╔══██╗██╔════╝██╔════╝
+███████╗ ╚████╔╝ ██╔██╗ ██║███████║██████╔╝███████╗█████╗
+╚════██║  ╚██╔╝  ██║╚██╗██║██╔══██║██╔═══╝ ╚════██║██╔══╝
+███████║   ██║   ██║ ╚████║██║  ██║██║     ███████║███████╗
+╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝
 ```
 
 **Haskell frontend for Plexus - Typed APIs for LLM orchestration**
 
-Semantics is a dynamic CLI that discovers and exposes backend capabilities at runtime, providing type-safe command-line interfaces to LLM orchestration systems.
+Synapse is a dynamic CLI that discovers and exposes backend capabilities at runtime, providing type-safe command-line interfaces to LLM orchestration systems.
 
 ## Features
 
@@ -24,57 +24,57 @@ Semantics is a dynamic CLI that discovers and exposes backend capabilities at ru
 ## Installation
 
 ```bash
-cabal install semantics
+cabal install synapse
 ```
 
 Or build from source:
 
 ```bash
-git clone https://codeberg.org/hypermemetic/symbols
-cd symbols
+git clone https://codeberg.org/hypermemetic/synapse
+cd synapse
 cabal build
-cabal run semantics -- info
+cabal run synapse -- info
 ```
 
 ## Quick Start
 
 **View system info:**
 ```bash
-semantics info
+synapse info
 ```
 
 **List available activations:**
 ```bash
-semantics --help
+synapse --help
 ```
 
 **Interact with Claude Code:**
 ```bash
-semantics claudecode chat --name my-session --prompt "hello"
+synapse claudecode chat --name my-session --prompt "hello"
 ```
 
 **Manage conversation trees:**
 ```bash
-semantics arbor tree-create --description "My conversation"
-semantics arbor tree-list
+synapse arbor tree-create --description "My conversation"
+synapse arbor tree-list
 ```
 
 **Chat with Cone:**
 ```bash
-semantics cone chat --id my-cone --prompt "What is the meaning of life?"
+synapse cone chat --id my-cone --prompt "What is the meaning of life?"
 ```
 
 **Execute bash commands:**
 ```bash
-semantics bash execute --command "echo hello world"
+synapse bash execute --command "echo hello world"
 ```
 
 ## Architecture
 
-Semantics consists of two packages:
+Synapse consists of two packages:
 
 - **`meaning`**: Core types and schemas (Plexus.Types, Plexus.Schema)
-- **`symbols`**: Client library and CLI implementation
+- **`synapse`**: Client library and CLI implementation
 
 The CLI dynamically builds subcommands by:
 1. Fetching the Plexus schema (`plexus_schema`)
@@ -87,7 +87,7 @@ The CLI dynamically builds subcommands by:
 
 Override with flags:
 ```bash
-semantics --host 192.168.1.100 --port 5555 cone chat --prompt "hello"
+synapse --host 192.168.1.100 --port 5555 cone chat --prompt "hello"
 ```
 
 **Template customization:**
@@ -105,16 +105,16 @@ Create custom output templates in `.substrate/templates/`:
 
 View cache status:
 ```bash
-semantics cache status
+synapse cache status
 ```
 
 Force refresh:
 ```bash
 # Refresh is default behavior
-semantics cone chat --prompt "hello"
+synapse cone chat --prompt "hello"
 
 # Use cached schema (faster):
-semantics --no-refresh cone chat --prompt "hello"
+synapse --no-refresh cone chat --prompt "hello"
 ```
 
 ## Available Activations
@@ -125,11 +125,11 @@ semantics --no-refresh cone chat --prompt "hello"
 - **cone**: LLM cone with persistent conversation context
 - **health**: Check hub health and uptime
 
-Each activation provides multiple methods. Use `semantics <activation> --help` to see available commands.
+Each activation provides multiple methods. Use `synapse <activation> --help` to see available commands.
 
 ## Template Rendering
 
-Semantics uses Mustache templates to format output. Example template for `claudecode chat`:
+Synapse uses Mustache templates to format output. Example template for `claudecode chat`:
 
 ```mustache
 {{{text}}}{{#tool_input}}
@@ -149,23 +149,23 @@ Disable rendering with `--no-render` for raw JSON output.
 
 **Start a chat session:**
 ```bash
-semantics claudecode chat --name dev-session --prompt "create a fibonacci function"
+synapse claudecode chat --name dev-session --prompt "create a fibonacci function"
 ```
 
 **List conversation trees:**
 ```bash
-semantics arbor tree-list --template pretty
+synapse arbor tree-list --template pretty
 ```
 
 **Get method schema:**
 ```bash
-semantics --schema cone chat
+synapse --schema cone chat
 ```
 
 **Direct RPC calls:**
 ```bash
-semantics call plexus_schema '[]'
-semantics call cone_chat '{"identifier":{"by_name":{"name":"test"}},"prompt":"hi"}'
+synapse call plexus_schema '[]'
+synapse call cone_chat '{"identifier":{"by_name":{"name":"test"}},"prompt":"hi"}'
 ```
 
 ## Development
@@ -198,8 +198,8 @@ MIT
 
 ## Links
 
-- Repository: https://codeberg.org/hypermemetic/symbols
-- Issues: https://codeberg.org/hypermemetic/symbols/issues
+- Repository: https://codeberg.org/hypermemetic/synapse
+- Issues: https://codeberg.org/hypermemetic/synapse/issues
 
 ---
 

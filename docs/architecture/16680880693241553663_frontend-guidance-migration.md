@@ -196,8 +196,8 @@ The `action` field tells frontends what to suggest:
 ```
 Error: Activation 'foo' not found
 
-Try: symbols-dyn --help
-Or:  symbols-dyn schema
+Try: synapse --help
+Or:  synapse schema
 ```
 
 #### 2. CallActivationSchema
@@ -215,8 +215,8 @@ Or:  symbols-dyn schema
 ```
 Error: Invalid parameters for bash.execute
 
-Try: symbols-dyn bash --help
-Or:  symbols-dyn schema bash
+Try: synapse bash --help
+Or:  synapse schema bash
 ```
 
 #### 3. TryMethod
@@ -237,7 +237,7 @@ Error: Method 'invalid' not found in activation 'bash'
 
 Available methods: execute
 
-Try: symbols-dyn bash execute "echo 'Hello, World!'"
+Try: synapse bash execute "echo 'Hello, World!'"
 ```
 
 #### 4. Custom
@@ -342,7 +342,7 @@ function parseGuidance(event: GuidanceEvent): GuidanceInfo {
     case "activation_not_found":
       return {
         problem: `Activation '${event.activation}' not found`,
-        suggestion: "Run 'symbols-dyn --help' to see available activations",
+        suggestion: "Run 'synapse --help' to see available activations",
         nextAction: "call_plexus_schema"
       };
 
@@ -351,10 +351,10 @@ function parseGuidance(event: GuidanceEvent): GuidanceInfo {
         problem: `Method '${event.method}' not found in '${event.activation}'`,
         suggestion: event.available_methods
           ? `Available methods: ${event.available_methods.join(", ")}`
-          : `Run 'symbols-dyn ${event.activation} --help'`,
+          : `Run 'synapse ${event.activation} --help'`,
         nextAction: event.action === "try_method"
           ? buildTryMethodCommand(event)
-          : `symbols-dyn schema ${event.activation}`
+          : `synapse schema ${event.activation}`
       };
 
     case "invalid_params":
@@ -362,7 +362,7 @@ function parseGuidance(event: GuidanceEvent): GuidanceInfo {
         problem: `Invalid parameters: ${event.reason}`,
         suggestion: event.method_schema
           ? formatSchemaHelp(event.method_schema)
-          : `Run 'symbols-dyn schema ${event.namespace}'`,
+          : `Run 'synapse schema ${event.namespace}'`,
         nextAction: event.method_schema ? null : `call_activation_schema`
       };
   }
@@ -441,13 +441,13 @@ formatErrorWithGuidance errorEvent guidance =
 formatSuggestion :: SuggestionAction -> Text
 formatSuggestion = \case
   CallPlexusSchema ->
-    "Try: symbols-dyn --help"
+    "Try: synapse --help"
 
   CallActivationSchema ns ->
-    "Try: symbols-dyn " <> ns <> " --help"
+    "Try: synapse " <> ns <> " --help"
 
   TryMethod method (Just params) ->
-    "Try: symbols-dyn " <> formatMethodCall method params
+    "Try: synapse " <> formatMethodCall method params
 
   TryMethod method Nothing ->
     "Available method: " <> method
@@ -499,7 +499,7 @@ switch (event.type) {
 
 ```bash
 # Call unknown activation
-symbols-dyn foo bar
+synapse foo bar
 
 # Expected stream:
 # 1. Guidance: { error_kind: "activation_not_found", ... }
@@ -516,7 +516,7 @@ symbols-dyn foo bar
 
 ```bash
 # Call unknown method on bash
-symbols-dyn bash invalid
+synapse bash invalid
 
 # Expected stream:
 # 1. Guidance: { error_kind: "method_not_found", available_methods: ["execute"], ... }
@@ -532,7 +532,7 @@ symbols-dyn bash invalid
 
 ```bash
 # Call bash.execute without required params
-symbols-dyn bash execute
+synapse bash execute
 
 # Expected stream:
 # 1. Guidance: { error_kind: "invalid_params", method_schema: {...}, ... }
@@ -548,7 +548,7 @@ symbols-dyn bash execute
 
 ```bash
 # Successful call
-symbols-dyn bash execute "echo hello"
+synapse bash execute "echo hello"
 
 # Expected stream:
 # 1. Data: { type: "data", content_type: "bash.stdout", ... }
@@ -624,26 +624,26 @@ formatGuidance :: GuidanceEvent -> Text
 formatGuidance GuidanceEvent{..} =
   case geAction of
     CallPlexusSchema ->
-      "Try: symbols-dyn --help"
+      "Try: synapse --help"
 
     CallActivationSchema ns ->
       T.unlines
         [ "Available activations can be listed with:"
-        , "  symbols-dyn --help"
+        , "  synapse --help"
         , ""
         , "For " <> ns <> " schema:"
-        , "  symbols-dyn " <> ns <> " --help"
+        , "  synapse " <> ns <> " --help"
         ]
 
     TryMethod method (Just params) | Just methods <- geAvailableMethods ->
       T.unlines
         [ "Available methods: " <> T.intercalate ", " methods
         , ""
-        , "Try: symbols-dyn " <> formatMethodInvocation method params
+        , "Try: synapse " <> formatMethodInvocation method params
         ]
 
     TryMethod method Nothing ->
-      "Try: symbols-dyn --help " <> method
+      "Try: synapse --help " <> method
 
     Custom msg ->
       "Suggestion: " <> msg

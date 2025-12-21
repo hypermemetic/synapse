@@ -65,7 +65,7 @@ We performed a comprehensive audit using multiple tools and methods:
 **Method**: Manual inspection + build dependency graph
 
 **Findings**:
-- `app/Main.hs`: Leftover from old `symbols-cli`, no longer referenced
+- `app/Main.hs`: Leftover from old `synapse`, no longer referenced
 - `examples/SchemaDiscovery.hs`: Intentionally kept (behind `build-examples` flag)
 
 **Impact**: Minor - one file to delete, but important for cleanliness
