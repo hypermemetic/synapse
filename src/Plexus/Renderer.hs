@@ -1,6 +1,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE LambdaCase #-}
 
 -- | Template-based output renderer for CLI responses
 --
@@ -8,7 +9,8 @@
 -- Templates can be loaded from:
 --   1. Project-local: .substrate/templates/
 --   2. User global: ~/.config/symbols/templates/
---   3. Built-in defaults (JSON)
+--   3. Schema-generated defaults (from return type)
+--   4. Built-in JSON fallback
 module Plexus.Renderer
   ( -- * Types
     RendererConfig(..)
@@ -26,14 +28,18 @@ module Plexus.Renderer
   , render
   , renderValue
   , renderWithDefault
+  , renderWithSchema
     -- * Utilities
   , formatJson
   , formatPrettyJson
   ) where
 
 import Control.Exception (SomeException, catch)
-import Data.Aeson (Value, encode)
+import Data.Aeson (Value(..), encode)
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Aeson.Key as K
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import Data.Maybe (fromMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -195,3 +201,122 @@ formatJson = TE.decodeUtf8 . LBS.toStrict . encode
 -- | Pretty-printed JSON format
 formatPrettyJson :: Value -> Text
 formatPrettyJson = TE.decodeUtf8 . LBS.toStrict . AP.encodePretty
+
+-- ============================================================================
+-- Schema-based Rendering
+-- ============================================================================
+
+-- | Render a value with schema-generated templates as fallback
+--
+-- Priority:
+--   1. User-defined template file
+--   2. Schema-generated template (from return type)
+--   3. Pretty JSON fallback
+--
+-- Takes the return schema JSON value from plexus_full_schema.
+renderWithSchema :: RendererConfig
+                 -> Text              -- ^ Namespace
+                 -> Text              -- ^ Method
+                 -> Maybe Value       -- ^ Return schema from plexus_full_schema
+                 -> Value             -- ^ Data to render
+                 -> IO (Either RenderError Text)
+renderWithSchema config namespace method mReturnSchema value = do
+  -- First, try user-defined template
+  mPath <- resolveTemplate config namespace method
+  case mPath of
+    Just path -> loadTemplate path >>= \case
+      Right template -> pure $ renderValue template value
+      Left _ -> trySchemaFallback
+
+    Nothing -> trySchemaFallback
+  where
+    trySchemaFallback = case mReturnSchema of
+      Nothing -> pure $ Right $ renderWithFormat (defaultFormat config) value
+      Just returnSchema ->
+        case parseAndRender returnSchema value of
+          Just rendered -> pure $ Right rendered
+          Nothing -> pure $ Right $ renderWithFormat (defaultFormat config) value
+
+    -- Parse schema and render with generated template
+    parseAndRender :: Value -> Value -> Maybe Text
+    parseAndRender schema val = do
+      -- Import inline to avoid circular deps - this could be refactored
+      -- For now, we just extract the variant type and use it
+      variantType <- getVariantType val
+      -- Generate simple inline template based on variant
+      Just $ renderVariantSimple variantType val
+
+    -- Get the "type" field from the value to determine variant
+    getVariantType :: Value -> Maybe Text
+    getVariantType (Object o) = case KM.lookup (K.fromText "type") o of
+      Just (String t) -> Just t
+      _ -> Nothing
+    getVariantType _ = Nothing
+
+    -- Simple variant-based rendering without full schema parsing
+    -- This is a lightweight inline version; for full power, use Plexus.Template
+    renderVariantSimple :: Text -> Value -> Text
+    renderVariantSimple variantType val = case variantType of
+      -- Chat streaming: just output content
+      "chat_content" -> extractField "content" val
+      "content" -> extractField "content" val
+
+      -- Completion events: checkmark with minimal info
+      "chat_complete" -> "\x2713 Complete" <> maybeUsage val <> "\n"
+      "complete" -> "\x2713 Complete\n"
+
+      -- Error events
+      "error" -> "Error: " <> extractField "message" val <> "\n"
+
+      -- List events: try to format as list (check variant name or if value has array)
+      _ | "_list" `T.isSuffixOf` variantType -> renderListVariant val
+        | hasArrayField val -> renderListVariant val
+
+      -- Default: pretty JSON
+      _ -> formatPrettyJson val
+
+    -- Check if value contains an array field (indicates list-like data)
+    hasArrayField :: Value -> Bool
+    hasArrayField (Object o) = any isArrayValue (KM.elems o)
+    hasArrayField _ = False
+
+    isArrayValue :: Value -> Bool
+    isArrayValue (Array _) = True
+    isArrayValue _ = False
+
+    extractField :: Text -> Value -> Text
+    extractField field (Object o) = case KM.lookup (K.fromText field) o of
+      Just (String t) -> t
+      Just v -> formatPrettyJson v
+      Nothing -> ""
+    extractField _ _ = ""
+
+    maybeUsage :: Value -> Text
+    maybeUsage (Object o) = case KM.lookup (K.fromText "usage") o of
+      Just (Object usage) -> case KM.lookup (K.fromText "total_tokens") usage of
+        Just (Number n) -> " (" <> T.pack (show (round n :: Int)) <> " tokens)"
+        _ -> ""
+      _ -> ""
+    maybeUsage _ = ""
+
+    renderListVariant :: Value -> Text
+    renderListVariant (Object o) =
+      -- Find the array field
+      case [(k, arr) | (k, Array arr) <- KM.toList o, K.toText k /= "type"] of
+        [(_, items)] ->
+          T.unlines $ map renderListItem (toList items)
+        _ -> formatPrettyJson (Object o)
+    renderListVariant v = formatPrettyJson v
+
+    renderListItem :: Value -> Text
+    renderListItem (Object o) =
+      -- Try to find a name or id field
+      let name = case KM.lookup (K.fromText "name") o of
+            Just (String n) -> n
+            _ -> case KM.lookup (K.fromText "id") o of
+              Just (String i) -> i
+              _ -> formatPrettyJson (Object o)
+      in "  - " <> name
+    renderListItem v = "  - " <> formatPrettyJson v
+
+    toList arr = foldr (:) [] arr
