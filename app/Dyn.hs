@@ -33,7 +33,7 @@ import Plexus.Types (PlexusStreamItem(..), GuidanceErrorType(..), GuidanceSugges
 import Plexus.Schema (PlexusSchema(..), PlexusSchemaEvent(..), ActivationInfo(..), EnrichedSchema(..), SchemaProperty(..), ActivationSchemaEvent(..), ActivationFullSchema(..), MethodSchemaInfo(..), FullSchemaEvent(..), PlexusHash(..), PlexusHashEvent(..), extractSchemaEvent, extractActivationSchemaEvent, extractFullSchemaEvent, extractHashEvent, MethodSchema(..), parseMethodSchemas)
 import Plexus.Schema.Cache
 import Plexus.Dynamic (CommandInvocation(..), buildDynamicParserWithSchemas)
-import Plexus.Renderer (formatPrettyJson, RendererConfig)
+import Plexus.Renderer (formatPrettyJson, RendererConfig, renderWithSchema)
 import qualified Plexus.Renderer as Renderer
 import qualified Data.Map.Strict as Map
 
@@ -431,8 +431,10 @@ printResult opts rendererCfg namespace method guidanceRef schema fullSchemas ite
       else do
         -- Enrich data for better template rendering (e.g., merge tool_name into tool_input)
         let enrichedDat = enrichEventData dat
-        -- Try to render with template
-        result <- Renderer.render rendererCfg namespace method enrichedDat
+        -- Look up return schema for this method
+        let mReturnSchema = lookupMethodReturnSchema namespace method fullSchemas
+        -- Try to render with schema-aware renderer
+        result <- renderWithSchema rendererCfg namespace method mReturnSchema enrichedDat
         case result of
           Right rendered -> do
             -- Template found: print without header (for clean streaming output)
@@ -814,3 +816,10 @@ defaultTemplateContent = unlines
   , ""
   , "{{type}}"
   ]
+
+-- | Look up the return schema for a method from the full schemas
+lookupMethodReturnSchema :: Text -> Text -> Map.Map Text ActivationFullSchema -> Maybe Value
+lookupMethodReturnSchema namespace method fullSchemas = do
+  fullSchema <- Map.lookup namespace fullSchemas
+  methodInfo <- find (\m -> methodInfoName m == method) (fullSchemaMethods fullSchema)
+  methodInfoReturns methodInfo

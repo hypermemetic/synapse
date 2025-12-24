@@ -19,6 +19,11 @@ library
     Plexus.Client
     Plexus.Dynamic
     Plexus.Renderer
+    -- Template generation (schema-driven)
+    Plexus.Template
+    Plexus.Template.Schema
+    Plexus.Template.Gen
+    Plexus.Template.Render
     -- Activation APIs - capabilities the plexus can perform
     Activation.Arbor
     Activation.Cone
@@ -160,6 +165,25 @@ test-suite renderer-test
     aeson >= 2.0,
     aeson-qq >= 0.8,
     text >= 2.0,
+    hspec >= 2.10
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+    QuasiQuotes
+  ghc-options:      -threaded -rtsopts -with-rtsopts=-N
+
+test-suite template-gen-test
+  type:             exitcode-stdio-1.0
+  main-is:          TemplateGenSpec.hs
+  build-depends:
+    base,
+    meaning,
+    synapse,
+    aeson >= 2.0,
+    aeson-qq >= 0.8,
+    text >= 2.0,
+    containers >= 0.6,
     hspec >= 2.10
   hs-source-dirs:   test
   default-language: GHC2021
