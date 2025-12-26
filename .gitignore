@@ -1,36 +1,126 @@
+# Environment
+.env
+.env.*
+!.env.example
+
+# Secrets
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.yaml
+secrets.json
+
+# Node / TypeScript
+node_modules/
+dist/
+build/
+*.log
+*.tsbuildinfo
+.npm/
+.yarn/
+.pnpm-store/
+
+# Go
+bin/
+pkg/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+vendor/
+
 # Rust
 target/
 Cargo.lock
-*.rs.bk
+*.rlib
 
 # Haskell
-dist/
-dist-newstyle/
 .stack-work/
+dist-newstyle/
 *.hi
 *.o
-*.dyn_hi
-*.dyn_o
-*.hspp
-*.hie
-.ghc.environment.*
-cabal-dev
-*.prof
-*.aux
-*.hp
-*.eventlog
+*.chi
+*.chs.h
 .cabal-sandbox/
 cabal.sandbox.config
-cabal.config
-cabal.project.local
-cabal.project.local~
-.HTF/
 .ghc.environment.*
+*.eventlog
+*.hp
+*.prof
 
-.env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.Python
+*.egg-info/
+.eggs/
+*.egg
 
-# SQLite databases
-*.db
-*.sqlite
-*.sqlite3
-agents.db
+# Java / Kotlin / Scala
+*.class
+*.jar
+*.war
+.gradle/
+build/
+.kotlin/
+
+# C / C++
+*.o
+*.obj
+*.a
+*.lib
+*.out
+
+# macOS
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+
+# Linux
+*~
+.nfs*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Editors / IDEs
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+*.sublime-workspace
+*.sublime-project
+.project
+.classpath
+.settings/
+*.iml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Coverage / Testing
+coverage/
+.nyc_output/
+*.lcov
+.coverage
+htmlcov/
+
+# Misc
+tmp/
+temp/
+.cache/
+*.bak
+*.tmp
