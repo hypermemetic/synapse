@@ -192,9 +192,22 @@ readMaybe s = case reads s of
   [(x, "")] -> Just x
   _ -> Nothing
 
+-- | ASCII splash logo
+splash :: Text
+splash = T.unlines
+  [ ""
+  , "███████╗██╗   ██╗███╗   ██╗ █████╗ ██████╗ ███████╗███████╗"
+  , "██╔════╝╚██╗ ██╔╝████╗  ██║██╔══██╗██╔══██╗██╔════╝██╔════╝"
+  , "███████╗ ╚████╔╝ ██╔██╗ ██║███████║██████╔╝███████╗█████╗  "
+  , "╚════██║  ╚██╔╝  ██║╚██╗██║██╔══██║██╔═══╝ ╚════██║██╔══╝  "
+  , "███████║   ██║   ██║ ╚████║██║  ██║██║     ███████║███████╗"
+  , "╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝"
+  , ""
+  ]
+
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
-cliHeader = T.pack $ fst $ renderFailure failure "synapse"
+cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
   where
     failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
 
@@ -256,8 +269,8 @@ printResult False item = case item of
 argsInfo :: ParserInfo Args
 argsInfo = info (argsParser <**> helper)
   ( fullDesc
- <> header "synapse-algebra - Categorical CLI for Plexus"
- <> progDesc "Navigate and invoke Plexus methods using algebraic machinery"
+ <> header "synapse - Algebraic CLI for Plexus"
+ <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
   )
 
 argsParser :: Parser Args
