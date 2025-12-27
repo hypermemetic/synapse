@@ -1,61 +1,50 @@
-{-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE ApplicativeDo #-}
 
--- | Synapse CLI - Schema-driven interface to Plexus
+-- | Synapse CLI - Algebraic Implementation
 --
--- = Design
+-- This executable uses the categorical machinery:
+-- - Effect stack (SynapseM) with caching and cycle detection
+-- - Reified algebras for navigation, rendering, completion
+-- - Proper error handling
 --
--- The CLI discovers commands at runtime from the schema coalgebra:
--- - Path segments are positional arguments
--- - Schema is fetched lazily as we navigate
--- - Methods at the target path become available commands
---
--- = Examples
---
--- @
--- synapse                          # show root help
--- synapse echo                     # show echo help
--- synapse echo once --message hi   # invoke echo.once
--- synapse solar earth info         # invoke solar.earth.info
--- @
+-- Compare with Main.hs which takes pragmatic shortcuts.
 module Main where
 
-import Control.Exception (SomeException, catch)
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
-import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
+import qualified Data.Text.Encoding as TE
 import Options.Applicative
-import qualified Streaming.Prelude as S
-import System.Exit (exitFailure)
+import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
-import Plexus (connect, disconnect, defaultConfig)
-import Plexus.Client (PlexusConfig(..), plexusRpc)
 import Plexus.Types (PlexusStreamItem(..))
-import Plexus.Schema.Recursive
+
+import Synapse.Schema.Types
+import Synapse.Monad
+import Synapse.Algebra.Navigate
+import Synapse.Algebra.Render (renderSchema, renderMethodFull)
+import Synapse.Transport
 
 -- ============================================================================
 -- Types
 -- ============================================================================
 
-data GlobalOpts = GlobalOpts
-  { optHost    :: String
-  , optPort    :: Int
-  , optJson    :: Bool
-  , optDryRun  :: Bool
-  , optParams  :: Maybe Text  -- ^ Raw JSON params
-  } deriving Show
-
--- | Command result from parsing
-data Command
-  = CmdInvoke [Text] Text Value   -- ^ path (namespaces), method, params
-  | CmdShowHelp [Text]            -- ^ show help for path
+data Args = Args
+  { argHost    :: Text
+  , argPort    :: Int
+  , argJson    :: Bool
+  , argDryRun  :: Bool
+  , argSchema  :: Bool         -- ^ Show raw schema JSON
+  , argParams  :: Maybe Text   -- ^ JSON params via -p
+  , argRpc     :: Maybe Text   -- ^ Raw JSON-RPC passthrough
+  , argPath    :: [Text]       -- ^ Path segments and --key value params
+  }
   deriving Show
 
 -- ============================================================================
@@ -64,305 +53,239 @@ data Command
 
 main :: IO ()
 main = do
-  -- Parse basic args first (path and global opts)
-  (global, pathSegs) <- execParser basicParserInfo
-
-  -- Fetch schema for the path
-  schemaResult <- fetchSchemaForPath global pathSegs
-  case schemaResult of
+  args <- execParser argsInfo
+  env <- initEnv (argHost args) (argPort args)
+  result <- runSynapseM env (dispatch args)
+  case result of
     Left err -> do
-      hPutStrLn stderr $ "Error: " <> T.unpack err
+      hPutStrLn stderr $ renderError err
       exitFailure
-    Right (schema, remainingPath) ->
-      -- The namespace path is pathSegs minus remainingPath
-      let namespacePath = take (length pathSegs - length remainingPath) pathSegs
-          isRoot = null pathSegs
-      in case remainingPath of
-        [] -> do
-          -- No remaining path - show help for this schema
-          if isRoot
+    Right () -> exitSuccess
+
+-- | Dispatch based on navigation result
+dispatch :: Args -> SynapseM ()
+dispatch Args{..} = do
+  -- Mode 1: Raw JSON-RPC passthrough
+  case argRpc of
+    Just rpcJson -> do
+      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 rpcJson) of
+        Left err -> throwParse $ T.pack err
+        Right rpcReq -> do
+          items <- invokeRawRpc rpcReq
+          liftIO $ mapM_ (printResult argJson) items
+      return ()
+
+    Nothing -> do
+      -- Parse path and inline params (--key value pairs)
+      let (pathSegs, inlineParams) = parsePathAndParams argPath
+
+      -- Mode 2: Schema request
+      if argSchema
+        then do
+          items <- invokeRaw (buildSchemaMethod pathSegs) (object [])
+          liftIO $ mapM_ (printResult True) items  -- Always JSON for schema
+        else do
+          -- Mode 3: Normal navigation
+          if null pathSegs
             then do
-              TIO.putStr cliHeader
-              TIO.putStr "\n\n"
-              TIO.putStr $ renderSchema schema
-            else TIO.putStr $ renderSchema schema
-        [methodName] ->
-          -- Single remaining segment - might be a method
-          case findMethod methodName schema of
-            Just method ->
-              case optParams global of
-                Just jsonStr -> case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
-                  Right params -> runInvoke global namespacePath methodName params
-                  Left err -> do
-                    hPutStrLn stderr $ "Invalid JSON params: " <> err
-                    exitFailure
-                Nothing ->
-                  -- No params: show method help
-                  TIO.putStr $ renderMethodFull method
-            Nothing -> do
-              -- Not a method - show error
-              hPutStrLn stderr $ "Unknown method or namespace: " <> T.unpack methodName
-              TIO.putStr $ renderSchema schema
-              exitFailure
-        (seg:_) -> do
-          -- Multiple remaining segments but we couldn't navigate
-          hPutStrLn stderr $ "Unknown namespace: " <> T.unpack seg
-          TIO.putStr $ renderSchema schema
-          exitFailure
+              rootSchema <- navigate []
+              case rootSchema of
+                ViewPlugin schema _ -> liftIO $ do
+                  TIO.putStr cliHeader
+                  TIO.putStr "\n\n"
+                  TIO.putStr $ renderSchema schema
+                _ -> pure ()
+            else do
+              -- Navigate to target
+              view <- navigate pathSegs
+              case view of
+                -- Landed on a plugin: show help
+                ViewPlugin schema _ ->
+                  liftIO $ TIO.putStr $ renderSchema schema
 
--- | Find a method by name in a schema
-findMethod :: Text -> PluginSchema -> Maybe MethodSchema
-findMethod name schema =
-  case filter ((== name) . methodName) (psMethods schema) of
-    [m] -> Just m
-    _   -> Nothing
+                -- Landed on a method: invoke or show help
+                ViewMethod method path -> do
+                  -- Build params: -p JSON takes precedence, then inline --key value
+                  params <- case argParams of
+                    Just jsonStr ->
+                      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
+                        Left err -> throwParse $ T.pack err
+                        Right p -> pure p
+                    Nothing
+                      | not (null inlineParams) -> pure $ buildParamsObject inlineParams
+                      | otherwise -> pure $ object []
 
--- ============================================================================
--- Argument Parsing
--- ============================================================================
-
-basicParserInfo :: ParserInfo (GlobalOpts, [Text])
-basicParserInfo = info (parser <**> helper)
-  ( fullDesc
- <> header "synapse - CLI for Plexus"
- <> progDesc "Navigate and invoke Plexus methods"
-  )
+                  if argDryRun
+                    then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
+                    else if hasRequiredParams method && params == object [] && null inlineParams
+                      then liftIO $ TIO.putStrLn $ renderMethodFull method
+                      else invokeMethod path params
   where
-    parser = (,) <$> globalParser <*> pathParser
+    invokeMethod path params = do
+      let namespacePath = init path  -- path without method name
+      let methodName' = last path
+      items <- invoke namespacePath methodName' params
+      liftIO $ mapM_ (printResult argJson) items
 
--- | Global options
-globalParser :: Parser GlobalOpts
-globalParser = GlobalOpts
-  <$> strOption
-      ( long "host" <> short 'H' <> metavar "HOST"
-     <> value "127.0.0.1" <> showDefault
-     <> help "Plexus server host" )
-  <*> option auto
-      ( long "port" <> short 'P' <> metavar "PORT"
-     <> value 4444 <> showDefault
-     <> help "Plexus server port" )
-  <*> switch
-      ( long "json" <> short 'j'
-     <> help "Output raw JSON stream" )
-  <*> switch
-      ( long "dry-run" <> short 'n'
-     <> help "Show JSON-RPC request without sending" )
-  <*> optional (strOption
-      ( long "params" <> short 'p' <> metavar "JSON"
-     <> help "Method parameters as JSON object" ))
+    -- Check if method has required parameters
+    hasRequiredParams :: MethodSchema -> Bool
+    hasRequiredParams m = case methodParams m of
+      Nothing -> False
+      Just (Object o) -> case KM.lookup "required" o of
+        Just (Array arr) -> not (null arr)
+        _ -> False
+      Just _ -> False
 
--- | Path segments as positional arguments
-pathParser :: Parser [Text]
-pathParser = many $ argument (T.pack <$> str)
-  ( metavar "PATH..."
- <> help "Path to plugin/method (e.g., solar earth info)" )
+    -- Build schema method path
+    buildSchemaMethod :: [Text] -> Text
+    buildSchemaMethod [] = "plexus.schema"
+    buildSchemaMethod segs = T.intercalate "." segs <> ".schema"
 
--- ============================================================================
--- Schema Navigation
--- ============================================================================
+    -- Invoke raw JSON-RPC request
+    invokeRawRpc :: Value -> SynapseM [PlexusStreamItem]
+    invokeRawRpc rpcReq = do
+      case rpcReq of
+        Object o -> case (KM.lookup "method" o, KM.lookup "params" o) of
+          (Just (String method), Just params) -> invokeRaw method params
+          (Just (String method), Nothing) -> invokeRaw method (object [])
+          _ -> throwParse "JSON-RPC must have 'method' field"
+        _ -> throwParse "JSON-RPC must be an object"
 
--- | Fetch schema for a path, navigating through children
--- Returns the deepest schema we could reach and any remaining path segments
-fetchSchemaForPath :: GlobalOpts -> [Text] -> IO (Either Text (PluginSchema, [Text]))
-fetchSchemaForPath opts path = navigatePath opts [] path
-
--- | Navigate through schemas, fetching children as needed
-navigatePath :: GlobalOpts -> [Text] -> [Text] -> IO (Either Text (PluginSchema, [Text]))
-navigatePath opts visited [] = do
-  -- Fetch schema at current position
-  schemaResult <- fetchSchemaAt opts visited
-  case schemaResult of
-    Left err -> pure $ Left err
-    Right schema -> pure $ Right (schema, [])
-navigatePath opts visited (seg:rest) = do
-  -- Fetch schema at current position
-  schemaResult <- fetchSchemaAt opts visited
-  case schemaResult of
-    Left err -> pure $ Left err
-    Right schema ->
-      -- Check if seg is a child namespace
-      if seg `elem` childNamespaces schema
-        then navigatePath opts (visited ++ [seg]) rest
-        else
-          -- seg is not a child - might be a method or error
-          -- Return current schema with remaining path
-          pure $ Right (schema, seg:rest)
-
--- | Fetch schema at a specific path
--- Uses plexus_call to route to the appropriate schema method
-fetchSchemaAt :: GlobalOpts -> [Text] -> IO (Either Text PluginSchema)
-fetchSchemaAt opts path = do
-  let cfg = defaultConfig { plexusHost = optHost opts, plexusPort = optPort opts }
-  -- Build the schema method path: plexus.schema, echo.schema, solar.earth.schema, etc.
-  let schemaMethod = if null path
-        then "plexus.schema"
-        else T.intercalate "." path <> ".schema"
-  let callParams = object ["method" .= schemaMethod]
-  doFetch cfg callParams `catch` \(e :: SomeException) ->
-    pure $ Left $ T.pack $ "Connection error: " <> show e
+-- | Parse path segments and inline key=value params
+-- Returns (path segments, [(key, value)] params)
+-- Example: ["echo", "once", "message=hello", "count=3"]
+--       -> (["echo", "once"], [("message", "hello"), ("count", "3")])
+parsePathAndParams :: [Text] -> ([Text], [(Text, Text)])
+parsePathAndParams = go [] []
   where
-    doFetch cfg params = do
-      conn <- connect cfg
-      mSchema <- S.head_ $ S.mapMaybe extractPluginSchema $
-        plexusRpc conn "plexus_call" params
-      disconnect conn
-      case mSchema of
-        Just (Right s) -> pure $ Right s
-        Just (Left e)  -> pure $ Left e
-        Nothing        -> pure $ Left "No schema received"
+    go path params [] = (reverse path, reverse params)
+    go path params (x:xs)
+      | Just (k, v) <- parseKeyValue x =
+          go path ((k, v) : params) xs
+      | otherwise =
+          go (x : path) params xs
 
-extractPluginSchema :: PlexusStreamItem -> Maybe (Either Text PluginSchema)
-extractPluginSchema (StreamData _ _ ct dat)
-  -- Content type ends with ".schema" (e.g., "plexus.schema", "echo.schema", "solar.earth.schema")
-  | ".schema" `T.isSuffixOf` ct = Just $ parsePluginSchema dat
-  | otherwise = Nothing
-extractPluginSchema (StreamError _ _ err _) = Just (Left err)
-extractPluginSchema _ = Nothing
+    -- Parse "key=value" into Just (key, value), or Nothing
+    parseKeyValue :: Text -> Maybe (Text, Text)
+    parseKeyValue t = case T.breakOn "=" t of
+      (k, rest)
+        | not (T.null rest) && not (T.null k) ->
+            Just (k, T.drop 1 rest)  -- drop the "="
+        | otherwise -> Nothing
 
--- ============================================================================
--- Command Execution
--- ============================================================================
+-- | Build JSON object from key-value pairs
+buildParamsObject :: [(Text, Text)] -> Value
+buildParamsObject pairs = object
+  [ (K.fromText k, inferValue v) | (k, v) <- pairs ]
+  where
+    -- Try to infer the JSON type from the string value
+    inferValue :: Text -> Value
+    inferValue t
+      | t == "true" = Bool True
+      | t == "false" = Bool False
+      | Just n <- readMaybe (T.unpack t) :: Maybe Integer = Number (fromInteger n)
+      | Just n <- readMaybe (T.unpack t) :: Maybe Double = Number (realToFrac n)
+      | otherwise = String t
 
-runInvoke :: GlobalOpts -> [Text] -> Text -> Value -> IO ()
-runInvoke opts pathSegs method params = do
-  -- Build the full method path: path + method
-  -- For root level, prefix with "plexus"
-  let fullPath = if null pathSegs then ["plexus"] else pathSegs
-  let dotPath = T.intercalate "." (fullPath ++ [method])
-  let callParams = object ["method" .= dotPath, "params" .= params]
-  let rpcRequest = object
-        [ "jsonrpc" .= ("2.0" :: Text)
-        , "id" .= (1 :: Int)
-        , "method" .= ("plexus_call" :: Text)
-        , "params" .= callParams
-        ]
-  if optDryRun opts
-    then LBS.putStrLn $ encode rpcRequest
-    else do
-      let cfg = defaultConfig { plexusHost = optHost opts, plexusPort = optPort opts }
-      conn <- connect cfg
-      S.mapM_ (printResult opts) $ plexusRpc conn "plexus_call" callParams
-      disconnect conn
-
-printResult :: GlobalOpts -> PlexusStreamItem -> IO ()
-printResult opts item
-  | optJson opts = LBS.putStrLn $ encode item
-printResult _ (StreamData _ _ _ dat) = do
-  TIO.putStrLn $ formatJson dat
-  hFlush stdout
-printResult _ (StreamProgress _ _ msg _) = do
-  TIO.putStr msg
-  TIO.putStr "\r"
-  hFlush stdout
-printResult _ (StreamError _ _ err _) =
-  hPutStrLn stderr $ "Error: " <> T.unpack err
-printResult _ _ = pure ()
-
-formatJson :: Value -> Text
-formatJson = TE.decodeUtf8 . LBS.toStrict . encode
-
--- ============================================================================
--- Schema Rendering
--- ============================================================================
-
--- | Render schema to text - shows current node's namespaces and methods
-renderSchema :: PluginSchema -> Text
-renderSchema schema = T.unlines $
-  [ psNamespace schema
-  , psDescription schema
-  , ""
-  ] <>
-  (if null (pluginChildren schema) then [] else
-    [ "activations:"
-    ] <> map renderChildSummary (sortOn csNamespace $ pluginChildren schema) <> [""]
-  ) <>
-  (if null (psMethods schema) then [] else
-    [ "methods:"
-    ] <> map renderMethod (sortOn methodName $ psMethods schema)
-  )
+readMaybe :: Read a => String -> Maybe a
+readMaybe s = case reads s of
+  [(x, "")] -> Just x
+  _ -> Nothing
 
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
 cliHeader = T.pack $ fst $ renderFailure failure "synapse"
   where
-    failure = parserFailure defaultPrefs basicParserInfo (ShowHelpText Nothing) mempty
+    failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
 
-renderMethod :: MethodSchema -> Text
-renderMethod m =
-  "  " <> padRight 16 (methodName m) <> methodDescription m <> renderParams (methodParams m)
-
--- | Render method parameters from JSON Schema
-renderParams :: Maybe Value -> Text
-renderParams Nothing = ""
-renderParams (Just (Object o)) = case KM.lookup "properties" o of
-  Just (Object props) ->
-    let reqList = case KM.lookup "required" o of
-          Just (Array arr) -> [t | String t <- foldr (:) [] arr]
-          _ -> []
-        propList = KM.toList props
-        -- Sort: required first, then alphabetically
-        sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
-        rendered = map (renderParam reqList) sorted
-    in if null rendered then "" else "\n" <> T.intercalate "\n" rendered
-  _ -> ""
-renderParams _ = ""
-
--- | Render a single parameter
-renderParam :: [Text] -> (K.Key, Value) -> Text
-renderParam required (name, propSchema) =
-  let nameText = K.toText name
-      isReq = nameText `elem` required
-      flagName = T.replace "_" "-" nameText
-      (typ, desc) = extractTypeDesc propSchema
-      reqMarker = if isReq then "" else "?"
-  in "      --" <> flagName <> reqMarker <> " <" <> typ <> ">  " <> desc
-
-extractTypeDesc :: Value -> (Text, Text)
-extractTypeDesc (Object po) =
-  ( case KM.lookup "type" po of { Just (String t) -> t; _ -> "string" }
-  , case KM.lookup "description" po of { Just (String d) -> d; _ -> "" }
-  )
-extractTypeDesc _ = ("string", "")
-
-renderChildSummary :: ChildSummary -> Text
-renderChildSummary child =
-  "  " <> padRight 16 (csNamespace child) <> csDescription child
-
--- | Render a method in full (for method-specific help)
-renderMethodFull :: MethodSchema -> Text
-renderMethodFull m = T.unlines $
-  [ ""
-  , methodName m <> " - " <> methodDescription m
-  , ""
-  ] <> paramLines
+-- | Render an error for display
+renderError :: SynapseError -> String
+renderError = \case
+  NavError (NotFound seg path) ->
+    "Not found: '" <> T.unpack seg <> "' at " <> showPath path
+  NavError (MethodNotTerminal seg path) ->
+    "Method '" <> T.unpack seg <> "' cannot have subcommands at " <> showPath path
+  NavError (Cycle hash path) ->
+    "Cycle detected: hash " <> T.unpack hash <> " at " <> showPath path
+  NavError (FetchError msg path) ->
+    "Fetch error at " <> showPath path <> ": " <> T.unpack msg
+  TransportError msg ->
+    "Transport error: " <> T.unpack msg
+  ParseError msg ->
+    "Parse error: " <> T.unpack msg
+  ValidationError msg ->
+    "Validation error: " <> T.unpack msg
   where
-    paramLines = case methodParams m of
-      Nothing -> ["  (no parameters)"]
-      Just schema -> renderParamsFull schema
+    showPath [] = "root"
+    showPath p = T.unpack $ T.intercalate "." p
 
--- | Render all parameters in full form
-renderParamsFull :: Value -> [Text]
-renderParamsFull (Object o) = case KM.lookup "properties" o of
-  Just (Object props) ->
-    let reqList = case KM.lookup "required" o of
-          Just (Array arr) -> [t | String t <- foldr (:) [] arr]
-          _ -> []
-        propList = KM.toList props
-        sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
-    in map (renderParamFull reqList) sorted
-  _ -> []
-renderParamsFull _ = []
+-- | Encode a dry-run request
+encodeDryRun :: [Text] -> Text -> Value -> LBS.ByteString
+encodeDryRun namespacePath method params =
+  let fullPath = if null namespacePath then ["plexus"] else namespacePath
+      dotPath = T.intercalate "." (fullPath ++ [method])
+  in encode $ object
+    [ "jsonrpc" .= ("2.0" :: Text)
+    , "id" .= (1 :: Int)
+    , "method" .= ("plexus_call" :: Text)
+    , "params" .= object
+        [ "method" .= dotPath
+        , "params" .= params
+        ]
+    ]
 
--- | Render a single parameter in full form
-renderParamFull :: [Text] -> (K.Key, Value) -> Text
-renderParamFull required (name, propSchema) =
-  let nameText = K.toText name
-      isReq = nameText `elem` required
-      (typ, desc) = extractTypeDesc propSchema
-      reqText = if isReq then " (required)" else " (optional)"
-  in "  --" <> nameText <> " : " <> typ <> reqText <> "\n      " <> desc
+-- | Print a stream result
+printResult :: Bool -> PlexusStreamItem -> IO ()
+printResult True item = LBS.putStrLn $ encode item
+printResult False item = case item of
+  StreamData _ _ _ dat -> do
+    TIO.putStrLn $ TE.decodeUtf8 $ LBS.toStrict $ encode dat
+    hFlush stdout
+  StreamProgress _ _ msg _ -> do
+    TIO.putStr msg
+    TIO.putStr "\r"
+    hFlush stdout
+  StreamError _ _ err _ ->
+    hPutStrLn stderr $ "Error: " <> T.unpack err
+  _ -> pure ()
 
-padRight :: Int -> Text -> Text
-padRight n t
-  | T.length t >= n = t <> " "
-  | otherwise = t <> T.replicate (n - T.length t) " "
+-- ============================================================================
+-- Argument Parsing
+-- ============================================================================
+
+argsInfo :: ParserInfo Args
+argsInfo = info (argsParser <**> helper)
+  ( fullDesc
+ <> header "synapse-algebra - Categorical CLI for Plexus"
+ <> progDesc "Navigate and invoke Plexus methods using algebraic machinery"
+  )
+
+argsParser :: Parser Args
+argsParser = do
+  argHost <- T.pack <$> strOption
+    ( long "host" <> short 'H' <> metavar "HOST"
+   <> value "127.0.0.1" <> showDefault
+   <> help "Plexus server host" )
+  argPort <- option auto
+    ( long "port" <> short 'P' <> metavar "PORT"
+   <> value 4444 <> showDefault
+   <> help "Plexus server port" )
+  argJson <- switch
+    ( long "json" <> short 'j'
+   <> help "Output raw JSON stream" )
+  argDryRun <- switch
+    ( long "dry-run" <> short 'n'
+   <> help "Show JSON-RPC request without sending" )
+  argSchema <- switch
+    ( long "schema" <> short 's'
+   <> help "Fetch raw schema JSON for path" )
+  argParams <- optional $ T.pack <$> strOption
+    ( long "params" <> short 'p' <> metavar "JSON"
+   <> help "Method parameters as JSON object" )
+  argRpc <- optional $ T.pack <$> strOption
+    ( long "rpc" <> short 'r' <> metavar "JSON"
+   <> help "Raw JSON-RPC request (bypass navigation)" )
+  argPath <- many $ T.pack <$> argument str
+    ( metavar "PATH... [key=value ...]"
+   <> help "Path to plugin/method, with optional key=value params" )
+  pure Args{..}
