@@ -12,6 +12,7 @@ module Main where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
+import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Text (Text)
@@ -39,8 +40,10 @@ data Args = Args
   , argPort    :: Int
   , argJson    :: Bool
   , argDryRun  :: Bool
-  , argParams  :: Maybe Text
-  , argPath    :: [Text]
+  , argSchema  :: Bool         -- ^ Show raw schema JSON
+  , argParams  :: Maybe Text   -- ^ JSON params via -p
+  , argRpc     :: Maybe Text   -- ^ Raw JSON-RPC passthrough
+  , argPath    :: [Text]       -- ^ Path segments and --key value params
   }
   deriving Show
 
@@ -62,48 +65,67 @@ main = do
 -- | Dispatch based on navigation result
 dispatch :: Args -> SynapseM ()
 dispatch Args{..} = do
-  -- No path: show CLI help + plexus schema
-  if null argPath
-    then do
-      rootSchema <- navigate []
-      case rootSchema of
-        ViewPlugin schema _ -> liftIO $ do
-          TIO.putStr cliHeader
-          TIO.putStr "\n\n"
-          TIO.putStr $ renderSchema schema
-        _ -> pure ()
-    else do
-      -- Navigate to target
-      view <- navigate argPath
-      case view of
-        -- Landed on a plugin: show help
-        ViewPlugin schema _ ->
-          liftIO $ TIO.putStr $ renderSchema schema
+  -- Mode 1: Raw JSON-RPC passthrough
+  case argRpc of
+    Just rpcJson -> do
+      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 rpcJson) of
+        Left err -> throwParse $ T.pack err
+        Right rpcReq -> do
+          items <- invokeRawRpc rpcReq
+          liftIO $ mapM_ (printResult argJson) items
+      return ()
 
-        -- Landed on a method: invoke or show help
-        ViewMethod method path
-          | Just jsonStr <- argParams -> do
-              -- Parse and invoke with provided params
-              case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
-                Left err -> throwParse $ T.pack err
-                Right params -> invokeMethod path params
+    Nothing -> do
+      -- Parse path and inline params (--key value pairs)
+      let (pathSegs, inlineParams) = parsePathAndParams argPath
 
-          | hasRequiredParams method ->
-              -- Has required params but none provided: show method help
-              liftIO $ TIO.putStrLn $ renderMethodFull method
+      -- Mode 2: Schema request
+      if argSchema
+        then do
+          items <- invokeRaw (buildSchemaMethod pathSegs) (object [])
+          liftIO $ mapM_ (printResult True) items  -- Always JSON for schema
+        else do
+          -- Mode 3: Normal navigation
+          if null pathSegs
+            then do
+              rootSchema <- navigate []
+              case rootSchema of
+                ViewPlugin schema _ -> liftIO $ do
+                  TIO.putStr cliHeader
+                  TIO.putStr "\n\n"
+                  TIO.putStr $ renderSchema schema
+                _ -> pure ()
+            else do
+              -- Navigate to target
+              view <- navigate pathSegs
+              case view of
+                -- Landed on a plugin: show help
+                ViewPlugin schema _ ->
+                  liftIO $ TIO.putStr $ renderSchema schema
 
-          | otherwise ->
-              -- No required params: invoke with empty object
-              invokeMethod path (object [])
+                -- Landed on a method: invoke or show help
+                ViewMethod method path -> do
+                  -- Build params: -p JSON takes precedence, then inline --key value
+                  params <- case argParams of
+                    Just jsonStr ->
+                      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
+                        Left err -> throwParse $ T.pack err
+                        Right p -> pure p
+                    Nothing
+                      | not (null inlineParams) -> pure $ buildParamsObject inlineParams
+                      | otherwise -> pure $ object []
+
+                  if argDryRun
+                    then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
+                    else if hasRequiredParams method && params == object [] && null inlineParams
+                      then liftIO $ TIO.putStrLn $ renderMethodFull method
+                      else invokeMethod path params
   where
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
-      if argDryRun
-        then liftIO $ LBS.putStrLn $ encodeDryRun namespacePath methodName' params
-        else do
-          items <- invoke namespacePath methodName' params
-          liftIO $ mapM_ (printResult argJson) items
+      items <- invoke namespacePath methodName' params
+      liftIO $ mapM_ (printResult argJson) items
 
     -- Check if method has required parameters
     hasRequiredParams :: MethodSchema -> Bool
@@ -113,6 +135,62 @@ dispatch Args{..} = do
         Just (Array arr) -> not (null arr)
         _ -> False
       Just _ -> False
+
+    -- Build schema method path
+    buildSchemaMethod :: [Text] -> Text
+    buildSchemaMethod [] = "plexus.schema"
+    buildSchemaMethod segs = T.intercalate "." segs <> ".schema"
+
+    -- Invoke raw JSON-RPC request
+    invokeRawRpc :: Value -> SynapseM [PlexusStreamItem]
+    invokeRawRpc rpcReq = do
+      case rpcReq of
+        Object o -> case (KM.lookup "method" o, KM.lookup "params" o) of
+          (Just (String method), Just params) -> invokeRaw method params
+          (Just (String method), Nothing) -> invokeRaw method (object [])
+          _ -> throwParse "JSON-RPC must have 'method' field"
+        _ -> throwParse "JSON-RPC must be an object"
+
+-- | Parse path segments and inline key=value params
+-- Returns (path segments, [(key, value)] params)
+-- Example: ["echo", "once", "message=hello", "count=3"]
+--       -> (["echo", "once"], [("message", "hello"), ("count", "3")])
+parsePathAndParams :: [Text] -> ([Text], [(Text, Text)])
+parsePathAndParams = go [] []
+  where
+    go path params [] = (reverse path, reverse params)
+    go path params (x:xs)
+      | Just (k, v) <- parseKeyValue x =
+          go path ((k, v) : params) xs
+      | otherwise =
+          go (x : path) params xs
+
+    -- Parse "key=value" into Just (key, value), or Nothing
+    parseKeyValue :: Text -> Maybe (Text, Text)
+    parseKeyValue t = case T.breakOn "=" t of
+      (k, rest)
+        | not (T.null rest) && not (T.null k) ->
+            Just (k, T.drop 1 rest)  -- drop the "="
+        | otherwise -> Nothing
+
+-- | Build JSON object from key-value pairs
+buildParamsObject :: [(Text, Text)] -> Value
+buildParamsObject pairs = object
+  [ (K.fromText k, inferValue v) | (k, v) <- pairs ]
+  where
+    -- Try to infer the JSON type from the string value
+    inferValue :: Text -> Value
+    inferValue t
+      | t == "true" = Bool True
+      | t == "false" = Bool False
+      | Just n <- readMaybe (T.unpack t) :: Maybe Integer = Number (fromInteger n)
+      | Just n <- readMaybe (T.unpack t) :: Maybe Double = Number (realToFrac n)
+      | otherwise = String t
+
+readMaybe :: Read a => String -> Maybe a
+readMaybe s = case reads s of
+  [(x, "")] -> Just x
+  _ -> Nothing
 
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
@@ -198,10 +276,16 @@ argsParser = do
   argDryRun <- switch
     ( long "dry-run" <> short 'n'
    <> help "Show JSON-RPC request without sending" )
+  argSchema <- switch
+    ( long "schema" <> short 's'
+   <> help "Fetch raw schema JSON for path" )
   argParams <- optional $ T.pack <$> strOption
     ( long "params" <> short 'p' <> metavar "JSON"
    <> help "Method parameters as JSON object" )
+  argRpc <- optional $ T.pack <$> strOption
+    ( long "rpc" <> short 'r' <> metavar "JSON"
+   <> help "Raw JSON-RPC request (bypass navigation)" )
   argPath <- many $ T.pack <$> argument str
-    ( metavar "PATH..."
-   <> help "Path to plugin/method" )
+    ( metavar "PATH... [key=value ...]"
+   <> help "Path to plugin/method, with optional key=value params" )
   pure Args{..}
