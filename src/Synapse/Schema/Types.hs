@@ -2,11 +2,12 @@
 --
 -- Re-exports schema types from meaning and defines local types.
 module Synapse.Schema.Types
-  ( -- * Schema Types (from meaning)
+  ( -- * Schema Types (from substrate-protocol)
     PluginSchema(..)
   , MethodSchema(..)
   , ChildSummary(..)
   , PluginHash
+  , SchemaResult(..)
 
     -- * Query helpers
   , pluginChildren
@@ -27,12 +28,13 @@ import Data.Text (Text)
 import Data.Int (Int64)
 import GHC.Generics (Generic)
 
--- Re-export from meaning
+-- Re-export from substrate-protocol
 import Plexus.Schema.Recursive
   ( PluginSchema(..)
   , MethodSchema(..)
   , ChildSummary(..)
   , PluginHash
+  , SchemaResult(..)
   , pluginChildren
   , childNamespaces
   , isHub

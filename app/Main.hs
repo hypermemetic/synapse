@@ -23,7 +23,7 @@ import Options.Applicative
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
-import Plexus.Types (PlexusStreamItem(..))
+import Plexus (PlexusStreamItem(..))
 
 import Synapse.Schema.Types
 import Synapse.Monad
@@ -82,8 +82,11 @@ dispatch Args{..} = do
       -- Mode 2: Schema request
       if argSchema
         then do
-          items <- invokeRaw (buildSchemaMethod pathSegs) (object [])
-          liftIO $ mapM_ (printResult True) items  -- Always JSON for schema
+          -- Try to navigate and determine if last segment is a method
+          schemaResult <- fetchSchemaForPath pathSegs
+          case schemaResult of
+            Left err -> throwNav $ FetchError err pathSegs
+            Right val -> liftIO $ LBS.putStrLn $ encode val
         else do
           -- Mode 3: Normal navigation
           if null pathSegs
@@ -136,10 +139,19 @@ dispatch Args{..} = do
         _ -> False
       Just _ -> False
 
-    -- Build schema method path
-    buildSchemaMethod :: [Text] -> Text
-    buildSchemaMethod [] = "plexus.schema"
-    buildSchemaMethod segs = T.intercalate "." segs <> ".schema"
+    -- Fetch schema for a path, detecting if last segment is a method
+    -- Uses navigate to determine what type of schema to fetch
+    fetchSchemaForPath :: [Text] -> SynapseM (Either Text Value)
+    fetchSchemaForPath segs = do
+      view <- navigate segs
+      case view of
+        ViewPlugin schema _ -> pure $ Right $ toJSON schema
+        ViewMethod method path -> do
+          -- Use method-specific schema query for detailed method info
+          let parentPath = init path
+              methodName' = last path
+          detailedMethod <- fetchMethodSchema parentPath methodName'
+          pure $ Right $ toJSON detailedMethod
 
     -- Invoke raw JSON-RPC request
     invokeRawRpc :: Value -> SynapseM [PlexusStreamItem]
@@ -151,27 +163,26 @@ dispatch Args{..} = do
           _ -> throwParse "JSON-RPC must have 'method' field"
         _ -> throwParse "JSON-RPC must be an object"
 
--- | Parse path segments and inline key=value params
+-- | Parse path segments and --key value params
 -- Returns (path segments, [(key, value)] params)
--- Example: ["echo", "once", "message=hello", "count=3"]
+-- Example: ["echo", "once", "--message", "hello", "--count", "3"]
 --       -> (["echo", "once"], [("message", "hello"), ("count", "3")])
 parsePathAndParams :: [Text] -> ([Text], [(Text, Text)])
 parsePathAndParams = go [] []
   where
     go path params [] = (reverse path, reverse params)
     go path params (x:xs)
-      | Just (k, v) <- parseKeyValue x =
-          go path ((k, v) : params) xs
+      -- --key value pair
+      | Just key <- T.stripPrefix "--" x
+      , not (T.null key)
+      , (val:rest) <- xs =
+          go path ((key, val) : params) rest
+      -- --key with no value (skip malformed)
+      | T.isPrefixOf "--" x =
+          go path params xs
+      -- Regular path segment
       | otherwise =
           go (x : path) params xs
-
-    -- Parse "key=value" into Just (key, value), or Nothing
-    parseKeyValue :: Text -> Maybe (Text, Text)
-    parseKeyValue t = case T.breakOn "=" t of
-      (k, rest)
-        | not (T.null rest) && not (T.null k) ->
-            Just (k, T.drop 1 rest)  -- drop the "="
-        | otherwise -> Nothing
 
 -- | Build JSON object from key-value pairs
 buildParamsObject :: [(Text, Text)] -> Value
@@ -271,6 +282,7 @@ argsInfo = info (argsParser <**> helper)
   ( fullDesc
  <> header "synapse - Algebraic CLI for Plexus"
  <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
+ <> forwardOptions  -- Pass unrecognized --flags to positional args
   )
 
 argsParser :: Parser Args
@@ -299,6 +311,6 @@ argsParser = do
     ( long "rpc" <> short 'r' <> metavar "JSON"
    <> help "Raw JSON-RPC request (bypass navigation)" )
   argPath <- many $ T.pack <$> argument str
-    ( metavar "PATH... [key=value ...]"
-   <> help "Path to plugin/method, with optional key=value params" )
+    ( metavar "PATH... [--key value ...]"
+   <> help "Path to plugin/method, with optional --key value params" )
   pure Args{..}

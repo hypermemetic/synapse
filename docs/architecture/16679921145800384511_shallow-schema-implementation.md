@@ -59,7 +59,7 @@ synapse --rpc '{"method":"health.check"}'  # raw JSON-RPC passthrough
 
 ### Parameter Input Modes
 
-1. **Inline `key=value`**: `synapse echo echo message=hi count=3`
+1. **Inline `--key value`**: `synapse echo echo --message hi --count 3`
 2. **JSON via `-p`**: `synapse echo once -p '{"message":"hello"}'`
 3. **Auto-invoke**: Methods with no required params run automatically
 
@@ -123,25 +123,11 @@ The design document describes a coalgebraic architecture:
 
 ## Shortcuts Taken
 
-### 1. No Base Functor
+### 1. ~~No Base Functor~~ (REMOVED)
 
-**Design doc specifies:**
-```haskell
-data PluginSchemaF a = PluginSchemaF
-  { psfNamespace :: Text
-  , ...
-  , psfChildren  :: Maybe [a]
-  }
-  deriving (Functor, Foldable, Traversable)
+**Design doc specified** a base functor `PluginSchemaF` for recursion-schemes.
 
--- With recursion-schemes instances
-type instance Base PluginSchema = PluginSchemaF
-```
-
-**Implementation:**
-We removed `PluginSchemaF` entirely. With shallow schemas, `PluginSchema` is not recursive — children are `ChildSummary`, not `PluginSchema`. Recursion-schemes don't apply.
-
-**Impact:** Cannot use `cata`, `para`, `ana` from recursion-schemes library. Not needed since we don't have recursive structure on the wire.
+**Resolution:** Removed entirely. `PluginSchema` already has `psChildren :: Maybe [ChildSummary]` — it IS the shallow schema. The base functor was just field renaming (`ps*` ↔ `psf*`). Removed dependencies: `recursion-schemes`, `data-fix`.
 
 ### 2. No Algebras as First-Class
 
@@ -231,22 +217,134 @@ Not implemented. Would require generating completion scripts from schema.
 synapse echo echo --message "hi" --count 3
 ```
 
-**Implementation:**
-```bash
-synapse echo echo message=hi count=3
+**Implementation:** Matches design doc exactly. Uses `forwardOptions` to pass unrecognized `--flags` through optparse-applicative to our custom parser. Type inference converts `"true"`→Bool, `"3"`→Number, etc.
+
+## Shell Completion Implementation
+
+### What's Possible
+
+**Basic completions work.** `Synapse.Algebra.Complete` already provides:
+
+```haskell
+completions :: PluginSchema -> [Text]
+completions PluginSchema{..} = concat
+  [ map methodName psMethods
+  , maybe [] (map csNamespace) psChildren
+  ]
 ```
 
-Used `key=value` syntax instead of `--key value` to avoid conflicts with optparse-applicative's flag parsing. Type inference converts `"true"`→Bool, `"3"`→Number, etc.
+We can generate shell completion scripts that:
+1. Complete path segments (namespaces + methods)
+2. Show short descriptions next to each option (zsh/fish support this)
+3. Complete `key=` parameter names after a method is selected
+
+### What's NOT Possible (Natively)
+
+**Full help pane during tab completion** — shells don't support this. Tab completion is a modal UI where the shell controls rendering. You can't inject arbitrary multi-line output while the user is mid-completion.
+
+### Workarounds
+
+**1. fzf Integration (Best Option)**
+
+Use fzf's preview pane to show full help:
+
+```bash
+# In .zshrc or similar
+_synapse_fzf() {
+  local selection
+  selection=$(synapse --completions "$LBUFFER" | fzf --preview 'synapse --help {}')
+  LBUFFER="synapse $selection "
+  zle redisplay
+}
+zle -N _synapse_fzf
+bindkey '^T' _synapse_fzf
+```
+
+This gives you:
+- Left pane: fuzzy-searchable list of completions
+- Right pane: full `--help` output for highlighted item
+- True "show entire help message at that phase"
+
+**2. zsh Descriptions**
+
+zsh's `_describe` shows short descriptions inline:
+
+```zsh
+_synapse() {
+  local -a commands
+  commands=(
+    'solar:Observe the solar system'
+    'echo:Echo utilities'
+    'health:System health checks'
+  )
+  _describe 'command' commands
+}
+```
+
+Output during completion:
+```
+solar   -- Observe the solar system
+echo    -- Echo utilities
+health  -- System health checks
+```
+
+**3. Fish Completions**
+
+Fish has rich descriptions built-in:
+
+```fish
+complete -c synapse -n '__fish_use_subcommand' -a 'solar' -d 'Observe the solar system'
+complete -c synapse -n '__fish_use_subcommand' -a 'echo' -d 'Echo utilities'
+```
+
+### Implementation Plan
+
+1. **Add `--completions` flag** that outputs completion words (one per line)
+2. **Add `--completions-with-desc` flag** for `word:description` format
+3. **Generate shell scripts** via `synapse --generate-completions bash|zsh|fish`
+
+```haskell
+-- New flag in Main.hs
+data Opts = Opts
+  { ...
+  , optCompletions :: Maybe Text  -- partial input to complete
+  , optGenCompletions :: Maybe Shell  -- generate completion script
+  }
+
+generateCompletions :: Shell -> IO Text
+generateCompletions Zsh = do
+  root <- fetchSchemaAt []
+  pure $ T.unlines
+    [ "#compdef synapse"
+    , "_synapse() {"
+    , "  local -a cmds"
+    , "  cmds=("
+    , T.unlines $ map formatZshCompletion $ pluginChildren root
+    , "  )"
+    , "  _describe 'command' cmds"
+    , "}"
+    ]
+```
+
+### The Honest Answer
+
+**You can't tab-complete and see the full help simultaneously** — that's not how shell completion works. But you CAN:
+
+1. See short descriptions during completion (zsh/fish)
+2. Use fzf for a preview pane with full help
+3. Type `synapse solar <TAB>` to complete, then `synapse solar --help` to read
+
+The fzf approach is the closest to "show entire help message at that phase, and allow you to tab autocomplete."
 
 ## What's Missing vs Design Doc
 
 | Feature | Status | Priority |
 |---------|--------|----------|
-| Schema caching by hash | Missing | Medium |
-| Cycle detection | Missing | Low (no cycles in current schema) |
+| Schema caching by hash | ✓ Implemented | — |
+| Cycle detection | ✓ Implemented | — |
 | Client-side param validation | Missing | Low |
 | Shell tab completion | Missing | Medium |
-| `key=value` param syntax | ✓ Implemented | — |
+| `--key value` param syntax | ✓ Implemented | — |
 | `--schema` flag | ✓ Implemented | — |
 | Raw JSON-RPC passthrough | ✓ Implemented | — |
 | REPL mode | Missing | Low |

@@ -1,6 +1,6 @@
 # Synapse
 
-**Algebraic CLI for Plexus** — 1,700 lines of categorical machinery.
+**Algebraic CLI for Plexus** — categorical machinery for schema navigation.
 
 ## The Algebra
 
@@ -22,9 +22,10 @@ synapse                              # root schema
 synapse solar                        # navigate to plugin
 synapse solar earth luna             # nested navigation
 synapse health check                 # invoke method (auto if no required params)
-synapse echo once message=hello      # inline params
+synapse echo once --message hello    # inline params
 synapse echo once -p '{"message":"hello"}'  # JSON params
-synapse --schema solar               # raw schema JSON
+synapse --schema solar               # plugin schema JSON
+synapse --schema echo once           # method schema JSON (compact)
 synapse --rpc '{"method":"health.check"}'   # raw JSON-RPC
 ```
 
@@ -36,7 +37,7 @@ synapse --rpc '{"method":"health.check"}'   # raw JSON-RPC
 | `--port` | `-P` | Plexus port (default: 4444) |
 | `--json` | `-j` | Raw JSON stream output |
 | `--dry-run` | `-n` | Show request without sending |
-| `--schema` | `-s` | Fetch raw schema JSON |
+| `--schema` | `-s` | Fetch schema JSON (plugin or method) |
 | `--params` | `-p` | JSON parameters |
 | `--rpc` | `-r` | Raw JSON-RPC passthrough |
 
@@ -44,20 +45,27 @@ synapse --rpc '{"method":"health.check"}'   # raw JSON-RPC
 
 ```
 synapse/
-├── app/Main.hs                 # 291 lines - CLI
-└── src/                        # 1,221 lines
-    ├── Plexus.hs               # RPC exports
-    ├── Plexus/Client.hs        # WebSocket client
-    └── Synapse/
-        ├── Monad.hs            # Effect stack
-        ├── Transport.hs        # RPC transport
-        ├── Cache.hs            # Schema cache
-        ├── Schema/Types.hs     # PluginSchema, ChildSummary
-        ├── Schema/Base.hs      # ShallowSchema functor
-        └── Algebra/
-            ├── Navigate.hs     # Anamorphism
-            ├── Render.hs       # Catamorphism
-            └── Complete.hs     # Completions
+├── app/Main.hs                 # CLI entry point
+└── src/Synapse/
+    ├── Monad.hs                # Effect stack (SynapseM)
+    ├── Transport.hs            # RPC transport layer
+    ├── Cache.hs                # Schema cache
+    ├── Schema/
+    │   ├── Types.hs            # Re-exports from substrate-protocol
+    │   └── Base.hs             # ShallowSchema functor
+    └── Algebra/
+        ├── Navigate.hs         # Anamorphism (path → schema)
+        ├── Render.hs           # Catamorphism (schema → text)
+        └── Complete.hs         # Completions
+
+../substrate-protocol/          # Sibling package (shared types)
+└── src/
+    ├── Substrate/
+    │   ├── Client.hs           # WebSocket connection
+    │   └── Transport.hs        # Low-level RPC
+    └── Plexus/
+        ├── Types.hs            # PlexusStreamItem, Provenance
+        └── Schema/Recursive.hs # PluginSchema, MethodSchema, SchemaResult
 ```
 
 ## Build & Test
