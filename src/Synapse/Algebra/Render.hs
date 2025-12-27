@@ -37,7 +37,7 @@ import qualified Data.Text as T
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
-import Data.List (sortOn)
+import Data.List (intersperse, sortOn)
 import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
 
@@ -96,7 +96,8 @@ renderAlgWith _style PluginSchemaF{..}
     doc :: Doc ann
     doc = vsep
       [ pretty psfNamespace <+> pretty ("v" <> psfVersion)
-      , pretty psfDescription
+      , emptyDoc
+      , indent 2 $ align $ fillSep $ map pretty $ T.words psfDescription
       , emptyDoc
       , childrenDoc
       , methodsDoc
@@ -106,7 +107,8 @@ renderAlgWith _style PluginSchemaF{..}
       Nothing -> emptyDoc
       Just [] -> emptyDoc
       Just children -> vsep
-        [ pretty ("activations:" :: Text)
+        [ pretty ("activations" :: Text)
+        , emptyDoc
         , indent 2 $ vsep $ map renderChildDoc (sortOn csNamespace children)
         , emptyDoc
         ]
@@ -114,39 +116,41 @@ renderAlgWith _style PluginSchemaF{..}
     methodsDoc
       | null psfMethods = emptyDoc
       | otherwise = vsep
-        [ pretty ("methods:" :: Text)
-        , indent 2 $ vsep $ map renderMethodDoc (sortOn methodName psfMethods)
+        [ pretty ("methods" :: Text)
+        , emptyDoc
+        , indent 2 $ vsep $ intersperse emptyDoc $ map renderMethodDoc (sortOn methodName psfMethods)
         ]
 
-    renderChildDoc child = fillBreak 18 (pretty $ csNamespace child)
-      <+> pretty (csDescription child)
+    renderChildDoc child = fillBreak 12 (pretty $ csNamespace child)
+      <+> align (fillSep $ map pretty $ T.words $ csDescription child)
 
-    renderMethodDoc method = vsep
-      [ fillBreak 18 (pretty $ methodName method)
+    renderMethodDoc method = vsep $
+      [ fillBreak 12 (pretty $ methodName method)
           <+> align (fillSep $ map pretty $ T.words $ methodDescription method)
-      , renderParamsDoc (methodParams method)
-      ]
+      ] ++ paramsDocs (methodParams method)
 
-    renderParamsDoc Nothing = emptyDoc
-    renderParamsDoc (Just (Object o)) = case KM.lookup "properties" o of
+    paramsDocs Nothing = []
+    paramsDocs (Just (Object o)) = case KM.lookup "properties" o of
       Just (Object props) ->
         let reqList = case KM.lookup "required" o of
               Just (Array arr) -> [t | String t <- foldr (:) [] arr]
               _ -> []
             propList = KM.toList props
             sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
-        in indent 4 $ vsep $ map (renderParamDoc reqList) sorted
-      _ -> emptyDoc
-    renderParamsDoc _ = emptyDoc
+        in [indent 12 $ vsep $ map (renderParamDoc reqList) sorted]
+      _ -> []
+    paramsDocs _ = []
 
     renderParamDoc :: [Text] -> (K.Key, Value) -> Doc ann
     renderParamDoc required (name, propSchema) =
       let nameText = K.toText name
           isReq = nameText `elem` required
           (typ, desc) = extractTypeDesc propSchema
-          flag = "--" <> T.replace "_" "-" nameText <> if isReq then "" else "?"
-      in fillBreak 22 (pretty flag <+> pretty ("<" <> typ <> ">"))
-         <+> align (fillSep $ map pretty $ T.words desc)
+          flag = "--" <> T.replace "_" "-" nameText
+          typStr = "<" <> typ <> ">" <> if isReq then "" else "?"
+          descWords = if T.null desc then [] else map pretty (T.words desc)
+      in fillBreak 20 (pretty flag <+> pretty typStr)
+         <+> align (fillSep descWords)
 
 -- | Render a PluginSchema (convenience wrapper)
 renderSchema :: PluginSchema -> Text

@@ -14,7 +14,7 @@ main :: IO ()
 main = hspec $ do
 
   describe "navigation" $ do
-    it "root"              $ []                            `has` ["synapse", "plexus", "methods:", "activations:"]
+    it "root"              $ []                            `has` ["synapse", "plexus", "methods", "activations"]
     it "echo"              $ ["echo"]                      `has` ["echo", "Echo messages back"]
     it "solar"             $ ["solar"]                     `has` ["solar", "Solar system model"]
     it "health"            $ ["health"]                    `has` ["health", "Check hub health"]
@@ -34,7 +34,7 @@ main = hspec $ do
     it "luna info"     $ call ["solar", "earth", "luna", "info"] "{}" `has` ["luna"]
 
   describe "algebra parity" $ do
-    it "root"   $ []                               `hasA` ["synapse", "plexus", "methods:"]
+    it "root"   $ []                               `hasA` ["synapse", "plexus", "methods"]
     it "echo"   $ ["echo"]                         `hasA` ["echo", "Echo messages"]
     it "invoke" $ call ["echo", "once"] (msg "yo") `hasA` ["yo"]
 

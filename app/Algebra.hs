@@ -12,6 +12,7 @@ module Main where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -82,21 +83,36 @@ dispatch Args{..} = do
         -- Landed on a method: invoke or show help
         ViewMethod method path
           | Just jsonStr <- argParams -> do
-              -- Parse and invoke
+              -- Parse and invoke with provided params
               case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
                 Left err -> throwParse $ T.pack err
-                Right params -> do
-                  let namespacePath = init path  -- path without method name
-                  let methodName' = last path
-                  if argDryRun
-                    then liftIO $ LBS.putStrLn $ encodeDryRun namespacePath methodName' params
-                    else do
-                      items <- invoke namespacePath methodName' params
-                      liftIO $ mapM_ (printResult argJson) items
+                Right params -> invokeMethod path params
+
+          | hasRequiredParams method ->
+              -- Has required params but none provided: show method help
+              liftIO $ TIO.putStrLn $ renderMethodFull method
 
           | otherwise ->
-              -- No params: show method help
-              liftIO $ TIO.putStrLn $ renderMethodFull method
+              -- No required params: invoke with empty object
+              invokeMethod path (object [])
+  where
+    invokeMethod path params = do
+      let namespacePath = init path  -- path without method name
+      let methodName' = last path
+      if argDryRun
+        then liftIO $ LBS.putStrLn $ encodeDryRun namespacePath methodName' params
+        else do
+          items <- invoke namespacePath methodName' params
+          liftIO $ mapM_ (printResult argJson) items
+
+    -- Check if method has required parameters
+    hasRequiredParams :: MethodSchema -> Bool
+    hasRequiredParams m = case methodParams m of
+      Nothing -> False
+      Just (Object o) -> case KM.lookup "required" o of
+        Just (Array arr) -> not (null arr)
+        _ -> False
+      Just _ -> False
 
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
