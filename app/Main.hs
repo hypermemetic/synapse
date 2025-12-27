@@ -1,205 +1,62 @@
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ApplicativeDo #-}
+
+-- | Synapse CLI - Schema-driven interface to Plexus
+--
+-- = Design
+--
+-- The CLI discovers commands at runtime from the schema coalgebra:
+-- - Path segments are positional arguments
+-- - Schema is fetched lazily as we navigate
+-- - Methods at the target path become available commands
+--
+-- = Examples
+--
+-- @
+-- synapse                          # show root help
+-- synapse echo                     # show echo help
+-- synapse echo once --message hi   # invoke echo.once
+-- synapse solar earth info         # invoke solar.earth.info
+-- @
 module Main where
 
-import Plexus (connect, disconnect, defaultConfig)
-import qualified Activation.Bash as Bash
-import qualified Activation.Health as Health
-import qualified Activation.Arbor as Arbor
-import qualified Activation.Cone as Cone
-import Data.Aeson (object, (.=), Value)
+import Control.Exception (SomeException, catch)
+import Data.Aeson
+import qualified Data.Aeson.Key as K
+import qualified Data.Aeson.KeyMap as KM
+import qualified Data.ByteString.Lazy.Char8 as LBS
+import Data.List (sortOn)
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.Text.IO as T
-import qualified Streaming.Prelude as S
-import System.Exit (exitWith, ExitCode(..))
-import System.IO (stderr)
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
 import Options.Applicative
+import qualified Streaming.Prelude as S
+import System.Exit (exitFailure)
+import System.IO (hPutStrLn, stderr, hFlush, stdout)
+
+import Plexus (connect, disconnect, defaultConfig)
+import Plexus.Client (PlexusConfig(..), plexusRpc)
+import Plexus.Types (PlexusStreamItem(..))
+import Plexus.Schema.Recursive
 
 -- ============================================================================
--- Command Types
+-- Types
 -- ============================================================================
 
+data GlobalOpts = GlobalOpts
+  { optHost    :: String
+  , optPort    :: Int
+  , optJson    :: Bool
+  , optDryRun  :: Bool
+  , optParams  :: Maybe Text  -- ^ Raw JSON params
+  } deriving Show
+
+-- | Command result from parsing
 data Command
-  = Health
-  | Bash BashCmd
-  | Arbor ArborCmd
-  | Cone ConeCmd
-  deriving (Show)
-
-data BashCmd
-  = BashExecute [String]
-  deriving (Show)
-
-data ArborCmd
-  = ArborTree ArborTreeCmd
-  | ArborNode ArborNodeCmd
-  | ArborContext ArborContextCmd
-  deriving (Show)
-
-data ArborTreeCmd
-  = TreeList
-  | TreeListScheduled
-  | TreeListArchived
-  | TreeCreate String
-  | TreeGet String
-  | TreeGetSkeleton String
-  | TreeRender String
-  | TreeUpdateMetadata String String
-  | TreeClaim String String Int
-  | TreeRelease String String Int
-  deriving (Show)
-
-data ArborNodeCmd
-  = NodeCreateText String String
-  | NodeCreateTextChild String String String
-  | NodeGet String String
-  | NodeChildren String String
-  | NodeParent String String
-  | NodePath String String
-  deriving (Show)
-
-data ArborContextCmd
-  = ContextLeaves String
-  | ContextPath String String
-  | ContextHandles String String
-  deriving (Show)
-
-data ConeCmd
-  = ConeList
-  | ConeCreate String String (Maybe String)
-  | ConeGet String
-  | ConeDelete String
-  | ConeChat String [String]
-  | ConeSetHead String String
-  | ConeRegistry
-  deriving (Show)
-
--- ============================================================================
--- Parsers
--- ============================================================================
-
-commandParser :: Parser Command
-commandParser = subparser
-  ( command "health" (info (pure Health) (progDesc "Check plexus health status"))
- <> command "bash" (info (Bash <$> bashParser <**> helper) (progDesc "Bash shell operations"))
- <> command "arbor" (info (Arbor <$> arborParser <**> helper) (progDesc "Arbor tree storage operations"))
- <> command "cone" (info (Cone <$> coneParser <**> helper) (progDesc "Cone LLM operations"))
-  )
-
--- Bash
-bashParser :: Parser BashCmd
-bashParser = subparser
-  ( command "execute" (info executeParser (progDesc "Execute a shell command"))
-  )
-  where
-    executeParser = BashExecute <$> many (argument str (metavar "CMD..."))
-
--- Arbor
-arborParser :: Parser ArborCmd
-arborParser = subparser
-  ( command "tree" (info (ArborTree <$> arborTreeParser <**> helper) (progDesc "Tree operations"))
- <> command "node" (info (ArborNode <$> arborNodeParser <**> helper) (progDesc "Node operations"))
- <> command "context" (info (ArborContext <$> arborContextParser <**> helper) (progDesc "Context operations"))
-  )
-
-arborTreeParser :: Parser ArborTreeCmd
-arborTreeParser = subparser
-  ( command "list" (info (pure TreeList) (progDesc "List all active trees"))
- <> command "list-scheduled" (info (pure TreeListScheduled) (progDesc "List trees scheduled for deletion"))
- <> command "list-archived" (info (pure TreeListArchived) (progDesc "List archived trees"))
- <> command "create" (info createParser (progDesc "Create a new tree"))
- <> command "get" (info getParser (progDesc "Get full tree data"))
- <> command "get-skeleton" (info getSkeletonParser (progDesc "Get tree structure without node data"))
- <> command "render" (info renderParser (progDesc "Render tree as text visualization"))
- <> command "update-metadata" (info updateMetadataParser (progDesc "Update tree metadata"))
- <> command "claim" (info claimParser (progDesc "Claim tree ownership"))
- <> command "release" (info releaseParser (progDesc "Release tree ownership"))
-  )
-  where
-    createParser = TreeCreate <$> argument str (metavar "OWNER")
-    getParser = TreeGet <$> argument str (metavar "TREE_ID")
-    getSkeletonParser = TreeGetSkeleton <$> argument str (metavar "TREE_ID")
-    renderParser = TreeRender <$> argument str (metavar "TREE_ID")
-    updateMetadataParser = TreeUpdateMetadata
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "DESCRIPTION")
-    claimParser = TreeClaim
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "OWNER")
-      <*> option auto (long "count" <> short 'n' <> value 1 <> metavar "N" <> help "Claim count (default: 1)")
-    releaseParser = TreeRelease
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "OWNER")
-      <*> option auto (long "count" <> short 'n' <> value 1 <> metavar "N" <> help "Release count (default: 1)")
-
-arborNodeParser :: Parser ArborNodeCmd
-arborNodeParser = subparser
-  ( command "create-text" (info createTextParser (progDesc "Create a root text node"))
- <> command "create-text-child" (info createTextChildParser (progDesc "Create a child text node"))
- <> command "get" (info getParser (progDesc "Get node data"))
- <> command "children" (info childrenParser (progDesc "Get node children"))
- <> command "parent" (info parentParser (progDesc "Get node parent"))
- <> command "path" (info pathParser (progDesc "Get path from root to node"))
-  )
-  where
-    createTextParser = NodeCreateText
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "CONTENT")
-    createTextChildParser = NodeCreateTextChild
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "PARENT_ID")
-      <*> argument str (metavar "CONTENT")
-    getParser = NodeGet
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-    childrenParser = NodeChildren
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-    parentParser = NodeParent
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-    pathParser = NodePath
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-
-arborContextParser :: Parser ArborContextCmd
-arborContextParser = subparser
-  ( command "leaves" (info leavesParser (progDesc "List leaf nodes"))
- <> command "path" (info pathParser (progDesc "Get full path data to node"))
- <> command "handles" (info handlesParser (progDesc "Get external handles in path"))
-  )
-  where
-    leavesParser = ContextLeaves <$> argument str (metavar "TREE_ID")
-    pathParser = ContextPath
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-    handlesParser = ContextHandles
-      <$> argument str (metavar "TREE_ID")
-      <*> argument str (metavar "NODE_ID")
-
--- Cone
-coneParser :: Parser ConeCmd
-coneParser = subparser
-  ( command "list" (info (pure ConeList) (progDesc "List all cones"))
- <> command "create" (info createParser (progDesc "Create a new cone"))
- <> command "get" (info getParser (progDesc "Get cone details"))
- <> command "delete" (info deleteParser (progDesc "Delete a cone"))
- <> command "chat" (info chatParser (progDesc "Chat with a cone (streams response)"))
- <> command "set-head" (info setHeadParser (progDesc "Move cone head to a node"))
- <> command "registry" (info (pure ConeRegistry) (progDesc "List available models, services, and families"))
-  )
-  where
-    createParser = ConeCreate
-      <$> argument str (metavar "NAME")
-      <*> argument str (metavar "MODEL")
-      <*> optional (argument str (metavar "SYSTEM_PROMPT"))
-    getParser = ConeGet <$> argument str (metavar "CONE_ID")
-    deleteParser = ConeDelete <$> argument str (metavar "CONE_ID")
-    chatParser = ConeChat
-      <$> argument str (metavar "CONE_ID")
-      <*> many (argument str (metavar "PROMPT..."))
-    setHeadParser = ConeSetHead
-      <$> argument str (metavar "CONE_ID")
-      <*> argument str (metavar "NODE_ID")
+  = CmdInvoke [Text] Text Value   -- ^ path (namespaces), method, params
+  | CmdShowHelp [Text]            -- ^ show help for path
+  deriving Show
 
 -- ============================================================================
 -- Main
@@ -207,215 +64,259 @@ coneParser = subparser
 
 main :: IO ()
 main = do
-  cmd <- customExecParser prefs opts
-  runCommand cmd
+  -- Parse basic args first (path and global opts)
+  (global, pathSegs) <- execParser basicParserInfo
+
+  -- Fetch schema for the path
+  schemaResult <- fetchSchemaForPath global pathSegs
+  case schemaResult of
+    Left err -> do
+      hPutStrLn stderr $ "Error: " <> T.unpack err
+      exitFailure
+    Right (schema, remainingPath) ->
+      -- The namespace path is pathSegs minus remainingPath
+      let namespacePath = take (length pathSegs - length remainingPath) pathSegs
+      in case remainingPath of
+        [] -> do
+          -- No remaining path - show help for this schema
+          TIO.putStr $ renderSchema schema
+        [methodName] ->
+          -- Single remaining segment - might be a method
+          case findMethod methodName schema of
+            Just method -> do
+              -- Parse method params from -p flag or empty object
+              params <- case optParams global of
+                Just jsonStr -> case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
+                  Right obj -> pure obj
+                  Left err -> do
+                    hPutStrLn stderr $ "Invalid JSON params: " <> err
+                    exitFailure
+                Nothing -> pure $ object []
+              runInvoke global namespacePath methodName params
+            Nothing -> do
+              -- Not a method - show error
+              hPutStrLn stderr $ "Unknown method or namespace: " <> T.unpack methodName
+              TIO.putStr $ renderSchema schema
+              exitFailure
+        (seg:_) -> do
+          -- Multiple remaining segments but we couldn't navigate
+          hPutStrLn stderr $ "Unknown namespace: " <> T.unpack seg
+          TIO.putStr $ renderSchema schema
+          exitFailure
+
+-- | Find a method by name in a schema
+findMethod :: Text -> PluginSchema -> Maybe MethodSchema
+findMethod name schema =
+  case filter ((== name) . methodName) (psMethods schema) of
+    [m] -> Just m
+    _   -> Nothing
+
+-- ============================================================================
+-- Argument Parsing
+-- ============================================================================
+
+basicParserInfo :: ParserInfo (GlobalOpts, [Text])
+basicParserInfo = info (parser <**> helper)
+  ( fullDesc
+ <> header "synapse - CLI for Plexus"
+ <> progDesc "Navigate and invoke Plexus methods"
+  )
   where
-    prefs = defaultPrefs { prefShowHelpOnEmpty = True }
-    opts = info (commandParser <**> helper)
-      ( fullDesc
-     <> progDesc "CLI for Plexus - LLM orchestration substrate"
-     <> header "symbols-cli - Haskell client for Plexus RPC"
-      )
+    parser = (,) <$> globalParser <*> pathParser
+
+-- | Global options
+globalParser :: Parser GlobalOpts
+globalParser = GlobalOpts
+  <$> strOption
+      ( long "host" <> short 'H' <> metavar "HOST"
+     <> value "127.0.0.1" <> showDefault
+     <> help "Plexus server host" )
+  <*> option auto
+      ( long "port" <> short 'P' <> metavar "PORT"
+     <> value 4444 <> showDefault
+     <> help "Plexus server port" )
+  <*> switch
+      ( long "json" <> short 'j'
+     <> help "Output raw JSON stream" )
+  <*> switch
+      ( long "dry-run" <> short 'n'
+     <> help "Show JSON-RPC request without sending" )
+  <*> optional (strOption
+      ( long "params" <> short 'p' <> metavar "JSON"
+     <> help "Method parameters as JSON object" ))
+
+-- | Path segments as positional arguments
+pathParser :: Parser [Text]
+pathParser = many $ argument (T.pack <$> str)
+  ( metavar "PATH..."
+ <> help "Path to plugin/method (e.g., solar earth info)" )
 
 -- ============================================================================
--- Command Runners
+-- Schema Navigation
 -- ============================================================================
 
-runCommand :: Command -> IO ()
-runCommand Health = runHealth
-runCommand (Bash cmd) = runBashCmd cmd
-runCommand (Arbor cmd) = runArborCmd cmd
-runCommand (Cone cmd) = runConeCmd cmd
+-- | Fetch schema for a path, navigating through children
+-- Returns the deepest schema we could reach and any remaining path segments
+fetchSchemaForPath :: GlobalOpts -> [Text] -> IO (Either Text (PluginSchema, [Text]))
+fetchSchemaForPath opts path = navigatePath opts [] path
 
--- Health
-runHealth :: IO ()
-runHealth = do
-  conn <- connect defaultConfig
-  S.mapM_ printHealthEvent $ Health.check conn
-  disconnect conn
+-- | Navigate through schemas, fetching children as needed
+navigatePath :: GlobalOpts -> [Text] -> [Text] -> IO (Either Text (PluginSchema, [Text]))
+navigatePath opts visited [] = do
+  -- Fetch schema at current position
+  schemaResult <- fetchSchemaAt opts visited
+  case schemaResult of
+    Left err -> pure $ Left err
+    Right schema -> pure $ Right (schema, [])
+navigatePath opts visited (seg:rest) = do
+  -- Fetch schema at current position
+  schemaResult <- fetchSchemaAt opts visited
+  case schemaResult of
+    Left err -> pure $ Left err
+    Right schema ->
+      -- Check if seg is a child namespace
+      if seg `elem` childNamespaces schema
+        then navigatePath opts (visited ++ [seg]) rest
+        else
+          -- seg is not a child - might be a method or error
+          -- Return current schema with remaining path
+          pure $ Right (schema, seg:rest)
 
-printHealthEvent :: Health.HealthEvent -> IO ()
-printHealthEvent (Health.Status s uptime ts) =
-  putStrLn $ "Status: " <> T.unpack s <> " (uptime: " <> show uptime <> "s)"
-
--- Bash
-runBashCmd :: BashCmd -> IO ()
-runBashCmd (BashExecute args) = do
-  let cmd = T.unwords $ map T.pack args
-  conn <- connect defaultConfig
-  exitCode <- S.foldM_ handleBashEvent (pure ExitSuccess) pure $ Bash.execute conn cmd
-  disconnect conn
-  exitWith exitCode
-
-handleBashEvent :: ExitCode -> Bash.BashEvent -> IO ExitCode
-handleBashEvent _ (Bash.Stdout line) = T.putStrLn line >> pure ExitSuccess
-handleBashEvent _ (Bash.Stderr line) = T.hPutStrLn stderr line >> pure ExitSuccess
-handleBashEvent _ (Bash.Exit code)
-  | code == 0 = pure ExitSuccess
-  | otherwise = pure (ExitFailure code)
-
--- Arbor
-runArborCmd :: ArborCmd -> IO ()
-runArborCmd (ArborTree cmd) = runArborTreeCmd cmd
-runArborCmd (ArborNode cmd) = runArborNodeCmd cmd
-runArborCmd (ArborContext cmd) = runArborContextCmd cmd
-
-runArborTreeCmd :: ArborTreeCmd -> IO ()
-runArborTreeCmd TreeList = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeList conn
-runArborTreeCmd TreeListScheduled = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeListScheduled conn
-runArborTreeCmd TreeListArchived = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeListArchived conn
-runArborTreeCmd (TreeCreate owner) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeCreate conn Nothing (T.pack owner)
-runArborTreeCmd (TreeGet treeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeGet conn (T.pack treeId)
-runArborTreeCmd (TreeGetSkeleton treeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeGetSkeleton conn (T.pack treeId)
-runArborTreeCmd (TreeRender treeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeRender conn (T.pack treeId)
-runArborTreeCmd (TreeUpdateMetadata treeId desc) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeUpdateMetadata conn (T.pack treeId) (object ["description" .= desc])
-runArborTreeCmd (TreeClaim treeId owner count) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeClaim conn (T.pack treeId) (T.pack owner) count
-runArborTreeCmd (TreeRelease treeId owner count) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.treeRelease conn (T.pack treeId) (T.pack owner) count
-
-runArborNodeCmd :: ArborNodeCmd -> IO ()
-runArborNodeCmd (NodeCreateText treeId content) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeCreateText conn (T.pack treeId) Nothing (T.pack content) Nothing
-runArborNodeCmd (NodeCreateTextChild treeId parentId content) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeCreateText conn (T.pack treeId) (Just $ T.pack parentId) (T.pack content) Nothing
-runArborNodeCmd (NodeGet treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGet conn (T.pack treeId) (T.pack nodeId)
-runArborNodeCmd (NodeChildren treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetChildren conn (T.pack treeId) (T.pack nodeId)
-runArborNodeCmd (NodeParent treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetParent conn (T.pack treeId) (T.pack nodeId)
-runArborNodeCmd (NodePath treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.nodeGetPath conn (T.pack treeId) (T.pack nodeId)
-
-runArborContextCmd :: ArborContextCmd -> IO ()
-runArborContextCmd (ContextLeaves treeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextListLeaves conn (T.pack treeId)
-runArborContextCmd (ContextPath treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextGetPath conn (T.pack treeId) (T.pack nodeId)
-runArborContextCmd (ContextHandles treeId nodeId) = withConn $ \conn ->
-  S.mapM_ printArborEvent $ Arbor.contextGetHandles conn (T.pack treeId) (T.pack nodeId)
-
--- Cone
-runConeCmd :: ConeCmd -> IO ()
-runConeCmd ConeList = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneList conn
-runConeCmd (ConeCreate name model systemPrompt) = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneCreate conn (T.pack name) (T.pack model) (T.pack <$> systemPrompt) Nothing
-runConeCmd (ConeGet coneId) = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneGet conn (T.pack coneId)
-runConeCmd (ConeDelete coneId) = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneDelete conn (T.pack coneId)
-runConeCmd (ConeChat coneId promptWords) = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneChat conn (T.pack coneId) (T.unwords $ map T.pack promptWords)
-runConeCmd (ConeSetHead coneId nodeId) = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneSetHead conn (T.pack coneId) (T.pack nodeId)
-runConeCmd ConeRegistry = withConn $ \conn ->
-  S.mapM_ printConeEvent $ Cone.coneRegistry conn
-
--- ============================================================================
--- Event Printers
--- ============================================================================
-
-printConeEvent :: Cone.ConeEvent -> IO ()
-printConeEvent (Cone.ConeCreated coneId pos) =
-  putStrLn $ "Cone created: " <> T.unpack coneId <> " at " <> T.unpack (Cone.positionTreeId pos) <> ":" <> T.unpack (Cone.positionNodeId pos)
-printConeEvent (Cone.ConeDeleted coneId) =
-  putStrLn $ "Cone deleted: " <> T.unpack coneId
-printConeEvent (Cone.ConeUpdated coneId) =
-  putStrLn $ "Cone updated: " <> T.unpack coneId
-printConeEvent (Cone.ConeData cone) =
-  putStrLn $ "Cone: " <> T.unpack (Cone.coneConfigName cone) <> " (" <> T.unpack (Cone.coneConfigId cone) <> ") model=" <> T.unpack (Cone.coneConfigModelId cone)
-printConeEvent (Cone.ConeList cones) = do
-  putStrLn $ "Cones: " <> show (length cones)
-  mapM_ (\c -> putStrLn $ "  " <> T.unpack (Cone.coneInfoName c) <> " (" <> T.unpack (Cone.coneInfoId c) <> ")") cones
-printConeEvent (Cone.ChatStart coneId pos) =
-  putStrLn $ "Chat started: " <> T.unpack coneId
-printConeEvent (Cone.ChatContent _ content) =
-  T.putStr content
-printConeEvent (Cone.ChatComplete coneId newHead usage) = do
-  putStrLn ""
-  putStrLn $ "Chat complete: head=" <> T.unpack (Cone.positionNodeId newHead)
-printConeEvent (Cone.HeadUpdated coneId oldHead newHead) =
-  putStrLn $ "Head updated: " <> T.unpack (Cone.positionNodeId oldHead) <> " -> " <> T.unpack (Cone.positionNodeId newHead)
-printConeEvent (Cone.ConeError msg) =
-  T.hPutStrLn stderr $ "Error: " <> msg
-printConeEvent (Cone.RegistryData reg) = do
-  let stats = Cone.registryStats reg
-  putStrLn $ "Registry: " <> show (Cone.statsModelCount stats) <> " models, "
-           <> show (Cone.statsServiceCount stats) <> " services, "
-           <> show (Cone.statsFamilyCount stats) <> " families"
-  putStrLn ""
-  putStrLn "Services:"
-  mapM_ (\s -> putStrLn $ "  " <> T.unpack (Cone.serviceName s)) (Cone.registryServices reg)
-  putStrLn ""
-  putStrLn "Families:"
-  mapM_ (\f -> putStrLn $ "  " <> T.unpack f) (Cone.registryFamilies reg)
-  putStrLn ""
-  putStrLn "Models:"
-  mapM_ printModel (Cone.registryModels reg)
+-- | Fetch schema at a specific path
+-- Uses plexus_call to route to the appropriate schema method
+fetchSchemaAt :: GlobalOpts -> [Text] -> IO (Either Text PluginSchema)
+fetchSchemaAt opts path = do
+  let cfg = defaultConfig { plexusHost = optHost opts, plexusPort = optPort opts }
+  -- Build the schema method path: plexus.schema, echo.schema, solar.earth.schema, etc.
+  let schemaMethod = if null path
+        then "plexus.schema"
+        else T.intercalate "." path <> ".schema"
+  let callParams = object ["method" .= schemaMethod]
+  doFetch cfg callParams `catch` \(e :: SomeException) ->
+    pure $ Left $ T.pack $ "Connection error: " <> show e
   where
-    printModel m = putStrLn $ "  " <> T.unpack (Cone.modelId m)
-                            <> " (" <> T.unpack (Cone.modelFamily m)
-                            <> "/" <> T.unpack (Cone.modelService m) <> ")"
+    doFetch cfg params = do
+      conn <- connect cfg
+      mSchema <- S.head_ $ S.mapMaybe extractPluginSchema $
+        plexusRpc conn "plexus_call" params
+      disconnect conn
+      case mSchema of
+        Just (Right s) -> pure $ Right s
+        Just (Left e)  -> pure $ Left e
+        Nothing        -> pure $ Left "No schema received"
 
--- Helpers
-withConn :: (Arbor.PlexusConnection -> IO ()) -> IO ()
-withConn action = do
-  conn <- connect defaultConfig
-  action conn
-  disconnect conn
+extractPluginSchema :: PlexusStreamItem -> Maybe (Either Text PluginSchema)
+extractPluginSchema (StreamData _ _ ct dat)
+  -- Content type ends with ".schema" (e.g., "plexus.schema", "echo.schema", "solar.earth.schema")
+  | ".schema" `T.isSuffixOf` ct = Just $ parsePluginSchema dat
+  | otherwise = Nothing
+extractPluginSchema (StreamError _ _ err _) = Just (Left err)
+extractPluginSchema _ = Nothing
 
-printArborEvent :: Arbor.ArborEvent -> IO ()
-printArborEvent (Arbor.TreeCreated treeId) =
-  putStrLn $ "Tree created: " <> T.unpack treeId
-printArborEvent (Arbor.TreeDeleted treeId) =
-  putStrLn $ "Tree deleted: " <> T.unpack treeId
-printArborEvent (Arbor.TreeUpdated treeId) =
-  putStrLn $ "Tree updated: " <> T.unpack treeId
-printArborEvent (Arbor.TreeList treeIds) =
-  putStrLn $ "Trees: " <> show (map T.unpack treeIds)
-printArborEvent (Arbor.TreeClaimed treeId ownerId newCount) =
-  putStrLn $ "Tree claimed: " <> T.unpack treeId <> " by " <> T.unpack ownerId <> " (count: " <> show newCount <> ")"
-printArborEvent (Arbor.TreeReleased treeId ownerId newCount) =
-  putStrLn $ "Tree released: " <> T.unpack treeId <> " by " <> T.unpack ownerId <> " (count: " <> show newCount <> ")"
-printArborEvent (Arbor.TreeScheduledDeletion treeId scheduledAt) =
-  putStrLn $ "Tree scheduled for deletion: " <> T.unpack treeId <> " at " <> show scheduledAt
-printArborEvent (Arbor.TreeArchived treeId archivedAt) =
-  putStrLn $ "Tree archived: " <> T.unpack treeId <> " at " <> show archivedAt
-printArborEvent (Arbor.TreeRefs treeId refs) =
-  putStrLn $ "Tree refs: " <> T.unpack treeId <> " - " <> show refs
-printArborEvent (Arbor.TreeData tree) =
-  putStrLn $ "Tree data: " <> show tree
-printArborEvent (Arbor.TreeSkeletonData skeleton) =
-  putStrLn $ "Tree skeleton: " <> show skeleton
-printArborEvent (Arbor.NodeCreated treeId nodeId parent) =
-  putStrLn $ "Node created: " <> T.unpack nodeId <> " in tree " <> T.unpack treeId <> maybe "" (\p -> " (parent: " <> T.unpack p <> ")") parent
-printArborEvent (Arbor.NodeData treeId node) =
-  putStrLn $ "Node data: " <> show node
-printArborEvent (Arbor.NodeChildren treeId nodeId children) =
-  putStrLn $ "Node children: " <> show (map T.unpack children)
-printArborEvent (Arbor.NodeParent treeId nodeId parent) =
-  putStrLn $ "Node parent: " <> maybe "none" T.unpack parent
-printArborEvent (Arbor.ContextPath treeId path) =
-  putStrLn $ "Context path: " <> show (map T.unpack path)
-printArborEvent (Arbor.ContextPathData treeId nodes) =
-  putStrLn $ "Context path data: " <> show nodes
-printArborEvent (Arbor.ContextHandles treeId handles) =
-  putStrLn $ "Context handles: " <> show handles
-printArborEvent (Arbor.ContextLeaves treeId leaves) =
-  putStrLn $ "Context leaves: " <> show (map T.unpack leaves)
-printArborEvent (Arbor.TreesScheduled treeIds) =
-  putStrLn $ "Scheduled trees: " <> show (map T.unpack treeIds)
-printArborEvent (Arbor.TreesArchived treeIds) =
-  putStrLn $ "Archived trees: " <> show (map T.unpack treeIds)
-printArborEvent (Arbor.TreeRenderResult _ render) =
-  T.putStrLn render
+-- ============================================================================
+-- Command Execution
+-- ============================================================================
+
+runInvoke :: GlobalOpts -> [Text] -> Text -> Value -> IO ()
+runInvoke opts pathSegs method params = do
+  -- Build the full method path: path + method
+  -- For root level, prefix with "plexus"
+  let fullPath = if null pathSegs then ["plexus"] else pathSegs
+  let dotPath = T.intercalate "." (fullPath ++ [method])
+  let callParams = object ["method" .= dotPath, "params" .= params]
+  let rpcRequest = object
+        [ "jsonrpc" .= ("2.0" :: Text)
+        , "id" .= (1 :: Int)
+        , "method" .= ("plexus_call" :: Text)
+        , "params" .= callParams
+        ]
+  if optDryRun opts
+    then LBS.putStrLn $ encode rpcRequest
+    else do
+      let cfg = defaultConfig { plexusHost = optHost opts, plexusPort = optPort opts }
+      conn <- connect cfg
+      S.mapM_ (printResult opts) $ plexusRpc conn "plexus_call" callParams
+      disconnect conn
+
+printResult :: GlobalOpts -> PlexusStreamItem -> IO ()
+printResult opts item
+  | optJson opts = LBS.putStrLn $ encode item
+printResult _ (StreamData _ _ _ dat) = do
+  TIO.putStrLn $ formatJson dat
+  hFlush stdout
+printResult _ (StreamProgress _ _ msg _) = do
+  TIO.putStr msg
+  TIO.putStr "\r"
+  hFlush stdout
+printResult _ (StreamError _ _ err _) =
+  hPutStrLn stderr $ "Error: " <> T.unpack err
+printResult _ _ = pure ()
+
+formatJson :: Value -> Text
+formatJson = TE.decodeUtf8 . LBS.toStrict . encode
+
+-- ============================================================================
+-- Schema Rendering
+-- ============================================================================
+
+-- | Render schema to text - shows current node's methods and child namespaces
+renderSchema :: PluginSchema -> Text
+renderSchema schema = T.unlines $
+  [ ""
+  , psNamespace schema <> " - " <> psDescription schema
+  , ""
+  ] <>
+  (if null (psMethods schema) then [] else
+    [ "Methods:"
+    ] <> map renderMethod (sortOn methodName $ psMethods schema) <> [""]
+  ) <>
+  (if null (pluginChildren schema) then [] else
+    [ "Namespaces:"
+    ] <> map renderChildSummary (sortOn csNamespace $ pluginChildren schema)
+  )
+
+renderMethod :: MethodSchema -> Text
+renderMethod m =
+  "  " <> padRight 16 (methodName m) <> methodDescription m <> renderParams (methodParams m)
+
+-- | Render method parameters from JSON Schema
+renderParams :: Maybe Value -> Text
+renderParams Nothing = ""
+renderParams (Just (Object o)) = case KM.lookup "properties" o of
+  Just (Object props) ->
+    let reqList = case KM.lookup "required" o of
+          Just (Array arr) -> [t | String t <- foldr (:) [] arr]
+          _ -> []
+        propList = KM.toList props
+        -- Sort: required first, then alphabetically
+        sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
+        rendered = map (renderParam reqList) sorted
+    in if null rendered then "" else "\n" <> T.intercalate "\n" rendered
+  _ -> ""
+renderParams _ = ""
+
+-- | Render a single parameter
+renderParam :: [Text] -> (K.Key, Value) -> Text
+renderParam required (name, propSchema) =
+  let nameText = K.toText name
+      isReq = nameText `elem` required
+      flagName = T.replace "_" "-" nameText
+      (typ, desc) = extractTypeDesc propSchema
+      reqMarker = if isReq then "" else "?"
+  in "      --" <> flagName <> reqMarker <> " <" <> typ <> ">  " <> desc
+
+extractTypeDesc :: Value -> (Text, Text)
+extractTypeDesc (Object po) =
+  ( case KM.lookup "type" po of { Just (String t) -> t; _ -> "string" }
+  , case KM.lookup "description" po of { Just (String d) -> d; _ -> "" }
+  )
+extractTypeDesc _ = ("string", "")
+
+renderChildSummary :: ChildSummary -> Text
+renderChildSummary child =
+  "  " <> padRight 16 (csNamespace child) <> csDescription child
+
+padRight :: Int -> Text -> Text
+padRight n t
+  | T.length t >= n = t <> " "
+  | otherwise = t <> T.replicate (n - T.length t) " "
