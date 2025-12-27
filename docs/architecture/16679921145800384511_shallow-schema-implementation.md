@@ -31,15 +31,76 @@ data ChildSummary = ChildSummary
   }
 ```
 
-### CLI (`synapse/app/Main.hs`)
+### CLI (`synapse/app/Algebra.hs`)
 
 - Changed from nested optparse-applicative subcommands to positional path arguments
 - Schema fetched lazily via `plexus_call` with `{path}.schema`
-- Parameters passed via `-p '{"key": "value"}'` JSON flag
+- Multiple parameter input modes (see below)
 
 ```bash
-synapse solar earth luna info    # navigates lazily, invokes method
-synapse echo once -p '{"message":"hello"}'
+synapse solar earth luna info              # navigates lazily, invokes method
+synapse echo once message=hello            # key=value inline params
+synapse echo once -p '{"message":"hello"}' # JSON params
+synapse --schema solar                     # raw schema JSON
+synapse --rpc '{"method":"health.check"}'  # raw JSON-RPC passthrough
+```
+
+### CLI Flags
+
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--host` | `-H` | Plexus server host (default: 127.0.0.1) |
+| `--port` | `-P` | Plexus server port (default: 4444) |
+| `--json` | `-j` | Output raw JSON stream |
+| `--dry-run` | `-n` | Show JSON-RPC request without sending |
+| `--schema` | `-s` | Fetch raw schema JSON for path |
+| `--params` | `-p` | Method parameters as JSON object |
+| `--rpc` | `-r` | Raw JSON-RPC request (bypass navigation) |
+
+### Parameter Input Modes
+
+1. **Inline `key=value`**: `synapse echo echo message=hi count=3`
+2. **JSON via `-p`**: `synapse echo once -p '{"message":"hello"}'`
+3. **Auto-invoke**: Methods with no required params run automatically
+
+## Debugging with Raw JSON-RPC
+
+When synapse isn't available or for debugging, use `websocat` directly. The Plexus server runs on `ws://localhost:4444`.
+
+### Get Root Schema
+
+```bash
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"plexus.schema"}}'; sleep 1) | websocat ws://127.0.0.1:4444
+```
+
+### Get Child Schema
+
+```bash
+# Solar system schema
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"solar.schema"}}'; sleep 1) | websocat ws://127.0.0.1:4444
+
+# Nested child schema
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"solar.earth.schema"}}'; sleep 1) | websocat ws://127.0.0.1:4444
+```
+
+### Invoke Methods
+
+```bash
+# Health check
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"health.check"}}'; sleep 1) | websocat ws://127.0.0.1:4444
+
+# Echo with params
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"echo.once","params":{"message":"hello"}}}'; sleep 1) | websocat ws://127.0.0.1:4444
+
+# Observe solar system
+(echo '{"jsonrpc":"2.0","id":1,"method":"plexus_call","params":{"method":"solar.observe"}}'; sleep 1) | websocat ws://127.0.0.1:4444
+```
+
+### Interactive Session
+
+```bash
+websocat ws://127.0.0.1:4444
+# Then type JSON-RPC requests manually
 ```
 
 ## Alignment with Category Theory
@@ -163,7 +224,7 @@ completions schema = map msName (psMethods schema)
 **Implementation:**
 Not implemented. Would require generating completion scripts from schema.
 
-### 7. Simplified Parameter Parsing
+### 7. ~~Simplified Parameter Parsing~~ (RESOLVED)
 
 **Design doc specifies:**
 ```bash
@@ -172,12 +233,10 @@ synapse echo echo --message "hi" --count 3
 
 **Implementation:**
 ```bash
-synapse echo echo -p '{"message":"hi","count":3}'
+synapse echo echo message=hi count=3
 ```
 
-**Impact:** Less ergonomic. Proper `--key value` parsing would require:
-- Building optparse-applicative parser from method's JSON Schema
-- Or manual argument parsing after path resolution
+Used `key=value` syntax instead of `--key value` to avoid conflicts with optparse-applicative's flag parsing. Type inference converts `"true"`→Bool, `"3"`→Number, etc.
 
 ## What's Missing vs Design Doc
 
@@ -187,7 +246,9 @@ synapse echo echo -p '{"message":"hi","count":3}'
 | Cycle detection | Missing | Low (no cycles in current schema) |
 | Client-side param validation | Missing | Low |
 | Shell tab completion | Missing | Medium |
-| `--key value` param syntax | Missing | Medium |
+| `key=value` param syntax | ✓ Implemented | — |
+| `--schema` flag | ✓ Implemented | — |
+| Raw JSON-RPC passthrough | ✓ Implemented | — |
 | REPL mode | Missing | Low |
 | Streaming output rendering | Partial | Medium |
 

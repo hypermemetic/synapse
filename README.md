@@ -9,198 +9,154 @@
 ╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝
 ```
 
-**Haskell frontend for Plexus - Typed APIs for LLM orchestration**
+**Algebraic CLI for Plexus**
 
-Synapse is a dynamic CLI that discovers and exposes backend capabilities at runtime, providing type-safe command-line interfaces to LLM orchestration systems.
+Synapse navigates plugin hierarchies using coalgebraic lazy evaluation. Schemas are fetched on demand as you traverse the tree.
 
-## Features
+## The Algebra
 
-- **Dynamic Schema Discovery**: Automatically discovers available activations and methods from the Plexus backend
-- **Typed CLI Flags**: Generates typed command-line flags from JSON Schema definitions
-- **Template Rendering**: Customizable Mustache templates for clean output formatting
-- **Smart Caching**: Efficient schema caching with hash-based invalidation
-- **Live System Info**: Real-time backend health and activation status
-
-## Installation
-
-```bash
-cabal install synapse
+```
+Navigation : Path → SynapseM SchemaView
+Rendering  : ShallowSchema → Text
+Completion : ShallowSchema → [Text]
 ```
 
-Or build from source:
+Schemas form a **free category**:
+- **Objects**: Plugins identified by content hash
+- **Morphisms**: Paths (composable sequences of child references)
+- **Identity**: Empty path returns current schema
+- **Composition**: Path concatenation chains lazy fetches
 
-```bash
-git clone https://codeberg.org/hypermemetic/synapse
-cd synapse
-cabal build
-cabal run synapse -- info
+The CLI implements a **hylomorphism**:
+```
+Path → navigatePath (anamorphism) → Schema → render/invoke (catamorphism) → Output
 ```
 
-## Quick Start
+## Usage
 
-**View system info:**
 ```bash
-synapse info
+# Navigate to a plugin
+synapse solar
+
+# Navigate deeper
+synapse solar earth luna
+
+# Invoke a method
+synapse health check
+synapse solar observe
+
+# Methods with required params show help
+synapse echo once
+# echo.once - Echo a simple message once
+#   --message <string>  The message to echo
+
+# Pass parameters inline
+synapse echo once message=hello
+synapse echo echo message=hi count=3
+
+# Or as JSON
+synapse echo once -p '{"message":"hello"}'
 ```
 
-**List available activations:**
-```bash
-synapse --help
-```
+## Flags
 
-**Interact with Claude Code:**
-```bash
-synapse claudecode chat --name my-session --prompt "hello"
-```
+| Flag | Short | Description |
+|------|-------|-------------|
+| `--host` | `-H` | Plexus server host (default: 127.0.0.1) |
+| `--port` | `-P` | Plexus server port (default: 4444) |
+| `--json` | `-j` | Output raw JSON stream |
+| `--dry-run` | `-n` | Show JSON-RPC request without sending |
+| `--schema` | `-s` | Fetch raw schema JSON for path |
+| `--params` | `-p` | Method parameters as JSON object |
+| `--rpc` | `-r` | Raw JSON-RPC passthrough |
 
-**Manage conversation trees:**
-```bash
-synapse arbor tree-create --description "My conversation"
-synapse arbor tree-list
-```
+## Examples
 
-**Chat with Cone:**
 ```bash
-synapse cone chat --id my-cone --prompt "What is the meaning of life?"
-```
+# Root schema (lists all activations)
+synapse
 
-**Execute bash commands:**
-```bash
-synapse bash execute --command "echo hello world"
+# Get raw schema JSON
+synapse --schema solar
+
+# Dry run (see the RPC without sending)
+synapse -n echo once message=test
+
+# Raw JSON-RPC passthrough
+synapse --rpc '{"method":"health.check"}'
+
+# Nested navigation
+synapse solar earth luna info
 ```
 
 ## Architecture
 
-Synapse consists of two packages:
+```
+synapse/
+├── app/
+│   └── Algebra.hs           # CLI entry point
+└── src/Synapse/
+    ├── Monad.hs             # SynapseM effect stack
+    ├── Transport.hs         # WebSocket RPC client
+    ├── Schema/
+    │   ├── Types.hs         # PluginSchema, MethodSchema, ChildSummary
+    │   └── Base.hs          # ShallowSchema (base functor)
+    └── Algebra/
+        ├── Navigate.hs      # Navigation algebra (anamorphism)
+        └── Render.hs        # Rendering algebra (catamorphism)
+```
 
-- **`meaning`**: Core types and schemas (Plexus.Types, Plexus.Schema)
-- **`synapse`**: Client library and CLI implementation
+### Effect Stack
 
-The CLI dynamically builds subcommands by:
-1. Fetching the Plexus schema (`plexus_schema`)
-2. Generating typed CLI parsers from JSON Schema
-3. Mapping CLI args to RPC method calls
+```haskell
+type SynapseM = ExceptT SynapseError (ReaderT SynapseEnv IO)
 
-## Configuration
+data SynapseEnv = SynapseEnv
+  { seHost    :: Text
+  , sePort    :: Int
+  , seCache   :: IORef SchemaCache
+  , seVisited :: IORef (Set PluginHash)  -- cycle detection
+  }
+```
 
-**Default endpoint:** `ws://127.0.0.1:4444`
+### Shallow Schemas
 
-Override with flags:
+Schemas on the wire are shallow — children are summaries, not full schemas:
+
+```haskell
+data ChildSummary = ChildSummary
+  { csNamespace   :: Text
+  , csDescription :: Text
+  , csHash        :: PluginHash
+  }
+```
+
+Navigation fetches child schemas lazily via `{path}.schema` RPC calls.
+
+## Build
+
 ```bash
-synapse --host 192.168.1.100 --port 5555 cone chat --prompt "hello"
+cabal build synapse
+cabal run synapse -- health check
 ```
 
-**Template customization:**
+## Test
 
-Create custom output templates in `.substrate/templates/`:
-```
-.substrate/templates/
-├── claudecode/
-│   └── chat.mustache
-└── cone/
-    └── chat.mustache
-```
-
-**Schema caching:**
-
-View cache status:
 ```bash
-synapse cache status
+cabal test synapse-test
 ```
 
-Force refresh:
-```bash
-# Refresh is default behavior
-synapse cone chat --prompt "hello"
-
-# Use cached schema (faster):
-synapse --no-refresh cone chat --prompt "hello"
-```
-
-## Available Activations
-
-- **arbor**: Manage conversation trees with context tracking
-- **bash**: Execute bash commands and stream output
-- **claudecode**: Manage Claude Code sessions with Arbor-backed conversation history
-- **cone**: LLM cone with persistent conversation context
-- **health**: Check hub health and uptime
-
-Each activation provides multiple methods. Use `synapse <activation> --help` to see available commands.
-
-## Template Rendering
-
-Synapse uses Mustache templates to format output. Example template for `claudecode chat`:
-
-```mustache
-{{{text}}}{{#tool_input}}
-
-🔧 {{tool_name}} {{file_path}}{{#command}}"{{.}}"{{/command}}{{pattern}}
-{{/tool_input}}
-```
-
-This renders:
-- Chat content as plain text
-- Tool uses with formatted parameters
-- Clean streaming output
-
-Disable rendering with `--no-render` for raw JSON output.
-
-## Examples
-
-**Start a chat session:**
-```bash
-synapse claudecode chat --name dev-session --prompt "create a fibonacci function"
-```
-
-**List conversation trees:**
-```bash
-synapse arbor tree-list --template pretty
-```
-
-**Get method schema:**
-```bash
-synapse --schema cone chat
-```
-
-**Direct RPC calls:**
-```bash
-synapse call plexus_schema '[]'
-synapse call cone_chat '{"identifier":{"by_name":{"name":"test"}},"prompt":"hi"}'
-```
-
-## Development
-
-**Build with examples:**
-```bash
-cabal build --flag=build-examples all
-cabal run schema-discovery
-```
-
-**Run tests:**
-```bash
-cabal test all
-```
-
-**Check code:**
-```bash
-cabal check
+The test suite uses a terse DSL:
+```haskell
+it "echo once" $ ["echo", "once"] `has` ["once", "--message", "required"]
+it "invoke"    $ call ["echo", "once"] (msg "yo") `hasA` ["yo"]
 ```
 
 ## Documentation
 
-- Architecture docs: `docs/architecture/`
-- Cleanup plan: `docs/CLEANUP-PLAN.md`
-- Haddock: `cabal haddock all`
+- `docs/architecture/` — Design documents and implementation notes
+- `docs/SYNAPSE.md` — Full categorical design specification
 
 ## License
 
 MIT
-
-## Links
-
-- Repository: https://codeberg.org/hypermemetic/synapse
-- Issues: https://codeberg.org/hypermemetic/synapse/issues
-
----
-
-Built with ❤️ for the Plexus ecosystem
