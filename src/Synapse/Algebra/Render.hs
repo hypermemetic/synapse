@@ -1,26 +1,8 @@
--- | Render algebra (catamorphism)
---
--- = The Algebra
---
--- @
--- renderAlg :: PluginSchemaF Text -> Text
--- @
---
--- A catamorphism folds from leaves to root. Children are already rendered
--- to Text by the time we process the parent.
---
--- For shallow schemas, we render one level at a time. Children are
--- ChildSummary, not full schemas — we can only show their names.
+-- | Render algebra for PluginSchema
 module Synapse.Algebra.Render
-  ( -- * Render Algebras
-    RenderAlg
-  , renderAlg
-  , renderAlgWith
-
-    -- * Rendering Functions
-  , renderSchema
+  ( -- * Rendering Functions
+    renderSchema
   , renderSchemaWith
-  , renderSynapseRoot
   , renderMethod
   , renderMethodFull
   , renderChild
@@ -42,7 +24,6 @@ import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
 
 import Synapse.Schema.Types
-import Synapse.Schema.Base
 
 -- | Rendering style configuration
 data RenderStyle = RenderStyle
@@ -66,44 +47,31 @@ defaultStyle = RenderStyle
 compactStyle :: RenderStyle
 compactStyle = defaultStyle { rsCompact = True }
 
--- | The render algebra type
---
--- For fully recursive schemas:
--- @
--- renderAlg :: PluginSchemaF Text -> Text
--- @
---
--- For shallow schemas, we use:
--- @
--- renderAlg :: ShallowSchema -> Text
--- @
-type RenderAlg = ShallowSchema -> Text
+-- | Render a PluginSchema
+renderSchema :: PluginSchema -> Text
+renderSchema = renderSchemaWith defaultStyle
 
--- | Default render algebra
-renderAlg :: RenderAlg
-renderAlg = renderAlgWith defaultStyle
-
--- | Render algebra with custom style (uses prettyprinter formatting)
-renderAlgWith :: RenderStyle -> ShallowSchema -> Text
-renderAlgWith _style PluginSchemaF{..}
-  | null psfMethods && maybe True null psfChildren = headerText
+-- | Render with custom style
+renderSchemaWith :: RenderStyle -> PluginSchema -> Text
+renderSchemaWith _style PluginSchema{..}
+  | null psMethods && maybe True null psChildren = headerText
   | otherwise = renderStrict $ layoutPretty layoutOpts doc
   where
     layoutOpts = LayoutOptions (AvailablePerLine 80 1.0)
 
-    headerText = psfNamespace <> " v" <> psfVersion <> "\n" <> psfDescription <> "\n"
+    headerText = psNamespace <> " v" <> psVersion <> "\n" <> psDescription <> "\n"
 
     doc :: Doc ann
     doc = vsep
-      [ pretty psfNamespace <+> pretty ("v" <> psfVersion)
+      [ pretty psNamespace <+> pretty ("v" <> psVersion)
       , emptyDoc
-      , indent 2 $ align $ fillSep $ map pretty $ T.words psfDescription
+      , indent 2 $ align $ fillSep $ map pretty $ T.words psDescription
       , emptyDoc
       , childrenDoc
       , methodsDoc
       ]
 
-    childrenDoc = case psfChildren of
+    childrenDoc = case psChildren of
       Nothing -> emptyDoc
       Just [] -> emptyDoc
       Just children -> vsep
@@ -114,11 +82,11 @@ renderAlgWith _style PluginSchemaF{..}
         ]
 
     methodsDoc
-      | null psfMethods = emptyDoc
+      | null psMethods = emptyDoc
       | otherwise = vsep
         [ pretty ("methods" :: Text)
         , emptyDoc
-        , indent 2 $ vsep $ intersperse emptyDoc $ map renderMethodDoc (sortOn methodName psfMethods)
+        , indent 2 $ vsep $ intersperse emptyDoc $ map renderMethodDoc (sortOn methodName psMethods)
         ]
 
     renderChildDoc child = fillBreak 12 (pretty $ csNamespace child)
@@ -151,36 +119,6 @@ renderAlgWith _style PluginSchemaF{..}
           descWords = if T.null desc then [] else map pretty (T.words desc)
       in fillBreak 20 (pretty flag <+> pretty typStr)
          <+> align (fillSep descWords)
-
--- | Render a PluginSchema (convenience wrapper)
-renderSchema :: PluginSchema -> Text
-renderSchema = renderAlg . toShallow
-
--- | Render with custom style
-renderSchemaWith :: RenderStyle -> PluginSchema -> Text
-renderSchemaWith style = renderAlgWith style . toShallow
-
--- | Render synapse root (synapse header + plexus content)
-renderSynapseRoot :: PluginSchema -> Text
-renderSynapseRoot schema = T.unlines $ concat
-  [ header
-  , methodSection
-  , childSection
-  ]
-  where
-    header =
-      [ "synapse"
-      , psDescription schema
-      , ""
-      ]
-
-    methodSection
-      | null (psMethods schema) = []
-      | otherwise = "Methods:" : map (renderMethodWith defaultStyle) (sortOn methodName $ psMethods schema) ++ [""]
-
-    childSection
-      | null (pluginChildren schema) = []
-      | otherwise = "Namespaces:" : map renderChild (sortOn csNamespace $ pluginChildren schema)
 
 -- | Render a method (short form)
 renderMethod :: MethodSchema -> Text

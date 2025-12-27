@@ -32,7 +32,6 @@ import Data.Text (Text)
 import Data.List (find)
 
 import Synapse.Schema.Types
-import Synapse.Schema.Base
 import Synapse.Monad
 import Synapse.Transport (fetchSchemaAt)
 import Synapse.Cache (fetchCached)
