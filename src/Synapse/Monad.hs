@@ -1,0 +1,164 @@
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
+
+-- | Effect stack for Synapse operations
+--
+-- = The Monad
+--
+-- @
+-- SynapseM = ExceptT SynapseError (ReaderT SynapseEnv IO)
+-- @
+--
+-- Provides:
+-- - Error handling via 'SynapseError'
+-- - Environment with cache and cycle detection
+-- - IO for network calls
+module Synapse.Monad
+  ( -- * The Monad
+    SynapseM
+  , runSynapseM
+  , runSynapseM'
+
+    -- * Environment
+  , SynapseEnv(..)
+  , initEnv
+  , defaultEnv
+
+    -- * Errors
+  , SynapseError(..)
+  , throwNav
+  , throwTransport
+  , throwParse
+
+    -- * Cycle Detection
+  , checkCycle
+  , withFreshVisited
+
+    -- * Cache Operations
+  , lookupCache
+  , insertCache
+  ) where
+
+import Control.Monad (when)
+import Control.Monad.IO.Class (MonadIO, liftIO)
+import Control.Monad.Reader (MonadReader, ReaderT, runReaderT, asks)
+import Control.Monad.Except (MonadError, ExceptT, runExceptT, throwError)
+import Data.HashMap.Strict (HashMap)
+import qualified Data.HashMap.Strict as HM
+import Data.HashSet (HashSet)
+import qualified Data.HashSet as HS
+import Data.Hashable (Hashable)
+import Data.IORef (IORef, newIORef, readIORef, writeIORef, modifyIORef')
+import Data.Text (Text)
+
+import Synapse.Schema.Types
+
+-- | Environment for Synapse operations
+data SynapseEnv = SynapseEnv
+  { seHost    :: !Text                        -- ^ Plexus host
+  , sePort    :: !Int                         -- ^ Plexus port
+  , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
+  , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
+  }
+
+-- | Errors that can occur during Synapse operations
+data SynapseError
+  = NavError NavError
+  | TransportError Text
+  | ParseError Text
+  | ValidationError Text
+  deriving stock (Show, Eq)
+
+-- | The Synapse monad stack
+newtype SynapseM a = SynapseM
+  { unSynapseM :: ExceptT SynapseError (ReaderT SynapseEnv IO) a
+  }
+  deriving newtype
+    ( Functor
+    , Applicative
+    , Monad
+    , MonadIO
+    , MonadReader SynapseEnv
+    , MonadError SynapseError
+    )
+
+-- Note: PluginHash is a type alias for Text, which is already Hashable
+
+-- | Run a SynapseM action with the given environment
+runSynapseM :: SynapseEnv -> SynapseM a -> IO (Either SynapseError a)
+runSynapseM env action = runReaderT (runExceptT (unSynapseM action)) env
+
+-- | Run a SynapseM action with default environment
+runSynapseM' :: SynapseM a -> IO (Either SynapseError a)
+runSynapseM' action = do
+  env <- defaultEnv
+  runSynapseM env action
+
+-- | Initialize environment with given host/port
+initEnv :: Text -> Int -> IO SynapseEnv
+initEnv host port = do
+  cache <- newIORef HM.empty
+  visited <- newIORef HS.empty
+  pure SynapseEnv
+    { seHost = host
+    , sePort = port
+    , seCache = cache
+    , seVisited = visited
+    }
+
+-- | Default environment (localhost:4444)
+defaultEnv :: IO SynapseEnv
+defaultEnv = initEnv "127.0.0.1" 4444
+
+-- | Throw a navigation error
+throwNav :: NavError -> SynapseM a
+throwNav = throwError . NavError
+
+-- | Throw a transport error
+throwTransport :: Text -> SynapseM a
+throwTransport = throwError . TransportError
+
+-- | Throw a parse error
+throwParse :: Text -> SynapseM a
+throwParse = throwError . ParseError
+
+-- ============================================================================
+-- Cycle Detection
+-- ============================================================================
+
+-- | Check for cycles before descending into a child
+-- Throws 'Cycle' error if hash was already visited
+checkCycle :: PluginHash -> Path -> SynapseM ()
+checkCycle hash path = do
+  visitedRef <- asks seVisited
+  visited <- liftIO $ readIORef visitedRef
+  when (hash `HS.member` visited) $
+    throwNav $ Cycle hash path
+  liftIO $ modifyIORef' visitedRef (HS.insert hash)
+
+-- | Run an action with a fresh visited set, restoring afterwards
+-- Used at the start of each navigation to reset cycle detection
+withFreshVisited :: SynapseM a -> SynapseM a
+withFreshVisited action = do
+  ref <- asks seVisited
+  old <- liftIO $ readIORef ref
+  liftIO $ writeIORef ref HS.empty
+  result <- action
+  liftIO $ writeIORef ref old
+  pure result
+
+-- ============================================================================
+-- Cache Operations
+-- ============================================================================
+
+-- | Look up a schema in the cache by hash
+lookupCache :: PluginHash -> SynapseM (Maybe PluginSchema)
+lookupCache hash = do
+  cacheRef <- asks seCache
+  cache <- liftIO $ readIORef cacheRef
+  pure $ HM.lookup hash cache
+
+-- | Insert a schema into the cache
+insertCache :: PluginHash -> PluginSchema -> SynapseM ()
+insertCache hash schema = do
+  cacheRef <- asks seCache
+  liftIO $ modifyIORef' cacheRef (HM.insert hash schema)

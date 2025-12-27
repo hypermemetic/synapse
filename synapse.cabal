@@ -29,6 +29,15 @@ library
     Activation.Cone
     Activation.Bash
     Activation.Health
+    -- Synapse Algebra - categorical CLI implementation
+    Synapse.Schema.Base
+    Synapse.Schema.Types
+    Synapse.Monad
+    Synapse.Algebra.Navigate
+    Synapse.Algebra.Render
+    Synapse.Algebra.Complete
+    Synapse.Transport
+    Synapse.Cache
   other-modules:
   build-depends:
     base ^>=4.17 || ^>=4.18 || ^>=4.19,
@@ -43,14 +52,20 @@ library
     stm >= 2.5,
     streaming >= 0.2,
     mtl >= 2.3,
+    transformers >= 0.6,
     containers >= 0.6,
+    unordered-containers >= 0.2,
+    hashable >= 1.4,
     scientific >= 0.3,
     vector >= 0.13,
     directory >= 1.3,
     time >= 1.9,
     filepath >= 1.4,
     optparse-applicative >= 0.18,
-    stache >= 2.3
+    stache >= 2.3,
+    recursion-schemes >= 5.2,
+    data-fix >= 0.3,
+    prettyprinter >= 1.7
   hs-source-dirs:   src
   default-language: GHC2021
   default-extensions:
@@ -63,7 +78,7 @@ library
     RecordWildCards
 
 executable synapse
-  main-is:          Dyn.hs
+  main-is:          Main.hs
   build-depends:
     base,
     meaning,
@@ -72,16 +87,36 @@ executable synapse
     text,
     bytestring,
     streaming,
-    containers,
     optparse-applicative >= 0.18,
-    directory >= 1.3,
-    time >= 1.9,
-    filepath >= 1.4,
-    process >= 1.6
+    recursion-schemes >= 5.2,
+    prettyprinter >= 1.7
   hs-source-dirs:   app
   default-language: GHC2021
   default-extensions:
     OverloadedStrings
+    RecordWildCards
+
+-- Algebraic CLI - proper categorical implementation
+executable synapse-algebra
+  main-is:          Algebra.hs
+  build-depends:
+    base,
+    meaning,
+    synapse,
+    aeson,
+    text,
+    bytestring,
+    streaming,
+    mtl,
+    containers,
+    optparse-applicative >= 0.18,
+    prettyprinter >= 1.7
+  hs-source-dirs:   app
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+    RecordWildCards
+    LambdaCase
 
 executable schema-discovery
   main-is:          SchemaDiscovery.hs
@@ -98,6 +133,20 @@ executable schema-discovery
     OverloadedStrings
   if !flag(build-examples)
     buildable: False
+
+test-suite cli-test
+  type:             exitcode-stdio-1.0
+  main-is:          CLISpec.hs
+  build-depends:
+    base,
+    text >= 2.0,
+    process >= 1.6,
+    hspec >= 2.10
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded
 
 test-suite arbor-test
   type:             exitcode-stdio-1.0
