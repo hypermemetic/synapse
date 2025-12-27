@@ -9,9 +9,7 @@
 ╚══════╝   ╚═╝   ╚═╝  ╚═══╝╚═╝  ╚═╝╚═╝     ╚══════╝╚══════╝
 ```
 
-**Algebraic CLI for Plexus**
-
-Synapse navigates plugin hierarchies using coalgebraic lazy evaluation. Schemas are fetched on demand as you traverse the tree.
+**Algebraic CLI for Plexus** — 1,700 lines of categorical machinery.
 
 ## The Algebra
 
@@ -21,141 +19,62 @@ Rendering  : ShallowSchema → Text
 Completion : ShallowSchema → [Text]
 ```
 
-Schemas form a **free category**:
-- **Objects**: Plugins identified by content hash
-- **Morphisms**: Paths (composable sequences of child references)
-- **Identity**: Empty path returns current schema
-- **Composition**: Path concatenation chains lazy fetches
-
-The CLI implements a **hylomorphism**:
+Schemas form a **free category**. The CLI implements a **hylomorphism**:
 ```
-Path → navigatePath (anamorphism) → Schema → render/invoke (catamorphism) → Output
+Path → navigate (anamorphism) → Schema → render (catamorphism) → Output
 ```
 
 ## Usage
 
 ```bash
-# Navigate to a plugin
-synapse solar
-
-# Navigate deeper
-synapse solar earth luna
-
-# Invoke a method
-synapse health check
-synapse solar observe
-
-# Methods with required params show help
-synapse echo once
-# echo.once - Echo a simple message once
-#   --message <string>  The message to echo
-
-# Pass parameters inline
-synapse echo once message=hello
-synapse echo echo message=hi count=3
-
-# Or as JSON
-synapse echo once -p '{"message":"hello"}'
+synapse                              # root schema
+synapse solar                        # navigate to plugin
+synapse solar earth luna             # nested navigation
+synapse health check                 # invoke method (auto if no required params)
+synapse echo once message=hello      # inline params
+synapse echo once -p '{"message":"hello"}'  # JSON params
+synapse --schema solar               # raw schema JSON
+synapse --rpc '{"method":"health.check"}'   # raw JSON-RPC
 ```
 
 ## Flags
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--host` | `-H` | Plexus server host (default: 127.0.0.1) |
-| `--port` | `-P` | Plexus server port (default: 4444) |
-| `--json` | `-j` | Output raw JSON stream |
-| `--dry-run` | `-n` | Show JSON-RPC request without sending |
-| `--schema` | `-s` | Fetch raw schema JSON for path |
-| `--params` | `-p` | Method parameters as JSON object |
+| `--host` | `-H` | Plexus host (default: 127.0.0.1) |
+| `--port` | `-P` | Plexus port (default: 4444) |
+| `--json` | `-j` | Raw JSON stream output |
+| `--dry-run` | `-n` | Show request without sending |
+| `--schema` | `-s` | Fetch raw schema JSON |
+| `--params` | `-p` | JSON parameters |
 | `--rpc` | `-r` | Raw JSON-RPC passthrough |
 
-## Examples
-
-```bash
-# Root schema (lists all activations)
-synapse
-
-# Get raw schema JSON
-synapse --schema solar
-
-# Dry run (see the RPC without sending)
-synapse -n echo once message=test
-
-# Raw JSON-RPC passthrough
-synapse --rpc '{"method":"health.check"}'
-
-# Nested navigation
-synapse solar earth luna info
-```
-
-## Architecture
+## Structure
 
 ```
 synapse/
-├── app/
-│   └── Algebra.hs           # CLI entry point
-└── src/Synapse/
-    ├── Monad.hs             # SynapseM effect stack
-    ├── Transport.hs         # WebSocket RPC client
-    ├── Schema/
-    │   ├── Types.hs         # PluginSchema, MethodSchema, ChildSummary
-    │   └── Base.hs          # ShallowSchema (base functor)
-    └── Algebra/
-        ├── Navigate.hs      # Navigation algebra (anamorphism)
-        └── Render.hs        # Rendering algebra (catamorphism)
+├── app/Main.hs                 # 291 lines - CLI
+└── src/                        # 1,221 lines
+    ├── Plexus.hs               # RPC exports
+    ├── Plexus/Client.hs        # WebSocket client
+    └── Synapse/
+        ├── Monad.hs            # Effect stack
+        ├── Transport.hs        # RPC transport
+        ├── Cache.hs            # Schema cache
+        ├── Schema/Types.hs     # PluginSchema, ChildSummary
+        ├── Schema/Base.hs      # ShallowSchema functor
+        └── Algebra/
+            ├── Navigate.hs     # Anamorphism
+            ├── Render.hs       # Catamorphism
+            └── Complete.hs     # Completions
 ```
 
-### Effect Stack
-
-```haskell
-type SynapseM = ExceptT SynapseError (ReaderT SynapseEnv IO)
-
-data SynapseEnv = SynapseEnv
-  { seHost    :: Text
-  , sePort    :: Int
-  , seCache   :: IORef SchemaCache
-  , seVisited :: IORef (Set PluginHash)  -- cycle detection
-  }
-```
-
-### Shallow Schemas
-
-Schemas on the wire are shallow — children are summaries, not full schemas:
-
-```haskell
-data ChildSummary = ChildSummary
-  { csNamespace   :: Text
-  , csDescription :: Text
-  , csHash        :: PluginHash
-  }
-```
-
-Navigation fetches child schemas lazily via `{path}.schema` RPC calls.
-
-## Build
+## Build & Test
 
 ```bash
-cabal build synapse
-cabal run synapse -- health check
+cabal build exe:synapse
+cabal test cli-test
 ```
-
-## Test
-
-```bash
-cabal test synapse-test
-```
-
-The test suite uses a terse DSL:
-```haskell
-it "echo once" $ ["echo", "once"] `has` ["once", "--message", "required"]
-it "invoke"    $ call ["echo", "once"] (msg "yo") `hasA` ["yo"]
-```
-
-## Documentation
-
-- `docs/architecture/` — Design documents and implementation notes
-- `docs/SYNAPSE.md` — Full categorical design specification
 
 ## License
 
