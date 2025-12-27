@@ -14,8 +14,6 @@ flag build-examples
 
 library
   exposed-modules:
-    Plexus
-    Plexus.Client
     Synapse.Schema.Types
     Synapse.Monad
     Synapse.Algebra.Navigate
@@ -25,7 +23,7 @@ library
     Synapse.Cache
   build-depends:
     base ^>=4.17 || ^>=4.18 || ^>=4.19,
-    meaning,
+    substrate-protocol,
     aeson >= 2.0,
     text >= 2.0,
     bytestring >= 0.11,
@@ -55,7 +53,7 @@ executable synapse
   main-is:          Main.hs
   build-depends:
     base,
-    meaning,
+    substrate-protocol,
     synapse,
     aeson,
     text,
@@ -75,7 +73,7 @@ executable schema-discovery
   main-is:          SchemaDiscovery.hs
   build-depends:
     base,
-    meaning,
+    substrate-protocol,
     synapse,
     aeson,
     text,

@@ -19,7 +19,7 @@ import qualified Data.Text.IO as T
 import qualified Streaming.Prelude as S
 
 import Plexus (connect, disconnect, defaultConfig)
-import Plexus.Client (PlexusConnection, plexusRpc)
+import Substrate.Client (SubstrateConnection, substrateRpc)
 import Plexus.Schema
   ( PlexusSchema(..)
   , PlexusSchemaEvent(..)
@@ -40,7 +40,7 @@ main = do
   -- STEP 1: Discover all activations
   putStrLn "Step 1: Calling plexus_schema to discover activations..."
   mSchema <- S.head_ $ S.mapMaybe extractSchemaEvent $
-    plexusRpc conn "plexus_schema" (toJSON ([] :: [Value]))
+    substrateRpc conn "plexus_schema" (toJSON ([] :: [Value]))
 
   case mSchema of
     Nothing -> putStrLn "Failed to get schema"
@@ -55,7 +55,7 @@ main = do
   disconnect conn
 
 -- | Demonstrate how an ActivationInfo drives both CLI and schema requests
-demonstrateActivation :: PlexusConnection -> ActivationInfo -> IO ()
+demonstrateActivation :: SubstrateConnection -> ActivationInfo -> IO ()
 demonstrateActivation plexusConn act = do
   let ns = activationNamespace act
       methods = activationMethods act
@@ -68,7 +68,7 @@ demonstrateActivation plexusConn act = do
   putStrLn $ "  → Requesting enriched schema for '" <> T.unpack ns <> "'..."
 
   mEnriched <- S.head_ $ S.mapMaybe extractActivationSchemaEvent $
-    plexusRpc plexusConn "plexus_activation_schema" (toJSON [ns])
+    substrateRpc plexusConn "plexus_activation_schema" (toJSON [ns])
 
   case mEnriched of
     Nothing -> putStrLn "    Failed to get enriched schema"

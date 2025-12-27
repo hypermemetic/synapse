@@ -115,9 +115,9 @@ renderSchemaWith _style PluginSchema{..}
           isReq = nameText `elem` required
           (typ, desc) = extractTypeDesc propSchema
           flag = "--" <> T.replace "_" "-" nameText
-          typStr = "<" <> typ <> ">" <> if isReq then "" else "?"
+          typStr = " <" <> typ <> ">" <> if isReq then "" else "?"
           descWords = if T.null desc then [] else map pretty (T.words desc)
-      in fillBreak 20 (pretty flag <+> pretty typStr)
+      in fillBreak 20 (pretty flag <> pretty typStr)
          <+> align (fillSep descWords)
 
 -- | Render a method (short form)
@@ -169,7 +169,7 @@ renderParam required (name, propSchema) =
       flagName = T.replace "_" "-" nameText
       (typ, desc) = extractTypeDesc propSchema
       reqMarker = if isReq then "" else "?"
-  in "      --" <> flagName <> reqMarker <> " <" <> typ <> ">  " <> desc
+  in "      --" <> flagName <> " <" <> typ <> ">" <> reqMarker <> "  " <> desc
 
 -- | Render parameters in full (for method help)
 renderParamsFull :: Value -> [Text]
@@ -190,7 +190,7 @@ renderParamFull required (name, propSchema) =
       isReq = nameText `elem` required
       (typ, desc) = extractTypeDesc propSchema
       reqText = if isReq then " (required)" else " (optional)"
-  in "  --" <> nameText <> " : " <> typ <> reqText <> "\n      " <> desc
+  in "  --" <> nameText <> " <" <> typ <> ">" <> reqText <> "\n      " <> desc
 
 -- | Extract type and description from property schema
 extractTypeDesc :: Value -> (Text, Text)
