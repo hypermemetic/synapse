@@ -9,9 +9,12 @@ module Synapse.Transport
   , fetchSchemaAt
   , fetchMethodSchema
 
-    -- * Method Invocation
+    -- * Method Invocation (collected)
   , invoke
   , invokeRaw
+
+    -- * Method Invocation (streaming)
+  , invokeStreaming
   ) where
 
 import Control.Monad.IO.Class (liftIO)
@@ -67,6 +70,15 @@ invokeRaw method params = do
   case result of
     Left err -> throwTransport err
     Right items -> pure items
+
+-- | Invoke a method with streaming output - calls callback for each item
+invokeStreaming :: Path -> Text -> Value -> (PlexusStreamItem -> IO ()) -> SynapseM ()
+invokeStreaming namespacePath method params onItem = do
+  cfg <- getConfig
+  result <- liftIO $ ST.invokeMethodStreaming cfg namespacePath method params onItem
+  case result of
+    Left err -> throwTransport err
+    Right () -> pure ()
 
 -- | Get SubstrateConfig from environment
 getConfig :: SynapseM SubstrateConfig
