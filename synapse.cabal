@@ -14,11 +14,8 @@ flag build-examples
 
 library
   exposed-modules:
-    -- Plexus - core RPC client
     Plexus
     Plexus.Client
-    -- Synapse Algebra - categorical CLI implementation
-    Synapse.Schema.Base
     Synapse.Schema.Types
     Synapse.Monad
     Synapse.Algebra.Navigate
@@ -42,11 +39,6 @@ library
     containers >= 0.6,
     unordered-containers >= 0.2,
     hashable >= 1.4,
-    scientific >= 0.3,
-    vector >= 0.13,
-    optparse-applicative >= 0.18,
-    recursion-schemes >= 5.2,
-    data-fix >= 0.3,
     prettyprinter >= 1.7
   hs-source-dirs:   src
   default-language: GHC2021
