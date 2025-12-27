@@ -1,6 +1,6 @@
 -- | Core types for Synapse
 --
--- Re-exports schema types from meaning and defines local types.
+-- Re-exports schema types from substrate-protocol and defines local types.
 module Synapse.Schema.Types
   ( -- * Schema Types (from substrate-protocol)
     PluginSchema(..)

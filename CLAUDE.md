@@ -135,5 +135,5 @@ synapse/
 │   └── Activation/         # Typed APIs per activation
 └── test/                   # Test suites
 
-../meaning/                 # Shared protocol types (sibling package)
+../substrate-protocol/      # Shared protocol types (sibling package)
 ```
