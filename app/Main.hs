@@ -127,8 +127,7 @@ dispatch Args{..} = do
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
-      items <- invoke namespacePath methodName' params
-      liftIO $ mapM_ (printResult argJson) items
+      invokeStreaming namespacePath methodName' params (printResult argJson)
 
     -- Check if method has required parameters
     hasRequiredParams :: MethodSchema -> Bool
