@@ -76,23 +76,29 @@ main = do
     Right (schema, remainingPath) ->
       -- The namespace path is pathSegs minus remainingPath
       let namespacePath = take (length pathSegs - length remainingPath) pathSegs
+          isRoot = null pathSegs
       in case remainingPath of
         [] -> do
           -- No remaining path - show help for this schema
-          TIO.putStr $ renderSchema schema
+          if isRoot
+            then do
+              TIO.putStr cliHeader
+              TIO.putStr "\n\n"
+              TIO.putStr $ renderSchema schema
+            else TIO.putStr $ renderSchema schema
         [methodName] ->
           -- Single remaining segment - might be a method
           case findMethod methodName schema of
-            Just method -> do
-              -- Parse method params from -p flag or empty object
-              params <- case optParams global of
+            Just method ->
+              case optParams global of
                 Just jsonStr -> case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
-                  Right obj -> pure obj
+                  Right params -> runInvoke global namespacePath methodName params
                   Left err -> do
                     hPutStrLn stderr $ "Invalid JSON params: " <> err
                     exitFailure
-                Nothing -> pure $ object []
-              runInvoke global namespacePath methodName params
+                Nothing ->
+                  -- No params: show method help
+                  TIO.putStr $ renderMethodFull method
             Nothing -> do
               -- Not a method - show error
               hPutStrLn stderr $ "Unknown method or namespace: " <> T.unpack methodName
@@ -259,21 +265,27 @@ formatJson = TE.decodeUtf8 . LBS.toStrict . encode
 -- Schema Rendering
 -- ============================================================================
 
--- | Render schema to text - shows current node's methods and child namespaces
+-- | Render schema to text - shows current node's namespaces and methods
 renderSchema :: PluginSchema -> Text
 renderSchema schema = T.unlines $
-  [ ""
-  , psNamespace schema <> " - " <> psDescription schema
+  [ psNamespace schema
+  , psDescription schema
   , ""
   ] <>
-  (if null (psMethods schema) then [] else
-    [ "Methods:"
-    ] <> map renderMethod (sortOn methodName $ psMethods schema) <> [""]
-  ) <>
   (if null (pluginChildren schema) then [] else
-    [ "Namespaces:"
-    ] <> map renderChildSummary (sortOn csNamespace $ pluginChildren schema)
+    [ "activations:"
+    ] <> map renderChildSummary (sortOn csNamespace $ pluginChildren schema) <> [""]
+  ) <>
+  (if null (psMethods schema) then [] else
+    [ "methods:"
+    ] <> map renderMethod (sortOn methodName $ psMethods schema)
   )
+
+-- | Get CLI help text from optparse-applicative
+cliHeader :: Text
+cliHeader = T.pack $ fst $ renderFailure failure "synapse"
+  where
+    failure = parserFailure defaultPrefs basicParserInfo (ShowHelpText Nothing) mempty
 
 renderMethod :: MethodSchema -> Text
 renderMethod m =
@@ -315,6 +327,40 @@ extractTypeDesc _ = ("string", "")
 renderChildSummary :: ChildSummary -> Text
 renderChildSummary child =
   "  " <> padRight 16 (csNamespace child) <> csDescription child
+
+-- | Render a method in full (for method-specific help)
+renderMethodFull :: MethodSchema -> Text
+renderMethodFull m = T.unlines $
+  [ ""
+  , methodName m <> " - " <> methodDescription m
+  , ""
+  ] <> paramLines
+  where
+    paramLines = case methodParams m of
+      Nothing -> ["  (no parameters)"]
+      Just schema -> renderParamsFull schema
+
+-- | Render all parameters in full form
+renderParamsFull :: Value -> [Text]
+renderParamsFull (Object o) = case KM.lookup "properties" o of
+  Just (Object props) ->
+    let reqList = case KM.lookup "required" o of
+          Just (Array arr) -> [t | String t <- foldr (:) [] arr]
+          _ -> []
+        propList = KM.toList props
+        sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
+    in map (renderParamFull reqList) sorted
+  _ -> []
+renderParamsFull _ = []
+
+-- | Render a single parameter in full form
+renderParamFull :: [Text] -> (K.Key, Value) -> Text
+renderParamFull required (name, propSchema) =
+  let nameText = K.toText name
+      isReq = nameText `elem` required
+      (typ, desc) = extractTypeDesc propSchema
+      reqText = if isReq then " (required)" else " (optional)"
+  in "  --" <> nameText <> " : " <> typ <> reqText <> "\n      " <> desc
 
 padRight :: Int -> Text -> Text
 padRight n t
