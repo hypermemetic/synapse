@@ -30,6 +30,7 @@ import Synapse.Monad
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema, renderMethodFull)
 import Synapse.Transport
+import Synapse.Renderer
 
 -- ============================================================================
 -- Types
@@ -38,12 +39,13 @@ import Synapse.Transport
 data Args = Args
   { argHost    :: Text
   , argPort    :: Int
-  , argJson    :: Bool
+  , argJson    :: Bool          -- ^ Output raw JSON stream items
+  , argRaw     :: Bool          -- ^ Output raw content (no templates)
   , argDryRun  :: Bool
-  , argSchema  :: Bool         -- ^ Show raw schema JSON
-  , argParams  :: Maybe Text   -- ^ JSON params via -p
-  , argRpc     :: Maybe Text   -- ^ Raw JSON-RPC passthrough
-  , argPath    :: [Text]       -- ^ Path segments and --key value params
+  , argSchema  :: Bool          -- ^ Show raw schema JSON
+  , argParams  :: Maybe Text    -- ^ JSON params via -p
+  , argRpc     :: Maybe Text    -- ^ Raw JSON-RPC passthrough
+  , argPath    :: [Text]        -- ^ Path segments and --key value params
   }
   deriving Show
 
@@ -55,7 +57,8 @@ main :: IO ()
 main = do
   args <- execParser argsInfo
   env <- initEnv (argHost args) (argPort args)
-  result <- runSynapseM env (dispatch args)
+  rendererCfg <- defaultRendererConfig
+  result <- runSynapseM env (dispatch args rendererCfg)
   case result of
     Left err -> do
       hPutStrLn stderr $ renderError err
@@ -63,8 +66,8 @@ main = do
     Right () -> exitSuccess
 
 -- | Dispatch based on navigation result
-dispatch :: Args -> SynapseM ()
-dispatch Args{..} = do
+dispatch :: Args -> RendererConfig -> SynapseM ()
+dispatch Args{..} rendererCfg = do
   -- Mode 1: Raw JSON-RPC passthrough
   case argRpc of
     Just rpcJson -> do
@@ -72,7 +75,7 @@ dispatch Args{..} = do
         Left err -> throwParse $ T.pack err
         Right rpcReq -> do
           items <- invokeRawRpc rpcReq
-          liftIO $ mapM_ (printResult argJson) items
+          liftIO $ mapM_ (printResult argJson argRaw rendererCfg) items
       return ()
 
     Nothing -> do
@@ -127,7 +130,7 @@ dispatch Args{..} = do
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
-      invokeStreaming namespacePath methodName' params (printResult argJson)
+      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg)
 
     -- Check if method has required parameters
     hasRequiredParams :: MethodSchema -> Bool
@@ -258,11 +261,15 @@ encodeDryRun namespacePath method params =
     ]
 
 -- | Print a stream result
-printResult :: Bool -> PlexusStreamItem -> IO ()
-printResult True item = LBS.putStrLn $ encode item
-printResult False item = case item of
+-- argJson: output raw JSON stream items
+-- argRaw: skip template rendering, just output content JSON
+-- otherwise: try template rendering, fall back to content JSON
+printResult :: Bool -> Bool -> RendererConfig -> PlexusStreamItem -> IO ()
+printResult True _ _ item = LBS.putStrLn $ encode item
+printResult _ True _ item = case item of
+  -- Raw mode: just output the content
   StreamData _ _ _ dat -> do
-    TIO.putStrLn $ TE.decodeUtf8 $ LBS.toStrict $ encode dat
+    LBS.putStrLn $ encode dat
     hFlush stdout
   StreamProgress _ _ msg _ -> do
     TIO.putStr msg
@@ -271,6 +278,25 @@ printResult False item = case item of
   StreamError _ _ err _ ->
     hPutStrLn stderr $ "Error: " <> T.unpack err
   _ -> pure ()
+printResult _ _ cfg item = do
+  -- Template mode: try to render with template
+  mRendered <- renderItem cfg item
+  case mRendered of
+    Just text -> do
+      TIO.putStrLn text
+      hFlush stdout
+    Nothing -> case item of
+      -- Fallback to raw content
+      StreamData _ _ _ dat -> do
+        LBS.putStrLn $ encode dat
+        hFlush stdout
+      StreamProgress _ _ msg _ -> do
+        TIO.putStr msg
+        TIO.putStr "\r"
+        hFlush stdout
+      StreamError _ _ err _ ->
+        hPutStrLn stderr $ "Error: " <> T.unpack err
+      _ -> pure ()
 
 -- ============================================================================
 -- Argument Parsing
@@ -296,7 +322,10 @@ argsParser = do
    <> help "Plexus server port" )
   argJson <- switch
     ( long "json" <> short 'j'
-   <> help "Output raw JSON stream" )
+   <> help "Output raw JSON stream items" )
+  argRaw <- switch
+    ( long "raw"
+   <> help "Output raw content JSON (skip templates)" )
   argDryRun <- switch
     ( long "dry-run" <> short 'n'
    <> help "Show JSON-RPC request without sending" )
