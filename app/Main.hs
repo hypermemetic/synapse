@@ -126,8 +126,10 @@ dispatch Args{..} rendererCfg = do
 
                 -- Landed on a method: invoke or show help
                 ViewMethod method path -> do
-                  -- Build params: -p JSON takes precedence, then inline --key value
-                  params <- case argParams of
+                  -- Build params: start with schema defaults, then merge user params
+                  -- Schema defaults are extracted from methodParams JSON Schema
+                  let schemaDefaults = extractSchemaDefaults method
+                  userParams <- case argParams of
                     Just jsonStr ->
                       case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
                         Left err -> throwParse $ T.pack err
@@ -135,6 +137,8 @@ dispatch Args{..} rendererCfg = do
                     Nothing
                       | not (null inlineParams) -> pure $ buildParamsObject inlineParams
                       | otherwise -> pure $ object []
+                  -- Merge: user params override schema defaults
+                  let params = mergeParams schemaDefaults userParams
 
                   if argDryRun
                     then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
