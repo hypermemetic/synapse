@@ -119,13 +119,23 @@ templateSearchPaths = do
 
 -- | Resolve template path for a content type
 -- Content type format: "namespace.method" (e.g., "echo.once", "arbor.tree_list")
+-- Search order:
+--   1. {searchPath}/{namespace}/{event}.mustache (exact match)
+--   2. {searchPath}/{namespace}/default.mustache (namespace default)
+--   3. {searchPath}/default.mustache (global default)
 resolveTemplate :: RendererConfig -> Text -> IO (Maybe FilePath)
 resolveTemplate cfg contentType = do
   let (namespace, method) = parseContentType contentType
   let candidates =
+        -- Exact event match
         [ path </> T.unpack namespace </> T.unpack method <.> "mustache"
         | path <- rcSearchPaths cfg
         ]
+        -- Namespace default
+        ++ [ path </> T.unpack namespace </> "default" <.> "mustache"
+           | path <- rcSearchPaths cfg
+           ]
+        -- Global default
         ++ [ path </> "default.mustache" | path <- rcSearchPaths cfg ]
   firstExisting candidates
 
