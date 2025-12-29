@@ -1,5 +1,5 @@
 cabal-version:      3.0
-name:               synapse
+name:               substrate-synapse
 version:            0.1.0.0
 synopsis:           Algebraic CLI for Plexus - coalgebraic schema navigation
 license:            MIT
@@ -65,7 +65,7 @@ executable synapse
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,
-    synapse,
+    substrate-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
@@ -86,7 +86,7 @@ executable schema-discovery
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,
-    synapse,
+    substrate-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     streaming >= 0.2 && < 0.3
