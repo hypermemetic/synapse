@@ -29,9 +29,9 @@ import Synapse.Schema.Types
 import Synapse.Monad
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema, renderMethodFull)
-import Synapse.Algebra.TemplateGen
+import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
 import Synapse.Transport
-import Synapse.Renderer
+import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue)
 import System.Directory (createDirectoryIfMissing)
 
 -- ============================================================================
@@ -97,11 +97,13 @@ dispatch Args{..} rendererCfg = do
         -- Mode 3: Generate templates
         else if argGenerate
         then do
-          templates <- generateAllTemplates pathSegs
-          liftIO $ do
-            let baseDir = ".substrate/templates"
-            mapM_ (writeGeneratedTemplate baseDir) templates
-            TIO.putStrLn $ "Generated " <> T.pack (show (length templates)) <> " templates in " <> T.pack baseDir
+          let baseDir = ".substrate/templates"
+              writeAndLog gt = do
+                writeGeneratedTemplate baseDir gt
+                TIO.putStrLn $ "  " <> T.pack (gtPath gt)
+          liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
+          count <- generateAllTemplatesWithCallback writeAndLog pathSegs
+          liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
 
         else do
           -- Mode 4: Normal navigation
@@ -258,14 +260,12 @@ renderError = \case
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
 
--- | Write a generated template to disk
+-- | Write a generated template to disk (no logging)
 writeGeneratedTemplate :: FilePath -> GeneratedTemplate -> IO ()
 writeGeneratedTemplate baseDir gt = do
   let fullPath = baseDir </> gtPath gt
-      dir = takeWhile (/= '/') (reverse fullPath)  -- get directory part
   createDirectoryIfMissing True (baseDir </> T.unpack (gtNamespace gt))
   TIO.writeFile fullPath (gtTemplate gt)
-  TIO.putStrLn $ "  " <> T.pack (gtPath gt)
   where
     (</>) = \a b -> a ++ "/" ++ b
 
@@ -310,9 +310,9 @@ printResult _ _ cfg item = do
       TIO.putStrLn text
       hFlush stdout
     Nothing -> case item of
-      -- Fallback to raw content
+      -- Fallback to pretty-printed content
       StreamData _ _ _ dat -> do
-        LBS.putStrLn $ encode dat
+        TIO.putStrLn $ prettyValue dat
         hFlush stdout
       StreamProgress _ _ msg _ -> do
         TIO.putStr msg

@@ -15,12 +15,14 @@ flag build-examples
 library
   exposed-modules:
     Synapse.Schema.Types
+    Synapse.Schema.Functor
     Synapse.Monad
     Synapse.Algebra.Navigate
     Synapse.Algebra.Render
     Synapse.Algebra.Complete
     Synapse.Algebra.Walk
     Synapse.Algebra.TemplateGen
+    Synapse.Algebra.Recursion
     Synapse.Transport
     Synapse.Cache
     Synapse.Renderer
@@ -45,7 +47,8 @@ library
     directory >= 1.3,
     filepath >= 1.4,
     yaml >= 0.11,
-    vector >= 0.12
+    vector >= 0.12,
+    scientific >= 0.3
   hs-source-dirs:   src
   default-language: GHC2021
   default-extensions:
