@@ -31,6 +31,7 @@ module Synapse.Renderer
   , renderItem
   , renderValue
   , renderWithTemplate
+  , prettyValue
 
     -- * Template Resolution
   , resolveTemplate
@@ -47,13 +48,16 @@ import Control.Exception (catch, SomeException)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Aeson (Value(..), encode)
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.IORef
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import Data.Scientific (Scientific, floatingOrInteger)
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Vector as V
 import System.Directory (doesFileExist, getCurrentDirectory, getHomeDirectory)
 import System.FilePath ((</>), (<.>))
 import Text.Mustache (Template, toMustache)
@@ -214,3 +218,50 @@ renderValue cfg contentType value = do
 -- | Render a value with a specific template
 renderWithTemplate :: Template -> Value -> Text
 renderWithTemplate template value = substituteValue template (toMustache value)
+
+-- ============================================================================
+-- Pretty Printing
+-- ============================================================================
+
+-- | Pretty-print a JSON value in human-readable format (no JSON syntax)
+prettyValue :: Value -> Text
+prettyValue = prettyIndent 0
+
+prettyIndent :: Int -> Value -> Text
+prettyIndent indent val = case val of
+  Null -> "null"
+  Bool True -> "true"
+  Bool False -> "false"
+  Number n -> case floatingOrInteger n of
+    Left d -> T.pack $ show (d :: Double)
+    Right i -> T.pack $ show (i :: Integer)
+  String s -> s
+  Array arr
+    | V.null arr -> "[]"
+    | otherwise -> T.intercalate "\n" $
+        map (\v -> spaces <> "- " <> prettyInline v) (V.toList arr)
+  Object obj
+    | KM.null obj -> "{}"
+    | otherwise -> T.intercalate "\n" $
+        map (\(k, v) -> spaces <> K.toText k <> ": " <> prettyChild v) (KM.toList obj)
+  where
+    spaces = T.replicate indent "  "
+
+    -- For array items and object values, decide inline vs block
+    prettyChild v = case v of
+      Object o | not (KM.null o) -> "\n" <> prettyIndent (indent + 1) v
+      Array a | not (V.null a) -> "\n" <> prettyIndent (indent + 1) v
+      _ -> prettyInline v
+
+    -- Inline rendering for simple values
+    prettyInline v = case v of
+      Null -> "null"
+      Bool True -> "true"
+      Bool False -> "false"
+      Number n -> case floatingOrInteger n of
+        Left d -> T.pack $ show (d :: Double)
+        Right i -> T.pack $ show (i :: Integer)
+      String s -> s
+      Array arr -> T.intercalate ", " $ map prettyInline (V.toList arr)
+      Object obj -> T.intercalate ", " $
+        map (\(k, v') -> K.toText k <> ": " <> prettyInline v') (KM.toList obj)

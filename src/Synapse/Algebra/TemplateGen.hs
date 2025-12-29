@@ -1,19 +1,44 @@
--- | Template generation from schemas
+-- | Template generation from schemas via recursion schemes
 --
--- Generates mustache templates from method return schemas.
--- This is a catamorphism over JSON Schema structure.
+-- This module demonstrates two catamorphisms:
 --
--- = Strategy
+-- = Tree-level Catamorphism
 --
--- 1. If returns has oneOf/anyOf, generate conditionals for each variant
--- 2. For objects, list all properties
--- 3. For arrays, generate iteration
--- 4. For primitives, just output the value
+-- We fold over the schema tree (SchemaF) to collect templates:
+--
+-- @
+-- templateAlgebra :: SchemaF [GeneratedTemplate] -> [GeneratedTemplate]
+-- @
+--
+-- This algebra is applied via hylomorphism:
+--
+-- @
+-- generateAllTemplates = walkSchema templateAlgebraM
+-- @
+--
+-- = Schema-level Catamorphism
+--
+-- We also fold over JSON Schema structure to generate mustache:
+--
+-- @
+-- schemaToMustache :: Value -> Text
+-- @
+--
+-- This is a catamorphism over the JSON Schema ADT, handling:
+-- - oneOf/anyOf → collect all variant properties
+-- - object → list properties as {{key}}
+-- - array → generate {{#.}}...{{/.}} iteration
+-- - primitives → {{.}}
 module Synapse.Algebra.TemplateGen
   ( -- * Generation
-    generateTemplate
+    generateAllTemplates
+  , generateAllTemplatesWithCallback
+  , generateTemplate
   , generateTemplateFor
-  , generateAllTemplates
+
+    -- * Algebras
+  , templateAlgebra
+  , schemaToMustache
 
     -- * Types
   , GeneratedTemplate(..)
@@ -30,7 +55,10 @@ import System.FilePath ((</>), (<.>))
 import System.Directory (createDirectoryIfMissing)
 import qualified Data.Text.IO as TIO
 
+import Control.Monad.IO.Class (liftIO)
+
 import Synapse.Schema.Types
+import Synapse.Schema.Functor (SchemaF(..))
 import Synapse.Monad
 import Synapse.Transport (fetchMethodSchema)
 import Synapse.Algebra.Walk
@@ -99,10 +127,71 @@ generateTemplateFor path methodName' = do
     , gtPath = T.unpack namespace </> T.unpack methodName' <.> "mustache"
     }
 
+-- ============================================================================
+-- Tree-Level Algebra (SchemaF)
+-- ============================================================================
+
+-- | Algebra for folding schema tree into templates
+--
+-- This is a proper F-algebra: @SchemaF [GeneratedTemplate] -> [GeneratedTemplate]@
+--
+-- At each node:
+-- - PluginF: generate templates for local methods, combine with children
+-- - MethodF: leaf case (not used since methods are inside plugins)
+templateAlgebra :: SchemaF [GeneratedTemplate] -> [GeneratedTemplate]
+templateAlgebra (PluginF schema path childResults) =
+  let namespace = psNamespace schema
+      localTemplates = concatMap (methodToTemplate namespace) (psMethods schema)
+  in localTemplates ++ concat childResults
+templateAlgebra (MethodF method ns path) =
+  -- Methods appear as leaves when walked individually
+  methodToTemplate ns method
+
+-- | Convert a method to template(s)
+methodToTemplate :: Text -> MethodSchema -> [GeneratedTemplate]
+methodToTemplate namespace method =
+  [ GeneratedTemplate
+    { gtNamespace = namespace
+    , gtMethod = methodName method
+    , gtTemplate = "{{! " <> namespace <> "." <> methodName method <> " }}\n" <> body
+    , gtPath = T.unpack namespace </> T.unpack (methodName method) <.> "mustache"
+    }
+  ]
+  where
+    body = case methodReturns method of
+      Nothing -> "{{.}}"
+      Just schema -> schemaToMustache schema
+
+-- | Monadic version for use with hyloM
+templateAlgebraM :: SchemaF [GeneratedTemplate] -> SynapseM [GeneratedTemplate]
+templateAlgebraM = pure . templateAlgebra
+
 -- | Generate all templates by walking the schema tree
+--
+-- This is a hylomorphism: unfold tree, fold with template algebra.
+-- The walkSchema function applies hyloM under the hood.
 generateAllTemplates :: Path -> SynapseM [GeneratedTemplate]
-generateAllTemplates path =
-  foldMethods generateTemplate concat path
+generateAllTemplates = walkSchema templateAlgebraM
+
+-- | Generate templates with a callback for each one (for streaming output)
+--
+-- The callback is invoked as each template is generated during the walk.
+generateAllTemplatesWithCallback
+  :: (GeneratedTemplate -> IO ())  -- ^ Called for each template
+  -> Path
+  -> SynapseM Int                  -- ^ Returns count
+generateAllTemplatesWithCallback callback = walkSchema streamingAlgebra
+  where
+    streamingAlgebra :: SchemaF Int -> SynapseM Int
+    streamingAlgebra (PluginF schema path childCounts) = do
+      let namespace = psNamespace schema
+          templates = concatMap (methodToTemplate namespace) (psMethods schema)
+      liftIO $ mapM_ callback templates
+      pure $ length templates + sum childCounts
+    streamingAlgebra (MethodF method ns path) = do
+      let templates = methodToTemplate ns method
+      liftIO $ mapM_ callback templates
+      pure $ length templates
 
 -- | Generate mustache template from a method's return schema
 generateFromReturns :: Text -> Text -> Maybe Value -> Text
@@ -111,8 +200,22 @@ generateFromReturns namespace method Nothing =
 generateFromReturns namespace method (Just schema) =
   "{{! " <> namespace <> "." <> method <> " }}\n" <> schemaToMustache schema
 
+-- ============================================================================
+-- Schema-Level Algebra (JSON Schema)
+-- ============================================================================
+
 -- | Convert JSON Schema to mustache template
--- This is the core catamorphism over schema structure
+--
+-- This is a catamorphism over the JSON Schema structure.
+-- The Value type is the fixed point, and we fold with:
+--
+-- @
+-- schemaAlg :: SchemaNode -> Text
+-- @
+--
+-- where SchemaNode would be the base functor for JSON Schema.
+-- Since JSON Schema isn't defined as Fix F, we pattern match directly,
+-- but the structure is the same: recursively process children, combine.
 schemaToMustache :: Value -> Text
 schemaToMustache (Object o) = case KM.lookup "oneOf" o of
   -- Handle oneOf (discriminated union by 'event' field)
