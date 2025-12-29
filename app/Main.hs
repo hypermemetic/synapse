@@ -151,6 +151,27 @@ dispatch Args{..} rendererCfg = do
       let methodName' = last path
       invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg)
 
+    -- Extract default values from JSON Schema properties
+    -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}
+    extractSchemaDefaults :: MethodSchema -> Value
+    extractSchemaDefaults m = case methodParams m of
+      Nothing -> object []
+      Just (Object o) -> case KM.lookup "properties" o of
+        Just (Object props) -> object
+          [ (k, defaultVal)
+          | (k, propSchema) <- KM.toList props
+          , Object propObj <- [propSchema]
+          , Just defaultVal <- [KM.lookup "default" propObj]
+          ]
+        _ -> object []
+      Just _ -> object []
+
+    -- Merge two JSON objects: right takes precedence over left
+    mergeParams :: Value -> Value -> Value
+    mergeParams (Object defaults) (Object user) =
+      Object (KM.union user defaults)  -- union prefers first arg on conflict
+    mergeParams _ user = user  -- if defaults aren't an object, just use user params
+
     -- Check if method has required parameters
     hasRequiredParams :: MethodSchema -> Bool
     hasRequiredParams m = case methodParams m of
