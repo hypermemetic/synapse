@@ -30,9 +30,9 @@ main = hspec $ do
   describe "invocation" $ do
     it "echo once"     $ call ["echo", "once"] (msg "test")       `has` ["test"]
     it "echo count"    $ call ["echo", "echo"] (msgN "hi" 2)      `has` ["hi", "2"]
-    it "health"        $ call ["health", "check"] "{}"            `has` ["healthy"]
-    it "solar observe" $ call ["solar", "observe"] "{}"           `has` ["sol", "planet_count"]
-    it "luna info"     $ call ["solar", "earth", "luna", "info"] "{}" `has` ["luna"]
+    it "health"        $ callRaw ["health", "check"] "{}"         `has` ["healthy"]
+    it "solar observe" $ callRaw ["solar", "observe"] "{}"        `has` ["sol", "planet_count"]
+    it "luna info"     $ callRaw ["solar", "earth", "luna", "info"] "{}" `has` ["luna"]
 
 -- ============================================================================
 -- Harness
@@ -58,6 +58,10 @@ assertContains haystack needle =
 -- | Build invocation args
 call :: [String] -> String -> [String]
 call path params = path ++ ["-p", params]
+
+-- | Build invocation args with --raw (skip templates)
+callRaw :: [String] -> String -> [String]
+callRaw path params = ["--raw"] ++ path ++ ["-p", params]
 
 -- | JSON builders
 msg :: String -> String

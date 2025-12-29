@@ -29,23 +29,26 @@ import Synapse.Schema.Types
 import Synapse.Monad
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema, renderMethodFull)
+import Synapse.Algebra.TemplateGen
 import Synapse.Transport
 import Synapse.Renderer
+import System.Directory (createDirectoryIfMissing)
 
 -- ============================================================================
 -- Types
 -- ============================================================================
 
 data Args = Args
-  { argHost    :: Text
-  , argPort    :: Int
-  , argJson    :: Bool          -- ^ Output raw JSON stream items
-  , argRaw     :: Bool          -- ^ Output raw content (no templates)
-  , argDryRun  :: Bool
-  , argSchema  :: Bool          -- ^ Show raw schema JSON
-  , argParams  :: Maybe Text    -- ^ JSON params via -p
-  , argRpc     :: Maybe Text    -- ^ Raw JSON-RPC passthrough
-  , argPath    :: [Text]        -- ^ Path segments and --key value params
+  { argHost      :: Text
+  , argPort      :: Int
+  , argJson      :: Bool          -- ^ Output raw JSON stream items
+  , argRaw       :: Bool          -- ^ Output raw content (no templates)
+  , argDryRun    :: Bool
+  , argSchema    :: Bool          -- ^ Show raw schema JSON
+  , argGenerate  :: Bool          -- ^ Generate templates from schemas
+  , argParams    :: Maybe Text    -- ^ JSON params via -p
+  , argRpc       :: Maybe Text    -- ^ Raw JSON-RPC passthrough
+  , argPath      :: [Text]        -- ^ Path segments and --key value params
   }
   deriving Show
 
@@ -90,8 +93,18 @@ dispatch Args{..} rendererCfg = do
           case schemaResult of
             Left err -> throwNav $ FetchError err pathSegs
             Right val -> liftIO $ LBS.putStrLn $ encode val
+
+        -- Mode 3: Generate templates
+        else if argGenerate
+        then do
+          templates <- generateAllTemplates pathSegs
+          liftIO $ do
+            let baseDir = ".substrate/templates"
+            mapM_ (writeGeneratedTemplate baseDir) templates
+            TIO.putStrLn $ "Generated " <> T.pack (show (length templates)) <> " templates in " <> T.pack baseDir
+
         else do
-          -- Mode 3: Normal navigation
+          -- Mode 4: Normal navigation
           if null pathSegs
             then do
               rootSchema <- navigate []
@@ -245,6 +258,17 @@ renderError = \case
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
 
+-- | Write a generated template to disk
+writeGeneratedTemplate :: FilePath -> GeneratedTemplate -> IO ()
+writeGeneratedTemplate baseDir gt = do
+  let fullPath = baseDir </> gtPath gt
+      dir = takeWhile (/= '/') (reverse fullPath)  -- get directory part
+  createDirectoryIfMissing True (baseDir </> T.unpack (gtNamespace gt))
+  TIO.writeFile fullPath (gtTemplate gt)
+  TIO.putStrLn $ "  " <> T.pack (gtPath gt)
+  where
+    (</>) = \a b -> a ++ "/" ++ b
+
 -- | Encode a dry-run request
 encodeDryRun :: [Text] -> Text -> Value -> LBS.ByteString
 encodeDryRun namespacePath method params =
@@ -332,6 +356,9 @@ argsParser = do
   argSchema <- switch
     ( long "schema" <> short 's'
    <> help "Fetch raw schema JSON for path" )
+  argGenerate <- switch
+    ( long "generate-templates" <> short 'g'
+   <> help "Generate mustache templates from schemas" )
   argParams <- optional $ T.pack <$> strOption
     ( long "params" <> short 'p' <> metavar "JSON"
    <> help "Method parameters as JSON object" )
