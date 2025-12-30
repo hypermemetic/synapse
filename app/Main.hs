@@ -31,6 +31,7 @@ import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema, renderMethodFull)
 import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
 import Synapse.Transport
+import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue)
 import System.Directory (createDirectoryIfMissing)
 
@@ -46,6 +47,8 @@ data Args = Args
   , argDryRun    :: Bool
   , argSchema    :: Bool          -- ^ Show raw schema JSON
   , argGenerate  :: Bool          -- ^ Generate templates from schemas
+  , argEmitIR    :: Bool          -- ^ Emit IR for code generation
+  , argForce     :: Bool          -- ^ Force overwrite modified templates
   , argParams    :: Maybe Text    -- ^ JSON params via -p
   , argRpc       :: Maybe Text    -- ^ Raw JSON-RPC passthrough
   , argPath      :: [Text]        -- ^ Path segments and --key value params
@@ -104,6 +107,12 @@ dispatch Args{..} rendererCfg = do
           liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
           count <- generateAllTemplatesWithCallback writeAndLog pathSegs
           liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
+
+        -- Mode 4: Emit IR for code generation
+        else if argEmitIR
+        then do
+          ir <- buildIR pathSegs
+          liftIO $ LBS.putStrLn $ encode ir
 
         else do
           -- Mode 4: Normal navigation
@@ -384,6 +393,9 @@ argsParser = do
   argGenerate <- switch
     ( long "generate-templates" <> short 'g'
    <> help "Generate mustache templates from schemas" )
+  argEmitIR <- switch
+    ( long "emit-ir" <> short 'i'
+   <> help "Emit IR for code generation (JSON)" )
   argParams <- optional $ T.pack <$> strOption
     ( long "params" <> short 'p' <> metavar "JSON"
    <> help "Method parameters as JSON object" )

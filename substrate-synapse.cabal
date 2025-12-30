@@ -26,6 +26,8 @@ library
     Synapse.Transport
     Synapse.Cache
     Synapse.Renderer
+    Synapse.IR.Types
+    Synapse.IR.Builder
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,

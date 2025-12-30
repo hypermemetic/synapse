@@ -148,19 +148,21 @@ templateAlgebra (MethodF method ns path) =
   methodToTemplate ns method
 
 -- | Convert a method to template(s)
+-- Returns empty list if schema produces no useful template
 methodToTemplate :: Text -> MethodSchema -> [GeneratedTemplate]
 methodToTemplate namespace method =
-  [ GeneratedTemplate
-    { gtNamespace = namespace
-    , gtMethod = methodName method
-    , gtTemplate = "{{! " <> namespace <> "." <> methodName method <> " }}\n" <> body
-    , gtPath = T.unpack namespace </> T.unpack (methodName method) <.> "mustache"
-    }
-  ]
-  where
-    body = case methodReturns method of
-      Nothing -> "{{.}}"
-      Just schema -> schemaToMustache schema
+  let body = case methodReturns method of
+        Nothing -> "{{.}}"
+        Just schema -> schemaToMustache schema
+  in if T.null body || body == "{{.}}"
+     then []  -- Skip: empty or trivial template, let prettyValue handle it
+     else [ GeneratedTemplate
+            { gtNamespace = namespace
+            , gtMethod = methodName method
+            , gtTemplate = "{{! " <> namespace <> "." <> methodName method <> " }}\n" <> body
+            , gtPath = T.unpack namespace </> T.unpack (methodName method) <.> "mustache"
+            }
+          ]
 
 -- | Monadic version for use with hyloM
 templateAlgebraM :: SchemaF [GeneratedTemplate] -> SynapseM [GeneratedTemplate]
@@ -234,12 +236,15 @@ schemaToMustache _ = "{{.}}"
 
 -- | Generate template for oneOf/anyOf variants
 -- Collect all unique properties across variants (flat template, no sections)
+-- Falls back to empty (triggers prettyValue) if no useful properties found
 generateVariants :: [Value] -> Text
 generateVariants variants =
   let allProps = concatMap extractProps variants
       uniqueKeys = dedupe $ map fst allProps
       displayKeys = filter (not . isInternalField) uniqueKeys
-  in T.intercalate " " $ map (\k -> "{{" <> k <> "}}") displayKeys
+  in if null displayKeys
+     then ""  -- Empty template = no match = prettyValue fallback
+     else T.intercalate " " $ map (\k -> "{{" <> k <> "}}") displayKeys
   where
     extractProps :: Value -> [(Text, Value)]
     extractProps (Object o) = case KM.lookup "properties" o of
@@ -258,13 +263,40 @@ generateObject o = case KM.lookup "properties" o of
   Nothing -> "{{.}}"
 
 -- | Generate output for properties
+-- Looks at each property's type to generate appropriate mustache syntax
 generateProps :: KM.KeyMap Value -> Text
 generateProps props =
-  let keys = map K.toText $ KM.keys props
-      -- Filter out internal fields like 'event'
-      displayKeys = filter (not . isInternalField) keys
-      lines' = map (\k -> "{{" <> k <> "}}") displayKeys
-  in T.intercalate " " lines'
+  let pairs = [(K.toText k, v) | (k, v) <- KM.toList props]
+      displayPairs = filter (not . isInternalField . fst) pairs
+      lines' = map generatePropTemplate displayPairs
+  in T.intercalate "\n" lines'
+  where
+    generatePropTemplate :: (Text, Value) -> Text
+    generatePropTemplate (key, schema) = case schema of
+      Object o -> case KM.lookup "type" o of
+        Just (String "array") -> generateArrayProp key o
+        Just (String "object") -> key <> ": {{" <> key <> "}}"
+        _ -> "{{" <> key <> "}}"
+      _ -> "{{" <> key <> "}}"
+
+    -- Generate template for array property
+    generateArrayProp :: Text -> KM.KeyMap Value -> Text
+    generateArrayProp key o = case KM.lookup "items" o of
+      Just itemSchema -> case itemSchema of
+        Object itemObj -> case KM.lookup "type" itemObj of
+          Just (String "object") ->
+            -- Array of objects: iterate and show key fields
+            let itemProps = case KM.lookup "properties" itemObj of
+                  Just (Object p) -> map K.toText $ KM.keys p
+                  _ -> []
+                displayProps = filter (not . isInternalField) itemProps
+                itemTemplate = T.intercalate " | " $ map (\p -> "{{" <> p <> "}}") (take 4 displayProps)
+            in key <> ":\n{{#" <> key <> "}}\n  " <> itemTemplate <> "\n{{/" <> key <> "}}"
+          _ ->
+            -- Array of primitives
+            key <> ": {{#" <> key <> "}}{{.}} {{/" <> key <> "}}"
+        _ -> key <> ": {{#" <> key <> "}}{{.}} {{/" <> key <> "}}"
+      Nothing -> key <> ": {{#" <> key <> "}}{{.}}{{/" <> key <> "}}"
 
 -- | Check if a field is internal (shouldn't be displayed)
 isInternalField :: Text -> Bool
