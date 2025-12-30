@@ -1,9 +1,2 @@
-{{! cone.registry - LLM model registry }}
-Families: {{#families}}{{.}} {{/families}}
-
-Models ({{models.length}}):
-{{#models}}
-  {{id}} - {{name}}
-    Family: {{family}} | Service: {{service}} | Status: {{status}}
-    Context: {{capabilities.context_window}} | Pricing: ${{pricing.input_per_1k_tokens}}/1k in, ${{pricing.output_per_1k_tokens}}/1k out
-{{/models}}
+{{! cone.registry }}
+{{families}} {{models}} {{services}} {{stats}}
