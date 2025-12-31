@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               substrate-synapse
-version:            0.1.0.0
+version:            0.2.0.0
 synopsis:           Algebraic CLI for Plexus - coalgebraic schema navigation
 license:            MIT
 author:

@@ -316,6 +316,10 @@ inferTypeKind o
 -- ============================================================================
 
 -- | Convert a JSON Schema value to a TypeRef
+--
+-- Distinguishes between:
+-- - RefAny: Schema present but no type constraints (intentionally dynamic, e.g. serde_json::Value)
+-- - RefUnknown: No schema at all (schema gap, should warn)
 schemaToTypeRef :: Value -> TypeRef
 schemaToTypeRef (Object o)
   -- Check for $ref
@@ -326,7 +330,7 @@ schemaToTypeRef (Object o)
   | Just (String "array") <- KM.lookup "type" o =
       case KM.lookup "items" o of
         Just items -> RefArray (schemaToTypeRef items)
-        Nothing -> RefArray RefUnknown
+        Nothing -> RefArray RefAny  -- array without items = any[]
 
   -- Check for nullable
   | Just (Array types) <- KM.lookup "type" o =
@@ -336,21 +340,28 @@ schemaToTypeRef (Object o)
            [String t] ->
              let base = RefPrimitive t (extractFormat o)
              in if hasNull then RefOptional base else base
-           _ -> RefUnknown
+           _ -> RefAny  -- Multiple non-null types = any
 
   -- Check for anyOf (often used for optional refs)
   | Just (Array options) <- KM.lookup "anyOf" o =
       let refs = mapMaybe extractRefFromOption (V.toList options)
       in case refs of
            [r] -> RefOptional (RefNamed r)
-           _ -> RefUnknown
+           _ -> RefAny  -- Complex anyOf = any
 
   -- Check for primitive type
   | Just (String t) <- KM.lookup "type" o =
       RefPrimitive t (extractFormat o)
 
-  | otherwise = RefUnknown
+  -- Schema object present but no type constraint = intentionally dynamic (RefAny)
+  -- This happens with serde_json::Value which emits {"description": "...", "default": null}
+  | otherwise = RefAny
 
+-- JSON Schema `true` is the "accept anything" schema - intentionally dynamic
+-- This is used when schemars emits a field like `input: true` for serde_json::Value
+schemaToTypeRef (Bool True) = RefAny
+
+-- Null, false, or non-JSON-Schema values = schema gap (should warn)
 schemaToTypeRef _ = RefUnknown
 
 -- | Extract ref name from a $ref string like "#/$defs/Position"
