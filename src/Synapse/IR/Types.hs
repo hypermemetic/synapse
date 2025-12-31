@@ -175,7 +175,8 @@ data TypeRef
   | RefPrimitive Text (Maybe Text)  -- ^ Primitive type with optional format
   | RefArray TypeRef                -- ^ Array of some type
   | RefOptional TypeRef             -- ^ Optional (nullable) type
-  | RefUnknown                      -- ^ Unknown/any type
+  | RefAny                          -- ^ Intentionally dynamic (serde_json::Value) - accepts any JSON
+  | RefUnknown                      -- ^ Unknown type (schema gap) - should warn
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)
 
