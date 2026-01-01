@@ -61,7 +61,13 @@ data Args = Args
 
 main :: IO ()
 main = do
-  args <- execParser argsInfo
+  cmd <- execParser argsInfo
+  case cmd of
+    PlexusCmd args -> runPlexus args
+
+-- | Run a plexus backend command
+runPlexus :: Args -> IO ()
+runPlexus args = do
   env <- initEnv (argHost args) (argPort args)
   rendererCfg <- defaultRendererConfig
   result <- runSynapseM env (dispatch args rendererCfg)
@@ -269,9 +275,18 @@ splash = T.unlines
 
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
-cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
+cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse plexus")
   where
-    failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
+    failure = parserFailure defaultPrefs plexusArgsInfo (ShowHelpText Nothing) mempty
+
+-- | Parser info for plexus subcommand (used for help rendering)
+plexusArgsInfo :: ParserInfo Args
+plexusArgsInfo = info (plexusArgsParser <**> helper)
+  ( fullDesc
+ <> header "synapse plexus - Algebraic CLI for Plexus"
+ <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
+ <> forwardOptions
+  )
 
 -- | Render an error for display
 renderError :: SynapseError -> String
@@ -311,7 +326,7 @@ encodeDryRun namespacePath method params =
   in encode $ object
     [ "jsonrpc" .= ("2.0" :: Text)
     , "id" .= (1 :: Int)
-    , "method" .= ("plexus_call" :: Text)
+    , "method" .= ("plexus.call" :: Text)
     , "params" .= object
         [ "method" .= dotPath
         , "params" .= params
@@ -360,16 +375,39 @@ printResult _ _ cfg item = do
 -- Argument Parsing
 -- ============================================================================
 
-argsInfo :: ParserInfo Args
-argsInfo = info (argsParser <**> helper)
+-- ============================================================================
+-- Command Types
+-- ============================================================================
+
+-- | Top-level command structure with backend namespacing
+data Command
+  = PlexusCmd Args  -- ^ synapse plexus <path...>
+  deriving Show
+
+-- ============================================================================
+-- Argument Parsing
+-- ============================================================================
+
+argsInfo :: ParserInfo Command
+argsInfo = info (commandParser <**> helper)
   ( fullDesc
- <> header "synapse - Algebraic CLI for Plexus"
- <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
- <> forwardOptions  -- Pass unrecognized --flags to positional args
+ <> header "synapse - Multi-backend CLI"
+ <> progDesc "Connect to various backends via explicit namespacing"
   )
 
-argsParser :: Parser Args
-argsParser = do
+-- | Top-level command parser with backend subcommands
+commandParser :: Parser Command
+commandParser = hsubparser
+  ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
+      ( fullDesc
+     <> header "synapse plexus - Algebraic CLI for Plexus"
+     <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
+     <> forwardOptions  -- Pass unrecognized --flags to positional args
+      ))
+  )
+
+plexusArgsParser :: Parser Args
+plexusArgsParser = do
   argHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
    <> value "127.0.0.1" <> showDefault
