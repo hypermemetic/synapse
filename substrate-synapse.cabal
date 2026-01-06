@@ -29,6 +29,7 @@ library
     Synapse.IR.Types
     Synapse.IR.Builder
     Synapse.CLI.Help
+    Synapse.CLI.Parse
     Synapse.CLI.Support
   build-depends:
     base >= 4.17 && < 5,
