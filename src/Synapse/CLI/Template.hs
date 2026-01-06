@@ -46,7 +46,7 @@
 -- @
 module Synapse.CLI.Template
   ( -- * Template Generation
-    generateTemplate
+    generateTemplates
   , generateAllTemplates
   , generateAllTemplatesWithCallback
 
@@ -88,9 +88,58 @@ data GeneratedTemplate = GeneratedTemplate
 -- High-Level Generation
 -- ============================================================================
 
--- | Generate template for a method's return type
-generateTemplate :: IR -> MethodDef -> GeneratedTemplate
-generateTemplate ir method =
+-- | Generate templates for a method's return type
+--
+-- For methods returning discriminated unions, generates one template per variant.
+-- The template filename matches the runtime content_type: {namespace}/{variant}.mustache
+-- For non-union returns, generates a single template: {namespace}/{method}.mustache
+generateTemplates :: IR -> MethodDef -> [GeneratedTemplate]
+generateTemplates ir method = case mdReturns method of
+  RefNamed name -> case Map.lookup name (irTypes ir) of
+    Just TypeDef{tdKind = KindEnum _ variants} ->
+      -- Union type: generate one template per variant
+      map (generateVariantTemplate ir method) variants
+    _ ->
+      -- Non-union: single template for method
+      [generateSingleTemplate ir method]
+  _ ->
+    -- Primitive/other: single template for method
+    [generateSingleTemplate ir method]
+
+-- | Generate template for a single variant of a union return type
+generateVariantTemplate :: IR -> MethodDef -> VariantDef -> GeneratedTemplate
+generateVariantTemplate ir method variant =
+  let header = "{{! " <> mdNamespace method <> "." <> vdName variant <> " }}"
+      body = generateVariantBody ir variant
+      template = header <> "\n" <> body
+  in GeneratedTemplate
+    { gtNamespace = mdNamespace method
+    , gtMethod = vdName variant  -- Use variant name as "method" for filename
+    , gtTemplate = template
+    , gtPath = T.unpack (mdNamespace method) </> T.unpack (vdName variant) <.> "mustache"
+    }
+
+-- | Generate template body for a variant
+generateVariantBody :: IR -> VariantDef -> Text
+generateVariantBody ir VariantDef{..} =
+  let ind = indentText 0
+      sectionName = vdName
+  in case vdFields of
+    -- No fields: just render the variant name presence
+    [] -> ind <> "{{#" <> sectionName <> "}}{{/" <> sectionName <> "}}"
+
+    -- Single field named "content" or similar: inline rendering
+    [field] | isContentField field ->
+      ind <> "{{#" <> sectionName <> "}}{{" <> fdName field <> "}}{{/" <> sectionName <> "}}"
+
+    -- Multiple fields: render as labeled lines
+    fields ->
+      let fieldLines = map (generateFieldLine ir 1) (filter (not . isInternalField) fields)
+      in T.unlines $ [ind <> "{{#" <> sectionName <> "}}"] ++ fieldLines ++ [ind <> "{{/" <> sectionName <> "}}"]
+
+-- | Generate template for a non-union method return
+generateSingleTemplate :: IR -> MethodDef -> GeneratedTemplate
+generateSingleTemplate ir method =
   let body = typeRefToMustache ir 0 (mdReturns method)
       header = "{{! " <> mdFullPath method <> " }}"
       template = if T.null body || body == "{{.}}"
@@ -108,7 +157,7 @@ generateAllTemplates :: Path -> SynapseM [GeneratedTemplate]
 generateAllTemplates path = do
   ir <- buildIR path
   let methods = Map.elems (irMethods ir)
-      templates = map (generateTemplate ir) methods
+      templates = concatMap (generateTemplates ir) methods
       -- Filter out trivial templates that just render {{.}}
       nonTrivial = filter (not . isTrivialTemplate) templates
   pure nonTrivial

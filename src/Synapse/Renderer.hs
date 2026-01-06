@@ -217,7 +217,25 @@ renderValue cfg contentType value = do
 
 -- | Render a value with a specific template
 renderWithTemplate :: Template -> Value -> Text
-renderWithTemplate template value = substituteValue template (toMustache value)
+renderWithTemplate template value =
+  let wrapped = wrapDiscriminatedUnion value
+  in substituteValue template (toMustache wrapped)
+
+-- | Wrap discriminated union data for mustache template compatibility
+--
+-- Templates expect variant data wrapped like: {"echo": {"count": 1, ...}}
+-- But actual responses are flat: {"type": "echo", "count": 1, ...}
+--
+-- This transforms flat discriminated unions into wrapped form so
+-- mustache sections like {{#echo}}...{{/echo}} will match.
+wrapDiscriminatedUnion :: Value -> Value
+wrapDiscriminatedUnion (Object obj) =
+  case KM.lookup "type" obj of
+    Just (String variant) ->
+      -- Wrap: {"variant": original_object}
+      Object $ KM.singleton (K.fromText variant) (Object obj)
+    _ -> Object obj
+wrapDiscriminatedUnion other = other
 
 -- ============================================================================
 -- Pretty Printing
