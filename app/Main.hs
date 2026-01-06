@@ -1,4 +1,5 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Synapse CLI - Algebraic Implementation
 --
@@ -23,7 +24,6 @@ import Options.Applicative
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
-import Plexus (PlexusStreamItem(..))
 
 import Synapse.Schema.Types
 import Synapse.Monad
@@ -70,7 +70,7 @@ main = do
   case cmd of
     PlexusCmd args -> runPlexus args
 
--- | Run a plexus backend command
+-- | Run a Hub backend command
 runPlexus :: Args -> IO ()
 runPlexus args = do
   env <- initEnv (argHost args) (argPort args)
@@ -241,7 +241,7 @@ dispatch Args{..} rendererCfg = do
           pure $ Right $ toJSON detailedMethod
 
     -- Invoke raw JSON-RPC request
-    invokeRawRpc :: Value -> SynapseM [PlexusStreamItem]
+    invokeRawRpc :: Value -> SynapseM [HubStreamItem]
     invokeRawRpc rpcReq = do
       case rpcReq of
         Object o -> case (KM.lookup "method" o, KM.lookup "params" o) of
@@ -309,11 +309,11 @@ cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse plexus")
   where
     failure = parserFailure defaultPrefs plexusArgsInfo (ShowHelpText Nothing) mempty
 
--- | Parser info for plexus subcommand (used for help rendering)
+-- | Parser info for Hub subcommand (used for help rendering)
 plexusArgsInfo :: ParserInfo Args
 plexusArgsInfo = info (plexusArgsParser <**> helper)
   ( fullDesc
- <> header "synapse plexus - Algebraic CLI for Plexus"
+ <> header "synapse plexus - Algebraic CLI for Hub"
  <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
  <> forwardOptions
   )
@@ -386,18 +386,18 @@ encodeDryRun namespacePath method params =
 -- argJson: output raw JSON stream items
 -- argRaw: skip template rendering, just output content JSON
 -- otherwise: try template rendering, fall back to content JSON
-printResult :: Bool -> Bool -> RendererConfig -> PlexusStreamItem -> IO ()
+printResult :: Bool -> Bool -> RendererConfig -> HubStreamItem -> IO ()
 printResult True _ _ item = LBS.putStrLn $ encode item
 printResult _ True _ item = case item of
   -- Raw mode: just output the content
-  StreamData _ _ _ dat -> do
+  HubData _ _ _ dat -> do
     LBS.putStrLn $ encode dat
     hFlush stdout
-  StreamProgress _ _ msg _ -> do
+  HubProgress _ _ msg _ -> do
     TIO.putStr msg
     TIO.putStr "\r"
     hFlush stdout
-  StreamError _ _ err _ ->
+  HubError _ _ err _ ->
     hPutStrLn stderr $ "Error: " <> T.unpack err
   _ -> pure ()
 printResult _ _ cfg item = do
@@ -409,14 +409,14 @@ printResult _ _ cfg item = do
       hFlush stdout
     Nothing -> case item of
       -- Fallback to pretty-printed content
-      StreamData _ _ _ dat -> do
+      HubData _ _ _ dat -> do
         TIO.putStrLn $ prettyValue dat
         hFlush stdout
-      StreamProgress _ _ msg _ -> do
+      HubProgress _ _ msg _ -> do
         TIO.putStr msg
         TIO.putStr "\r"
         hFlush stdout
-      StreamError _ _ err _ ->
+      HubError _ _ err _ ->
         hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
 
@@ -449,7 +449,7 @@ commandParser :: Parser Command
 commandParser = hsubparser
   ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
       ( fullDesc
-     <> header "synapse plexus - Algebraic CLI for Plexus"
+     <> header "synapse plexus - Algebraic CLI for Hub"
      <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
      <> forwardOptions  -- Pass unrecognized --flags to positional args
       ))
@@ -460,11 +460,11 @@ plexusArgsParser = do
   argHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
    <> value "127.0.0.1" <> showDefault
-   <> help "Plexus server host" )
+   <> help "Hub server host" )
   argPort <- option auto
     ( long "port" <> short 'P' <> metavar "PORT"
    <> value 4444 <> showDefault
-   <> help "Plexus server port" )
+   <> help "Hub server port" )
   argJson <- switch
     ( long "json" <> short 'j'
    <> help "Output raw JSON stream items" )

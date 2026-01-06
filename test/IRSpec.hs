@@ -4,7 +4,7 @@
 
 -- | Integration tests for IR-based CLI
 --
--- Requires a running plexus backend on localhost:4444
+-- Requires a running Hub backend on localhost:4444
 -- (or port specified by PLEXUS_PORT environment variable)
 --
 -- Tests that for every method in the schema:
@@ -33,7 +33,7 @@ import Synapse.Monad
 main :: IO ()
 main = do
   -- Get port from environment or use default
-  port <- getPlexusPort
+  port <- getHubPort
   putStrLn $ "Running IR integration tests against localhost:" <> show port
 
   -- Initialize environment
@@ -45,17 +45,17 @@ main = do
   case irResult of
     Left err -> do
       putStrLn $ "Failed to build IR: " <> show err
-      putStrLn "Is the plexus backend running?"
+      putStrLn "Is the Hub backend running?"
       -- Run minimal spec that reports the failure
       hspec $ describe "IR Integration Tests" $
-        it "connects to plexus backend" $
+        it "connects to Hub backend" $
           expectationFailure $ "Could not connect: " <> show err
 
     Right ir -> hspec $ irSpec ir
 
--- | Get plexus port from PLEXUS_PORT env var or default to 4444
-getPlexusPort :: IO Int
-getPlexusPort = do
+-- | Get Hub port from PLEXUS_PORT env var or default to 4444
+getHubPort :: IO Int
+getHubPort = do
   mPort <- lookupEnv "PLEXUS_PORT"
   pure $ case mPort >>= readMaybe of
     Just p -> p
