@@ -30,6 +30,8 @@ import Synapse.Monad
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema)
 import Synapse.CLI.Help (renderMethodHelp)
+import Synapse.CLI.Parse (parseParams)
+import qualified Synapse.CLI.Parse as Parse
 import Synapse.IR.Types (IR, irMethods)
 import qualified Data.Map.Strict as Map
 import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
@@ -144,16 +146,31 @@ dispatch Args{..} rendererCfg = do
 
                 -- Landed on a method: invoke or show help
                 ViewMethod method path -> do
-                  -- Build params: start with schema defaults, then merge user params
-                  -- Schema defaults are extracted from methodParams JSON Schema
+                  -- Build IR for this method's namespace
+                  ir <- buildIR (init path)
+                  let fullPath = T.intercalate "." path
+
+                  -- Build params: use IR-driven parsing for inline params
                   let schemaDefaults = extractSchemaDefaults method
                   userParams <- case argParams of
+                    -- -p JSON: parse as raw JSON (bypass IR parsing)
                     Just jsonStr ->
                       case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
                         Left err -> throwParse $ T.pack err
                         Right p -> pure p
                     Nothing
-                      | not (null inlineParams) -> pure $ buildParamsObject inlineParams
+                      | not (null inlineParams) ->
+                          -- Use IR-driven parsing for inline params
+                          case Map.lookup fullPath (irMethods ir) of
+                            Just methodDef ->
+                              case parseParams ir methodDef inlineParams of
+                                Right p -> pure p
+                                Left errs -> do
+                                  liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
+                                  throwParse "Parameter parsing failed"
+                            Nothing ->
+                              -- Fallback to flat object if method not in IR
+                              pure $ buildParamsObject inlineParams
                       | otherwise -> pure $ object []
                   -- Merge: user params override schema defaults
                   let params = mergeParams schemaDefaults userParams
@@ -163,9 +180,7 @@ dispatch Args{..} rendererCfg = do
                     -- Show help when: method has required params AND user provided no params
                     else if hasRequiredParams method && userParams == object [] && null inlineParams
                       then do
-                        -- Build IR and render help from it
-                        ir <- buildIR (init path)
-                        let fullPath = T.intercalate "." path
+                        -- Render help from IR
                         case Map.lookup fullPath (irMethods ir) of
                           Just methodDef ->
                             liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
@@ -321,6 +336,25 @@ renderError = \case
   where
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
+
+-- | Render a parse error for display
+renderParseError :: Parse.ParseError -> String
+renderParseError = \case
+  Parse.UnknownParam name ->
+    "Unknown parameter: --" <> T.unpack name
+  Parse.MissingRequired name ->
+    "Missing required parameter: --" <> T.unpack name
+  Parse.InvalidValue name reason ->
+    "Invalid value for --" <> T.unpack name <> ": " <> T.unpack reason
+  Parse.AmbiguousVariant name variants ->
+    "Ambiguous variant for --" <> T.unpack name <> ": could be one of " <> show (map T.unpack variants)
+  Parse.MissingDiscriminator param field ->
+    "Missing discriminator for --" <> T.unpack param <> ": need --" <> T.unpack param <> "." <> T.unpack field
+  Parse.UnknownVariant param value valid ->
+    "Unknown variant '" <> T.unpack value <> "' for --" <> T.unpack param
+    <> ". Valid variants: " <> T.unpack (T.intercalate ", " valid)
+  Parse.TypeNotFound name ->
+    "Type not found in IR: " <> T.unpack name
 
 -- | Write a generated template to disk (no logging)
 writeGeneratedTemplate :: FilePath -> GeneratedTemplate -> IO ()
