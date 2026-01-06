@@ -28,6 +28,8 @@ library
     Synapse.Renderer
     Synapse.IR.Types
     Synapse.IR.Builder
+    Synapse.CLI.Help
+    Synapse.CLI.Support
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,
@@ -111,4 +113,21 @@ test-suite cli-test
   default-language: GHC2021
   default-extensions:
     OverloadedStrings
+  ghc-options:      -threaded
+
+test-suite ir-test
+  type:             exitcode-stdio-1.0
+  main-is:          IRSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    substrate-synapse,
+    text >= 2.0 && < 2.2,
+    containers >= 0.6 && < 0.8,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+    LambdaCase
+    RecordWildCards
   ghc-options:      -threaded

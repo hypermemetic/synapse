@@ -28,7 +28,10 @@ import Plexus (PlexusStreamItem(..))
 import Synapse.Schema.Types
 import Synapse.Monad
 import Synapse.Algebra.Navigate
-import Synapse.Algebra.Render (renderSchema, renderMethodFull)
+import Synapse.Algebra.Render (renderSchema)
+import Synapse.CLI.Help (renderMethodHelp)
+import Synapse.IR.Types (IR, irMethods)
+import qualified Data.Map.Strict as Map
 import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
 import Synapse.Transport
 import Synapse.IR.Builder (buildIR)
@@ -157,8 +160,18 @@ dispatch Args{..} rendererCfg = do
 
                   if argDryRun
                     then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
-                    else if hasRequiredParams method && params == object [] && null inlineParams
-                      then liftIO $ TIO.putStrLn $ renderMethodFull method
+                    -- Show help when: method has required params AND user provided no params
+                    else if hasRequiredParams method && userParams == object [] && null inlineParams
+                      then do
+                        -- Build IR and render help from it
+                        ir <- buildIR (init path)
+                        let fullPath = T.intercalate "." path
+                        case Map.lookup fullPath (irMethods ir) of
+                          Just methodDef ->
+                            liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                          Nothing ->
+                            -- Fallback: method not in IR, use basic info
+                            liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
                       else invokeMethod path params
   where
     invokeMethod path params = do
