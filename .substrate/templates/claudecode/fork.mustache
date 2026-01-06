@@ -1,0 +1,8 @@
+{{! claudecode.fork - returns: ForkResult }}
+{{! Variants: forked, error }}
+{{#forked}}
+  head: {{head}}
+  id: {{id}}
+{{/forked}}
+
+{{#error}}{{message}}{{/error}}

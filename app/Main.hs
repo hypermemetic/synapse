@@ -38,7 +38,7 @@ import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesW
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
 import Synapse.IR.Builder (buildIR)
-import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue)
+import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
 import System.Directory (createDirectoryIfMissing)
 
 -- ============================================================================
@@ -205,7 +205,9 @@ dispatch Args{..} rendererCfg = do
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
-      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg)
+      -- Set method path hint for template resolution
+      let rendererCfg' = withMethodPath rendererCfg path
+      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg')
 
     -- Extract default values from JSON Schema properties
     -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}

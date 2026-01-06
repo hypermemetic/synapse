@@ -1,0 +1,24 @@
+{{! mustache.render - returns: MustacheEvent }}
+{{! Variants: rendered, registered, template, not_found, templates, deleted, error }}
+{{#rendered}}
+  output: {{output}}
+{{/rendered}}
+
+{{#registered}}
+  template: {{template}}
+{{/registered}}
+
+{{#template}}
+  template: {{template}}
+{{/template}}
+
+{{#not_found}}{{message}}{{/not_found}}
+{{#templates}}
+  templates: {{#templates}}...{{/templates}}
+{{/templates}}
+
+{{#deleted}}
+  count: {{count}}
+{{/deleted}}
+
+{{#error}}{{message}}{{/error}}

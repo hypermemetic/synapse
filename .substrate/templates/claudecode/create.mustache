@@ -1,0 +1,8 @@
+{{! claudecode.create - returns: CreateResult }}
+{{! Variants: cone_created, error }}
+{{#cone_created}}
+  cone_id: {{cone_id}}
+  head: {{head}}
+{{/cone_created}}
+
+{{#error}}{{message}}{{/error}}
