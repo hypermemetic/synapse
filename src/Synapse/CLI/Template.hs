@@ -153,8 +153,9 @@ generateMethodBody ir method = case mdReturns method of
   RefNamed name -> case Map.lookup name (irTypes ir) of
     Just typeDef@TypeDef{tdKind = KindEnum _ variants} ->
       -- Union type: generate sections for ALL variants (exhaustive)
+      -- No blank lines between sections to avoid whitespace in output
       let variantNames = map vdName variants
-          body = T.intercalate "\n" $ map (variantToMustache ir 0) variants
+          body = T.intercalate "\n" (map (variantToMustache ir 0) variants) <> "\n"
       in (body, variantNames, Just name)
     Just typeDef ->
       -- Non-union named type
@@ -227,16 +228,16 @@ variantToMustache ir indent VariantDef{..} =
     -- No displayable fields: empty section (still present for exhaustiveness)
     [] -> ind <> "{{#" <> sectionName <> "}}{{/" <> sectionName <> "}}"
 
-    -- Single content-like field: inline rendering
+    -- Single content-like field: inline rendering (triple braces to avoid HTML escaping)
     [field] | isContentField field ->
-      ind <> "{{#" <> sectionName <> "}}{{" <> fdName field <> "}}{{/" <> sectionName <> "}}"
+      ind <> "{{#" <> sectionName <> "}}{{{" <> fdName field <> "}}}{{/" <> sectionName <> "}}"
 
-    -- Multiple fields: render as labeled lines
+    -- Multiple fields: render as labeled lines (no trailing newline)
     fields ->
       let fieldLines = map (generateFieldLine ir (indent + 1)) fields
           openTag = ind <> "{{#" <> sectionName <> "}}"
           closeTag = ind <> "{{/" <> sectionName <> "}}"
-      in T.unlines $ [openTag] ++ fieldLines ++ [closeTag]
+      in T.intercalate "\n" $ [openTag] ++ fieldLines ++ [closeTag]
 
 -- ============================================================================
 -- Type Reference to Mustache
@@ -308,17 +309,38 @@ generateStructTemplate ir indent fields =
 
 -- | Generate a labeled line for a field
 generateFieldLine :: IR -> Int -> FieldDef -> Text
-generateFieldLine ir indent FieldDef{..} =
+generateFieldLine ir indent field@FieldDef{..} =
   let ind = indentText indent
       label = fdName <> ": "
-      value = generateFieldValue ir fdType fdName
-  in ind <> label <> value
+  in case fdType of
+    -- For optional fields, show value or explicit "null"
+    RefOptional inner ->
+      let innerValue = generateOptionalInnerValue ir inner
+      in ind <> label <> "{{#" <> fdName <> "}}" <> innerValue <> "{{/" <> fdName <> "}}{{^" <> fdName <> "}}null{{/" <> fdName <> "}}"
+    _ ->
+      let value = generateFieldValue ir fdType fdName field
+      in ind <> label <> value
+
+-- | Generate value for inside an optional section (no outer wrapper needed)
+generateOptionalInnerValue :: IR -> TypeRef -> Text
+generateOptionalInnerValue ir typeRef = case typeRef of
+  RefNamed name -> case Map.lookup name (irTypes ir) of
+    Just TypeDef{tdKind = KindStruct fields} ->
+      let displayFields = filter (not . isInternalField) fields
+          fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
+      in T.intercalate " " fieldRefs
+    _ -> "{{.}}"
+  RefPrimitive _ _ -> "{{.}}"
+  _ -> "{{.}}"
 
 -- | Generate the value portion of a field
-generateFieldValue :: IR -> TypeRef -> Text -> Text
-generateFieldValue ir typeRef fieldName = case typeRef of
-  -- Primitives: simple interpolation
-  RefPrimitive _ _ -> "{{" <> fieldName <> "}}"
+generateFieldValue :: IR -> TypeRef -> Text -> FieldDef -> Text
+generateFieldValue ir typeRef fieldName field = case typeRef of
+  -- Primitives: use triple braces for content fields to avoid HTML escaping
+  RefPrimitive _ _ ->
+    if isContentField field
+    then "{{{" <> fieldName <> "}}}"
+    else "{{" <> fieldName <> "}}"
 
   -- Arrays: iterate
   RefArray inner -> case inner of
@@ -331,19 +353,37 @@ generateFieldValue ir typeRef fieldName = case typeRef of
   RefNamed name -> case Map.lookup name (irTypes ir) of
     Just TypeDef{tdKind = KindPrimitive _ _} ->
       "{{" <> fieldName <> "}}"
-    Just TypeDef{tdKind = KindStruct _} ->
-      "{{" <> fieldName <> "}}"  -- Could expand, but often too verbose
+    Just TypeDef{tdKind = KindStruct fields} ->
+      -- Expand struct fields with dot notation to avoid Haskell Show output
+      let displayFields = filter (not . isInternalField) fields
+          fieldRefs = map (\f -> fdName f <> "={{" <> fieldName <> "." <> fdName f <> "}}") displayFields
+      in T.intercalate " " fieldRefs
     Just TypeDef{tdKind = KindEnum _ _} ->
-      "{{" <> fieldName <> "}}"  -- Nested union: keep simple
+      "{{{" <> fieldName <> "}}}"  -- Nested union: use triple braces for unescaped JSON
     _ ->
       "{{" <> fieldName <> "}}"
 
-  -- Optional: same as inner
-  RefOptional inner -> generateFieldValue ir inner fieldName
+  -- Optional: wrap in section so null renders nothing
+  RefOptional inner -> case inner of
+    -- For optional structs, wrap expansion in a section
+    RefNamed name -> case Map.lookup name (irTypes ir) of
+      Just TypeDef{tdKind = KindStruct fields} ->
+        let displayFields = filter (not . isInternalField) fields
+            fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
+        in "{{#" <> fieldName <> "}}" <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
+      _ -> "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
+    -- For optional primitives, simple section
+    _ -> "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
 
-  -- Fallback
-  RefAny -> "{{" <> fieldName <> "}}"
-  RefUnknown -> "{{" <> fieldName <> "}}"
+  -- Fallback: use triple braces for content fields
+  RefAny ->
+    if isContentField field
+    then "{{{" <> fieldName <> "}}}"
+    else "{{" <> fieldName <> "}}"
+  RefUnknown ->
+    if isContentField field
+    then "{{{" <> fieldName <> "}}}"
+    else "{{" <> fieldName <> "}}"
 
 -- ============================================================================
 -- Field Classification

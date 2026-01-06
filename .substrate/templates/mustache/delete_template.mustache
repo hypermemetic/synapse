@@ -3,22 +3,17 @@
 {{#rendered}}
   output: {{output}}
 {{/rendered}}
-
 {{#registered}}
-  template: {{template}}
+  template: created_at={{template.created_at}} id={{template.id}} method={{template.method}} name={{template.name}} plugin_id={{template.plugin_id}} updated_at={{template.updated_at}}
 {{/registered}}
-
 {{#template}}
   template: {{template}}
 {{/template}}
-
-{{#not_found}}{{message}}{{/not_found}}
+{{#not_found}}{{{message}}}{{/not_found}}
 {{#templates}}
   templates: {{#templates}}...{{/templates}}
 {{/templates}}
-
 {{#deleted}}
   count: {{count}}
 {{/deleted}}
-
-{{#error}}{{message}}{{/error}}
+{{#error}}{{{message}}}{{/error}}

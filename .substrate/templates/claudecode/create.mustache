@@ -2,7 +2,6 @@
 {{! Variants: cone_created, error }}
 {{#cone_created}}
   cone_id: {{cone_id}}
-  head: {{head}}
+  head: node_id={{head.node_id}} tree_id={{head.tree_id}}
 {{/cone_created}}
-
-{{#error}}{{message}}{{/error}}
+{{#error}}{{{message}}}{{/error}}
