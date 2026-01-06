@@ -1,5 +1,5 @@
 cabal-version:      3.0
-name:               substrate-synapse
+name:               hub-synapse
 version:            0.2.0.0
 synopsis:           Algebraic CLI for Plexus - coalgebraic schema navigation
 license:            MIT
@@ -69,7 +69,7 @@ executable synapse
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,
-    substrate-synapse,
+    hub-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
@@ -90,7 +90,7 @@ executable schema-discovery
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,
-    substrate-synapse,
+    hub-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     streaming >= 0.2 && < 0.3
@@ -120,7 +120,7 @@ test-suite ir-test
   main-is:          IRSpec.hs
   build-depends:
     base >= 4.17 && < 5,
-    substrate-synapse,
+    hub-synapse,
     text >= 2.0 && < 2.2,
     containers >= 0.6 && < 0.8,
     hspec >= 2.10 && < 2.12

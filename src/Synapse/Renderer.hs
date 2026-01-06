@@ -1,3 +1,4 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 -- | Template-based output renderer
@@ -75,7 +76,13 @@ import Text.Mustache.Compile (localAutomaticCompile)
 import Text.Mustache.Render (substituteValue)
 import qualified Text.Mustache.Types as MT
 
-import Plexus.Types (PlexusStreamItem(..))
+import Synapse.Schema.Types
+  ( HubStreamItem
+  , pattern HubData
+  , pattern HubProgress
+  , pattern HubError
+  , pattern HubDone
+  )
 
 -- ============================================================================
 -- Types
@@ -235,19 +242,20 @@ getCachedTemplate cfg path = do
 -- ============================================================================
 
 -- | Render a stream item using templates
-renderItem :: RendererConfig -> PlexusStreamItem -> IO (Maybe Text)
+renderItem :: RendererConfig -> HubStreamItem -> IO (Maybe Text)
 renderItem cfg item = case rcMode cfg of
   ModeJson -> pure Nothing  -- Caller should use JSON
   ModeRaw  -> pure Nothing  -- Caller should extract content
   ModeTemplate -> case item of
-    StreamData _ _ contentType content ->
+    HubData _ _ contentType content ->
       renderValue cfg contentType content
-    StreamProgress _ _ msg _ ->
+    HubProgress _ _ msg _ ->
       pure $ Just msg
-    StreamError _ _ err _ ->
+    HubError _ _ err _ ->
       pure $ Just $ "Error: " <> err
-    StreamDone _ _ ->
+    HubDone _ _ ->
       pure Nothing
+    _ -> pure Nothing  -- Handle other variants (e.g., HubGuidance)
 
 -- | Render a value using template for content type
 renderValue :: RendererConfig -> Text -> Value -> IO (Maybe Text)
