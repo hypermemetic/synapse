@@ -6,22 +6,20 @@
 --
 -- Generates structured Mustache templates directly from the IR, providing:
 --
--- - Discriminated union handling with variant sections
+-- - Discriminated union handling with ALL variants in one template
+-- - Exhaustive variant coverage (every variant gets a section)
 -- - Structured output with labeled fields
--- - Better formatting than flat JSON Schema parsing
 --
 -- = Design
 --
--- Instead of parsing JSON Schema ad-hoc (like Synapse.Algebra.TemplateGen),
--- we use the pre-built IR which has already resolved types:
+-- Templates are generated per-method with all return type variants visible:
 --
 -- @
 -- IR (types, methods)
 --   |
---   +-> generateTemplate     -> template for a single method
+--   +-> generateTemplate     -> unified template for a method (all variants)
 --   +-> generateAllTemplates -> all templates for a path
---   +-> typeRefToMustache    -> TypeRef -> Mustache text
---   +-> typeDefToMustache    -> TypeDef -> Mustache text
+--   +-> generateTemplatesFor -> subset of templates (filtered)
 -- @
 --
 -- = Example Output
@@ -29,39 +27,63 @@
 -- For `cone.chat` (streaming enum with variants):
 --
 -- @
--- {{! cone.chat }}
--- {{#context}}
--- tree_id: {{tree_id}}
--- node_id: {{node_id}}
--- {{/context}}
--- {{#delta}}
--- {{content}}{{/delta}}
--- {{#done}}
--- tree_id: {{tree_id}}
--- node_id: {{node_id}}
--- {{/done}}
--- {{#error}}
--- Error: {{message}}
--- {{/error}}
+-- {{! cone.chat - returns: ConeEvent }}
+-- {{! Variants: start, content, thinking, tool_use, tool_result, complete, error, passthrough }}
+--
+-- {{#start}}
+--   id: {{id}}
+--   user_position: {{user_position}}
+-- {{/start}}
+--
+-- {{#content}}{{text}}{{/content}}
+--
+-- {{#thinking}}{{thinking}}{{/thinking}}
+--
+-- {{#tool_use}}
+--   tool_name: {{tool_name}}
+--   tool_use_id: {{tool_use_id}}
+--   input: {{input}}
+-- {{/tool_use}}
+--
+-- {{#tool_result}}
+--   tool_use_id: {{tool_use_id}}
+--   output: {{output}}
+--   is_error: {{is_error}}
+-- {{/tool_result}}
+--
+-- {{#complete}}
+--   new_head: {{new_head}}
+--   usage: {{usage}}
+-- {{/complete}}
+--
+-- {{#error}}{{message}}{{/error}}
+--
+-- {{#passthrough}}
+--   event_type: {{event_type}}
+--   data: {{data}}
+-- {{/passthrough}}
 -- @
 module Synapse.CLI.Template
   ( -- * Template Generation
-    generateTemplates
+    generateTemplate
   , generateAllTemplates
+  , generateTemplatesFor
   , generateAllTemplatesWithCallback
 
-    -- * Type Conversion
+    -- * Type Conversion (exposed for testing/reuse)
   , typeRefToMustache
   , typeDefToMustache
+  , variantToMustache
 
     -- * Types
   , GeneratedTemplate(..)
+  , TemplateFilter(..)
   ) where
 
 import Control.Monad.IO.Class (liftIO)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath ((</>), (<.>))
@@ -77,90 +99,97 @@ import Synapse.Schema.Types (Path)
 
 -- | A generated template with metadata
 data GeneratedTemplate = GeneratedTemplate
-  { gtNamespace :: Text      -- ^ Plugin namespace (e.g., "cone")
-  , gtMethod    :: Text      -- ^ Method name (e.g., "chat")
-  , gtTemplate  :: Text      -- ^ Mustache template content
-  , gtPath      :: FilePath  -- ^ Relative path for template file
+  { gtNamespace    :: Text       -- ^ Plugin namespace (e.g., "cone")
+  , gtMethod       :: Text       -- ^ Method name (e.g., "chat")
+  , gtTemplate     :: Text       -- ^ Mustache template content
+  , gtPath         :: FilePath   -- ^ Relative path for template file
+  , gtVariants     :: [Text]     -- ^ List of variant names this template handles
+  , gtReturnType   :: Maybe Text -- ^ Return type name if named
   }
+  deriving stock (Show, Eq)
+
+-- | Filter for selective template generation
+data TemplateFilter
+  = AllTemplates                    -- ^ Generate all templates
+  | NamespaceFilter [Text]          -- ^ Only these namespaces
+  | MethodFilter [(Text, Text)]     -- ^ Only these (namespace, method) pairs
+  | ExcludeFilter [Text]            -- ^ Exclude these namespaces
   deriving stock (Show, Eq)
 
 -- ============================================================================
 -- High-Level Generation
 -- ============================================================================
 
--- | Generate templates for a method's return type
+-- | Generate a unified template for a method's return type
 --
--- For methods returning discriminated unions, generates one template per variant.
--- The template filename matches the runtime content_type: {namespace}/{variant}.mustache
--- For non-union returns, generates a single template: {namespace}/{method}.mustache
-generateTemplates :: IR -> MethodDef -> [GeneratedTemplate]
-generateTemplates ir method = case mdReturns method of
-  RefNamed name -> case Map.lookup name (irTypes ir) of
-    Just TypeDef{tdKind = KindEnum _ variants} ->
-      -- Union type: generate one template per variant
-      map (generateVariantTemplate ir method) variants
-    _ ->
-      -- Non-union: single template for method
-      [generateSingleTemplate ir method]
-  _ ->
-    -- Primitive/other: single template for method
-    [generateSingleTemplate ir method]
-
--- | Generate template for a single variant of a union return type
-generateVariantTemplate :: IR -> MethodDef -> VariantDef -> GeneratedTemplate
-generateVariantTemplate ir method variant =
-  let header = "{{! " <> mdNamespace method <> "." <> vdName variant <> " }}"
-      body = generateVariantBody ir variant
+-- All variants are included in a single template file.
+-- The template is named by method: {namespace}/{method}.mustache
+generateTemplate :: IR -> MethodDef -> GeneratedTemplate
+generateTemplate ir method =
+  let (body, variants, typeName) = generateMethodBody ir method
+      header = generateHeader method typeName variants
       template = header <> "\n" <> body
-  in GeneratedTemplate
-    { gtNamespace = mdNamespace method
-    , gtMethod = vdName variant  -- Use variant name as "method" for filename
-    , gtTemplate = template
-    , gtPath = T.unpack (mdNamespace method) </> T.unpack (vdName variant) <.> "mustache"
-    }
-
--- | Generate template body for a variant
-generateVariantBody :: IR -> VariantDef -> Text
-generateVariantBody ir VariantDef{..} =
-  let ind = indentText 0
-      sectionName = vdName
-  in case vdFields of
-    -- No fields: just render the variant name presence
-    [] -> ind <> "{{#" <> sectionName <> "}}{{/" <> sectionName <> "}}"
-
-    -- Single field named "content" or similar: inline rendering
-    [field] | isContentField field ->
-      ind <> "{{#" <> sectionName <> "}}{{" <> fdName field <> "}}{{/" <> sectionName <> "}}"
-
-    -- Multiple fields: render as labeled lines
-    fields ->
-      let fieldLines = map (generateFieldLine ir 1) (filter (not . isInternalField) fields)
-      in T.unlines $ [ind <> "{{#" <> sectionName <> "}}"] ++ fieldLines ++ [ind <> "{{/" <> sectionName <> "}}"]
-
--- | Generate template for a non-union method return
-generateSingleTemplate :: IR -> MethodDef -> GeneratedTemplate
-generateSingleTemplate ir method =
-  let body = typeRefToMustache ir 0 (mdReturns method)
-      header = "{{! " <> mdFullPath method <> " }}"
-      template = if T.null body || body == "{{.}}"
-                 then header <> "\n{{.}}"  -- Fallback for simple types
-                 else header <> "\n" <> body
   in GeneratedTemplate
     { gtNamespace = mdNamespace method
     , gtMethod = mdName method
     , gtTemplate = template
     , gtPath = T.unpack (mdNamespace method) </> T.unpack (mdName method) <.> "mustache"
+    , gtVariants = variants
+    , gtReturnType = typeName
     }
+
+-- | Generate header comment with method info and variant list
+generateHeader :: MethodDef -> Maybe Text -> [Text] -> Text
+generateHeader method mTypeName variants =
+  let typeInfo = maybe "" (\t -> " - returns: " <> t) mTypeName
+      variantList = if null variants
+                    then ""
+                    else "\n{{! Variants: " <> T.intercalate ", " variants <> " }}"
+  in "{{! " <> mdFullPath method <> typeInfo <> " }}" <> variantList
+
+-- | Generate template body for a method, returning (body, variants, typeName)
+generateMethodBody :: IR -> MethodDef -> (Text, [Text], Maybe Text)
+generateMethodBody ir method = case mdReturns method of
+  RefNamed name -> case Map.lookup name (irTypes ir) of
+    Just typeDef@TypeDef{tdKind = KindEnum _ variants} ->
+      -- Union type: generate sections for ALL variants (exhaustive)
+      let variantNames = map vdName variants
+          body = T.intercalate "\n" $ map (variantToMustache ir 0) variants
+      in (body, variantNames, Just name)
+    Just typeDef ->
+      -- Non-union named type
+      (typeDefToMustache ir 0 typeDef, [], Just name)
+    Nothing ->
+      -- Type not found
+      ("{{.}}", [], Just name)
+  other ->
+    -- Primitive or other
+    (typeRefToMustache ir 0 other, [], Nothing)
 
 -- | Generate all templates by building IR and iterating methods
 generateAllTemplates :: Path -> SynapseM [GeneratedTemplate]
-generateAllTemplates path = do
+generateAllTemplates = generateTemplatesFor AllTemplates
+
+-- | Generate templates with filtering
+generateTemplatesFor :: TemplateFilter -> Path -> SynapseM [GeneratedTemplate]
+generateTemplatesFor filt path = do
   ir <- buildIR path
   let methods = Map.elems (irMethods ir)
-      templates = concatMap (generateTemplates ir) methods
+      filtered = filterMethods filt methods
+      templates = map (generateTemplate ir) filtered
       -- Filter out trivial templates that just render {{.}}
       nonTrivial = filter (not . isTrivialTemplate) templates
   pure nonTrivial
+
+-- | Filter methods based on TemplateFilter
+filterMethods :: TemplateFilter -> [MethodDef] -> [MethodDef]
+filterMethods AllTemplates methods = methods
+filterMethods (NamespaceFilter nss) methods =
+  filter (\m -> mdNamespace m `elem` nss) methods
+filterMethods (MethodFilter pairs) methods =
+  filter (\m -> (mdNamespace m, mdName m) `elem` pairs) methods
+filterMethods (ExcludeFilter nss) methods =
+  filter (\m -> mdNamespace m `notElem` nss) methods
 
 -- | Generate templates with callback for streaming output
 generateAllTemplatesWithCallback
@@ -176,19 +205,44 @@ generateAllTemplatesWithCallback callback path = do
 isTrivialTemplate :: GeneratedTemplate -> Bool
 isTrivialTemplate gt =
   let body = T.drop 1 $ T.dropWhile (/= '\n') (gtTemplate gt)
-  in T.strip body == "{{.}}"
+      -- Also drop the variants comment line if present
+      bodyWithoutComments = T.unlines $ filter (not . isComment) $ T.lines body
+  in T.strip bodyWithoutComments == "{{.}}"
+  where
+    isComment line = "{{!" `T.isPrefixOf` T.strip line
+
+-- ============================================================================
+-- Variant to Mustache (Exhaustive)
+-- ============================================================================
+
+-- | Convert a variant to a Mustache section
+--
+-- This ensures EVERY variant gets a section, making the mapping exhaustive.
+variantToMustache :: IR -> Int -> VariantDef -> Text
+variantToMustache ir indent VariantDef{..} =
+  let ind = indentText indent
+      sectionName = vdName
+      displayFields = filter (not . isInternalField) vdFields
+  in case displayFields of
+    -- No displayable fields: empty section (still present for exhaustiveness)
+    [] -> ind <> "{{#" <> sectionName <> "}}{{/" <> sectionName <> "}}"
+
+    -- Single content-like field: inline rendering
+    [field] | isContentField field ->
+      ind <> "{{#" <> sectionName <> "}}{{" <> fdName field <> "}}{{/" <> sectionName <> "}}"
+
+    -- Multiple fields: render as labeled lines
+    fields ->
+      let fieldLines = map (generateFieldLine ir (indent + 1)) fields
+          openTag = ind <> "{{#" <> sectionName <> "}}"
+          closeTag = ind <> "{{/" <> sectionName <> "}}"
+      in T.unlines $ [openTag] ++ fieldLines ++ [closeTag]
 
 -- ============================================================================
 -- Type Reference to Mustache
 -- ============================================================================
 
 -- | Convert a TypeRef to Mustache template text
---
--- This is the core conversion function that handles:
--- - Primitives: {{.}}
--- - Named types: look up and expand
--- - Arrays: {{#.}}...{{/.}}
--- - Optionals: same as inner type
 typeRefToMustache :: IR -> Int -> TypeRef -> Text
 typeRefToMustache ir indent = \case
   -- Primitives render as the current value
@@ -223,9 +277,9 @@ typeRefToMustache ir indent = \case
 -- | Convert a TypeDef to Mustache template text
 typeDefToMustache :: IR -> Int -> TypeDef -> Text
 typeDefToMustache ir indent TypeDef{..} = case tdKind of
-  -- Discriminated union: render each variant as a section
-  KindEnum discriminator variants ->
-    generateUnionTemplate ir indent discriminator variants
+  -- Discriminated union: render ALL variants as sections (exhaustive)
+  KindEnum _discriminator variants ->
+    T.intercalate "\n" $ map (variantToMustache ir indent) variants
 
   -- Struct: render each field
   KindStruct fields ->
@@ -238,55 +292,19 @@ typeDefToMustache ir indent TypeDef{..} = case tdKind of
   KindAlias target -> typeRefToMustache ir indent target
 
 -- ============================================================================
--- Union Template Generation
+-- Struct Template Generation
 -- ============================================================================
 
--- | Generate template for a discriminated union (oneOf)
---
--- Each variant becomes a mustache section based on its variant name.
--- We use the variant name as the section key since mustache will only
--- render the section if that key is present/truthy in the data.
---
--- Example output:
--- @
--- {{#context}}
--- tree_id: {{tree_id}}
--- {{/context}}
--- {{#delta}}
--- {{content}}{{/delta}}
--- {{#error}}
--- Error: {{message}}
--- {{/error}}
--- @
-generateUnionTemplate :: IR -> Int -> Text -> [VariantDef] -> Text
-generateUnionTemplate ir indent _discriminator variants =
-  T.intercalate "\n" $ map (generateVariantSection ir indent) variants
+-- | Generate template for a struct
+generateStructTemplate :: IR -> Int -> [FieldDef] -> Text
+generateStructTemplate ir indent fields =
+  let displayFields = filter (not . isInternalField) fields
+      fieldLines = map (generateFieldLine ir indent) displayFields
+  in T.unlines fieldLines
 
--- | Generate a section for a single variant
-generateVariantSection :: IR -> Int -> VariantDef -> Text
-generateVariantSection ir indent VariantDef{..} =
-  let ind = indentText indent
-      sectionName = vdName
-  in case vdFields of
-    -- No fields: just render the variant name presence
-    [] -> ind <> "{{#" <> sectionName <> "}}{{/" <> sectionName <> "}}"
-
-    -- Single field named "content" or similar: inline rendering
-    [field] | isContentField field ->
-      ind <> "{{#" <> sectionName <> "}}{{" <> fdName field <> "}}{{/" <> sectionName <> "}}"
-
-    -- Multiple fields: render as labeled lines
-    fields ->
-      let fieldLines = map (generateFieldLine ir (indent + 1)) fields
-          -- Special handling for error variants
-          prefix = if vdName == "error"
-                   then [ind <> "{{#" <> sectionName <> "}}", indentText (indent + 1) <> "Error:"]
-                   else [ind <> "{{#" <> sectionName <> "}}"]
-      in T.unlines $ prefix ++ fieldLines ++ [ind <> "{{/" <> sectionName <> "}}"]
-
--- | Check if a field is a "content" field (for inline rendering)
-isContentField :: FieldDef -> Bool
-isContentField FieldDef{..} = fdName `elem` ["content", "message", "text", "data"]
+-- ============================================================================
+-- Field Generation
+-- ============================================================================
 
 -- | Generate a labeled line for a field
 generateFieldLine :: IR -> Int -> FieldDef -> Text
@@ -328,18 +346,12 @@ generateFieldValue ir typeRef fieldName = case typeRef of
   RefUnknown -> "{{" <> fieldName <> "}}"
 
 -- ============================================================================
--- Struct Template Generation
+-- Field Classification
 -- ============================================================================
 
--- | Generate template for a struct
---
--- Renders each field on its own line with a label.
--- Filters out internal fields like "type" (discriminator).
-generateStructTemplate :: IR -> Int -> [FieldDef] -> Text
-generateStructTemplate ir indent fields =
-  let displayFields = filter (not . isInternalField) fields
-      fieldLines = map (generateFieldLine ir indent) displayFields
-  in T.unlines fieldLines
+-- | Check if a field is a "content" field (for inline rendering)
+isContentField :: FieldDef -> Bool
+isContentField FieldDef{..} = fdName `elem` ["content", "message", "text", "data"]
 
 -- | Check if a field is internal (shouldn't be displayed)
 isInternalField :: FieldDef -> Bool

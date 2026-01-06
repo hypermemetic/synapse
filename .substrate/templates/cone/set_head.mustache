@@ -1,0 +1,9 @@
+{{! cone.set_head - returns: SetHeadResult }}
+{{! Variants: head_updated, error }}
+{{#head_updated}}
+  cone_id: {{cone_id}}
+  new_head: {{new_head}}
+  old_head: {{old_head}}
+{{/head_updated}}
+
+{{#error}}{{message}}{{/error}}

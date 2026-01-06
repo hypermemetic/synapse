@@ -1,0 +1,24 @@
+{{! plexus.call - returns: PlexusStreamItem }}
+{{! Variants: data, progress, error, done }}
+{{#data}}
+  content: {{content}}
+  content_type: {{content_type}}
+  metadata: {{metadata}}
+{{/data}}
+
+{{#progress}}
+  message: {{message}}
+  metadata: {{metadata}}
+  percentage: {{percentage}}
+{{/progress}}
+
+{{#error}}
+  code: {{code}}
+  message: {{message}}
+  metadata: {{metadata}}
+  recoverable: {{recoverable}}
+{{/error}}
+
+{{#done}}
+  metadata: {{metadata}}
+{{/done}}

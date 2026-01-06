@@ -1,0 +1,19 @@
+{{! cone.chat - returns: ChatEvent }}
+{{! Variants: chat_start, chat_content, chat_complete, error }}
+{{#chat_start}}
+  cone_id: {{cone_id}}
+  user_position: {{user_position}}
+{{/chat_start}}
+
+{{#chat_content}}
+  cone_id: {{cone_id}}
+  content: {{content}}
+{{/chat_content}}
+
+{{#chat_complete}}
+  cone_id: {{cone_id}}
+  new_head: {{new_head}}
+  usage: {{usage}}
+{{/chat_complete}}
+
+{{#error}}{{message}}{{/error}}
