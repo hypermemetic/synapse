@@ -34,7 +34,6 @@ import Synapse.CLI.Parse (parseParams)
 import qualified Synapse.CLI.Parse as Parse
 import Synapse.IR.Types (IR, irMethods)
 import qualified Data.Map.Strict as Map
-import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
 import Synapse.IR.Builder (buildIR)
@@ -52,8 +51,7 @@ data Args = Args
   , argRaw       :: Bool          -- ^ Output raw content (no templates)
   , argDryRun    :: Bool
   , argSchema    :: Bool          -- ^ Show raw schema JSON
-  , argGenerate  :: Bool          -- ^ Generate templates from schemas (legacy)
-  , argGenerateIR :: Bool         -- ^ Generate templates from IR (new)
+  , argGenerate  :: Bool          -- ^ Generate templates from IR
   , argEmitIR    :: Bool          -- ^ Emit IR for code generation
   , argForce     :: Bool          -- ^ Force overwrite modified templates (unused)
   , argParams    :: Maybe Text    -- ^ JSON params via -p
@@ -110,25 +108,14 @@ dispatch Args{..} rendererCfg = do
             Left err -> throwNav $ FetchError err pathSegs
             Right val -> liftIO $ LBS.putStrLn $ encode val
 
-        -- Mode 3a: Generate templates (legacy JSON Schema approach)
+        -- Mode 3: Generate templates (IR-driven approach)
         else if argGenerate
-        then do
-          let baseDir = ".substrate/templates"
-              writeAndLog gt = do
-                writeGeneratedTemplate baseDir gt
-                TIO.putStrLn $ "  " <> T.pack (gtPath gt)
-          liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
-          count <- generateAllTemplatesWithCallback writeAndLog pathSegs
-          liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
-
-        -- Mode 3b: Generate templates (IR-driven approach)
-        else if argGenerateIR
         then do
           let baseDir = ".substrate/templates"
               writeAndLog gt = do
                 writeGeneratedTemplateIR baseDir gt
                 TIO.putStrLn $ "  " <> T.pack (TemplateIR.gtPath gt)
-          liftIO $ TIO.putStrLn $ "Generating templates (IR) in " <> T.pack baseDir <> "..."
+          liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
           count <- TemplateIR.generateAllTemplatesWithCallback writeAndLog pathSegs
           liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
 
@@ -371,16 +358,7 @@ renderParseError = \case
   Parse.TypeNotFound name ->
     "Type not found in IR: " <> T.unpack name
 
--- | Write a generated template to disk (no logging) - legacy version
-writeGeneratedTemplate :: FilePath -> GeneratedTemplate -> IO ()
-writeGeneratedTemplate baseDir gt = do
-  let fullPath = baseDir </> gtPath gt
-  createDirectoryIfMissing True (baseDir </> T.unpack (gtNamespace gt))
-  TIO.writeFile fullPath (gtTemplate gt)
-  where
-    (</>) = \a b -> a ++ "/" ++ b
-
--- | Write a generated template to disk (no logging) - IR version
+-- | Write a generated template to disk (no logging)
 writeGeneratedTemplateIR :: FilePath -> TemplateIR.GeneratedTemplate -> IO ()
 writeGeneratedTemplateIR baseDir gt = do
   let fullPath = baseDir </> TemplateIR.gtPath gt
@@ -501,10 +479,7 @@ plexusArgsParser = do
    <> help "Fetch raw schema JSON for path" )
   argGenerate <- switch
     ( long "generate-templates" <> short 'g'
-   <> help "Generate mustache templates from schemas (legacy)" )
-  argGenerateIR <- switch
-    ( long "generate-templates-ir"
-   <> help "Generate mustache templates from IR (structured)" )
+   <> help "Generate mustache templates from IR" )
   argEmitIR <- switch
     ( long "emit-ir" <> short 'i'
    <> help "Emit IR for code generation (JSON)" )

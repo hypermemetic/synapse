@@ -19,9 +19,7 @@ library
     Synapse.Monad
     Synapse.Algebra.Navigate
     Synapse.Algebra.Render
-    Synapse.Algebra.Complete
     Synapse.Algebra.Walk
-    Synapse.Algebra.TemplateGen
     Synapse.Algebra.Recursion
     Synapse.Transport
     Synapse.Cache
