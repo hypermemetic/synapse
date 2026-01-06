@@ -31,6 +31,7 @@ library
     Synapse.CLI.Help
     Synapse.CLI.Parse
     Synapse.CLI.Support
+    Synapse.CLI.Template
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,

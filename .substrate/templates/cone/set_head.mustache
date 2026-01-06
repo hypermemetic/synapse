@@ -1,2 +1,8 @@
 {{! cone.set_head }}
-{{cone_id}} {{new_head}} {{old_head}} {{message}}
+{{#head_updated}}
+  cone_id: {{cone_id}}
+  new_head: {{new_head}}
+  old_head: {{old_head}}
+{{/head_updated}}
+
+{{#error}}{{message}}{{/error}}

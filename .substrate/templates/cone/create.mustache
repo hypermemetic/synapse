@@ -1,2 +1,7 @@
 {{! cone.create }}
-{{cone_id}} {{head}} {{message}}
+{{#created}}
+  head: {{head}}
+  id: {{id}}
+{{/created}}
+
+{{#error}}{{message}}{{/error}}

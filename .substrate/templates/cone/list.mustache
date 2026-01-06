@@ -1,2 +1,6 @@
 {{! cone.list }}
-{{cones}} {{message}}
+{{#ok}}
+  sessions: {{#sessions}}...{{/sessions}}
+{{/ok}}
+
+{{#error}}{{message}}{{/error}}

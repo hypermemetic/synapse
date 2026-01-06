@@ -1,2 +1,6 @@
 {{! claudecode.get }}
-{{config}} {{message}}
+{{#ok}}
+  config: {{config}}
+{{/ok}}
+
+{{#error}}{{message}}{{/error}}

@@ -1,2 +1,6 @@
 {{! cone.get }}
-{{cone}} {{message}}
+{{#ok}}
+  config: {{config}}
+{{/ok}}
+
+{{#error}}{{message}}{{/error}}

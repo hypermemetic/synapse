@@ -1,2 +1,6 @@
 {{! claudecode.delete }}
-{{id}} {{message}}
+{{#deleted}}
+  id: {{id}}
+{{/deleted}}
+
+{{#error}}{{message}}{{/error}}

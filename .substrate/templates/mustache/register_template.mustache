@@ -1,0 +1,23 @@
+{{! mustache.register_template }}
+{{#rendered}}
+  output: {{output}}
+{{/rendered}}
+
+{{#registered}}
+  template: {{template}}
+{{/registered}}
+
+{{#template}}
+  template: {{template}}
+{{/template}}
+
+{{#not_found}}{{message}}{{/not_found}}
+{{#templates}}
+  templates: {{#templates}}...{{/templates}}
+{{/templates}}
+
+{{#deleted}}
+  count: {{count}}
+{{/deleted}}
+
+{{#error}}{{message}}{{/error}}
