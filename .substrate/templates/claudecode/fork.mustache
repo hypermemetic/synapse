@@ -1,2 +1,7 @@
 {{! claudecode.fork }}
-{{head}} {{id}} {{message}}
+{{#forked}}
+  head: {{head}}
+  id: {{id}}
+{{/forked}}
+
+{{#error}}{{message}}{{/error}}
