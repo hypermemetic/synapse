@@ -1,14 +1,13 @@
 {{! solar.mars.phobos.info - returns: SolarEvent }}
 {{! Variants: body, system }}
 {{#body}}
-  body_type: {{body_type}}
+  body_type: {{{body_type}}}
   mass_kg: {{mass_kg}}
   name: {{name}}
-  orbital_period_days: {{orbital_period_days}}
-  parent: {{parent}}
+  orbital_period_days: {{#orbital_period_days}}{{.}}{{/orbital_period_days}}{{^orbital_period_days}}null{{/orbital_period_days}}
+  parent: {{#parent}}{{.}}{{/parent}}{{^parent}}null{{/parent}}
   radius_km: {{radius_km}}
 {{/body}}
-
 {{#system}}
   moon_count: {{moon_count}}
   planet_count: {{planet_count}}

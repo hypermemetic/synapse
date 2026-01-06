@@ -2,8 +2,7 @@
 {{! Variants: head_updated, error }}
 {{#head_updated}}
   cone_id: {{cone_id}}
-  new_head: {{new_head}}
-  old_head: {{old_head}}
+  new_head: node_id={{new_head.node_id}} tree_id={{new_head.tree_id}}
+  old_head: node_id={{old_head.node_id}} tree_id={{old_head.tree_id}}
 {{/head_updated}}
-
-{{#error}}{{message}}{{/error}}
+{{#error}}{{{message}}}{{/error}}

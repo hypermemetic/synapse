@@ -1,7 +1,6 @@
 {{! claudecode.get - returns: GetResult }}
 {{! Variants: cone_data, error }}
 {{#cone_data}}
-  cone: {{cone}}
+  cone: created_at={{cone.created_at}} head={{cone.head}} id={{cone.id}} metadata={{cone.metadata}} model_id={{cone.model_id}} name={{cone.name}} system_prompt={{cone.system_prompt}} updated_at={{cone.updated_at}}
 {{/cone_data}}
-
-{{#error}}{{message}}{{/error}}
+{{#error}}{{{message}}}{{/error}}
