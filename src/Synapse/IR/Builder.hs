@@ -61,8 +61,14 @@ irAlgebra (PluginF schema path childIRs) = do
   let childIR = foldr mergeIR emptyIR childIRs
   let pluginMethods = map mdName (Map.elems localMethods)
 
+  -- Use this plugin's hash if at root (path is empty or just namespace)
+  let thisHash = if null path || path == [namespace]
+                 then Just (psHash schema)
+                 else irHash childIR
+
   pure $ IR
     { irVersion = "1.0"
+    , irHash = thisHash
     , irTypes = Map.union localTypes (irTypes childIR)  -- Local wins on conflict
     , irMethods = Map.union localMethods (irMethods childIR)
     , irPlugins = Map.insert namespace pluginMethods (irPlugins childIR)
@@ -74,6 +80,7 @@ irAlgebra (MethodF method namespace path) = do
   let (types, mdef) = extractMethodDef namespace fullPath method
   pure $ IR
     { irVersion = "1.0"
+    , irHash = Nothing  -- Methods don't carry hash
     , irTypes = types
     , irMethods = Map.singleton fullPath mdef
     , irPlugins = Map.singleton namespace [methodName method]
@@ -242,15 +249,28 @@ extractVariant _ = Nothing
 inferDiscriminator :: [VariantDef] -> Text
 inferDiscriminator _ = "type"  -- Convention: always "type"
 
+-- | Extract const value from a simple string variant
+-- Matches schema like: { "const": "pending", "type": "string", "description": "..." }
+extractStringConst :: Value -> Maybe Text
+extractStringConst (Object o) =
+  case (KM.lookup "const" o, KM.lookup "type" o) of
+    (Just (String c), Just (String "string")) -> Just c
+    _ -> Nothing
+extractStringConst _ = Nothing
+
 -- ============================================================================
 -- Type Extraction from $defs
 -- ============================================================================
 
--- | Extract type definitions from $defs
+-- | Extract type definitions from $defs or definitions (draft-07 compatibility)
 extractDefs :: KM.KeyMap Value -> Map Text TypeDef
-extractDefs o = case KM.lookup "$defs" o of
-  Just (Object defs) -> Map.fromList $ mapMaybe extractTypeDef (KM.toList defs)
-  _ -> Map.empty
+extractDefs o =
+  let defs = case KM.lookup "$defs" o of
+        Just (Object d) -> d
+        _ -> case KM.lookup "definitions" o of
+          Just (Object d) -> d
+          _ -> KM.empty
+  in Map.fromList $ mapMaybe extractTypeDef (KM.toList defs)
 
 -- | Extract a type definition from a $defs entry
 extractTypeDef :: (K.Key, Value) -> Maybe (Text, TypeDef)
@@ -267,13 +287,17 @@ inferTypeKind :: KM.KeyMap Value -> TypeKind
 inferTypeKind o
   -- Check for oneOf (enum)
   | Just (Array variants) <- KM.lookup "oneOf" o =
-      let variantDefs = mapMaybe extractVariant (V.toList variants)
-      in KindEnum "type" variantDefs
+      -- First check if this is a simple string enum (all variants are {const: X, type: "string"})
+      let maybeStringValues = mapMaybe extractStringConst (V.toList variants)
+      in if length maybeStringValues == V.length variants && not (null maybeStringValues)
+         then KindStringEnum maybeStringValues
+         else let variantDefs = mapMaybe extractVariant (V.toList variants)
+              in KindEnum "type" variantDefs
 
   -- Check for enum (simple string enum)
   | Just (Array values) <- KM.lookup "enum" o =
-      let variants = [ VariantDef (asText v) Nothing [] | v <- V.toList values ]
-      in KindEnum "value" variants
+      let stringValues = [ asText v | v <- V.toList values ]
+      in KindStringEnum stringValues
 
   -- Check for object with properties (struct)
   | Just (Object props) <- KM.lookup "properties" o =

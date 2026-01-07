@@ -46,6 +46,7 @@ module Synapse.IR.Types
   , inferStreaming
   ) where
 
+import Control.Applicative ((<|>))
 import Data.Aeson
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -60,6 +61,7 @@ import GHC.Generics (Generic)
 -- | The complete IR for code generation
 data IR = IR
   { irVersion   :: Text                    -- ^ IR format version
+  , irHash      :: Maybe Text              -- ^ Plexus hash for versioning
   , irTypes     :: Map Text TypeDef        -- ^ All types, deduplicated by name
   , irMethods   :: Map Text MethodDef      -- ^ All methods, keyed by full path (e.g., "cone.chat")
   , irPlugins   :: Map Text [Text]         -- ^ Plugin -> method names mapping
@@ -71,6 +73,7 @@ data IR = IR
 emptyIR :: IR
 emptyIR = IR
   { irVersion = "1.0"
+  , irHash = Nothing
   , irTypes = Map.empty
   , irMethods = Map.empty
   , irPlugins = Map.empty
@@ -80,6 +83,7 @@ emptyIR = IR
 mergeIR :: IR -> IR -> IR
 mergeIR a b = IR
   { irVersion = irVersion a
+  , irHash = irHash a <|> irHash b  -- Take first available hash
   , irTypes = Map.union (irTypes a) (irTypes b)  -- Left-biased, first definition wins
   , irMethods = Map.union (irMethods a) (irMethods b)
   , irPlugins = Map.unionWith (++) (irPlugins a) (irPlugins b)
@@ -106,6 +110,9 @@ data TypeKind
   | KindEnum
       { keDiscriminator :: Text      -- ^ Field that discriminates (e.g., "type")
       , keVariants :: [VariantDef]   -- ^ Possible variants
+      }
+  | KindStringEnum
+      { kseValues :: [Text]          -- ^ String literal values (e.g., ["pending", "completed"])
       }
   | KindAlias
       { kaTarget :: TypeRef          -- ^ What this aliases to
