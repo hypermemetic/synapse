@@ -54,8 +54,8 @@ import Synapse.Schema.Types
 
 -- | Environment for Synapse operations
 data SynapseEnv = SynapseEnv
-  { seHost    :: !Text                        -- ^ Plexus host
-  , sePort    :: !Int                         -- ^ Plexus port
+  { seHost    :: !Text                        -- ^ Hub host
+  , sePort    :: !Int                         -- ^ Hub port
   , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
   }

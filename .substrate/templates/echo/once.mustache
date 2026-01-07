@@ -1,2 +1,6 @@
-{{! echo.once }}
-{{count}} {{message}}
+{{! echo.once - returns: EchoEvent }}
+{{! Variants: echo }}
+{{#echo}}
+  count: {{count}}
+  message: {{{message}}}
+{{/echo}}

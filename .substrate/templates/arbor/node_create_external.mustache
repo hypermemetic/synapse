@@ -1,2 +1,127 @@
-{{! arbor.node_create_external }}
-{{tree_id}} {{tree_ids}} {{new_count}} {{owner_id}} {{scheduled_at}} {{archived_at}} {{refs}} {{node_id}} {{parent}} {{new_id}} {{old_id}} {{tree}} {{skeleton}} {{node}} {{children}} {{path}} {{nodes}} {{handles}} {{leaves}} {{node_ids}} {{render}}
+{{! arbor.node_create_external - returns: ArborEvent }}
+{{! Variants: tree_created, tree_deleted, tree_updated, tree_list, tree_claimed, tree_released, tree_scheduled_deletion, tree_archived, tree_refs, node_created, node_updated, node_deleted, node_claimed, node_released, node_scheduled_deletion, node_archived, node_refs, tree_data, tree_skeleton, node_data, node_children, node_parent, context_path, context_path_data, context_handles, context_leaves, trees_scheduled, nodes_scheduled, trees_archived, tree_render }}
+{{#tree_created}}
+  tree_id: {{tree_id}}
+{{/tree_created}}
+{{#tree_deleted}}
+  tree_id: {{tree_id}}
+{{/tree_deleted}}
+{{#tree_updated}}
+  tree_id: {{tree_id}}
+{{/tree_updated}}
+{{#tree_list}}
+  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+{{/tree_list}}
+{{#tree_claimed}}
+  new_count: {{new_count}}
+  owner_id: {{owner_id}}
+  tree_id: {{tree_id}}
+{{/tree_claimed}}
+{{#tree_released}}
+  new_count: {{new_count}}
+  owner_id: {{owner_id}}
+  tree_id: {{tree_id}}
+{{/tree_released}}
+{{#tree_scheduled_deletion}}
+  scheduled_at: {{scheduled_at}}
+  tree_id: {{tree_id}}
+{{/tree_scheduled_deletion}}
+{{#tree_archived}}
+  archived_at: {{archived_at}}
+  tree_id: {{tree_id}}
+{{/tree_archived}}
+{{#tree_refs}}
+  refs: owners={{refs.owners}} ref_count={{refs.ref_count}}
+  tree_id: {{tree_id}}
+{{/tree_refs}}
+{{#node_created}}
+  node_id: {{node_id}}
+  parent: {{#parent}}{{.}}{{/parent}}{{^parent}}null{{/parent}}
+  tree_id: {{tree_id}}
+{{/node_created}}
+{{#node_updated}}
+  new_id: {{new_id}}
+  old_id: {{old_id}}
+  tree_id: {{tree_id}}
+{{/node_updated}}
+{{#node_deleted}}
+  node_id: {{node_id}}
+  tree_id: {{tree_id}}
+{{/node_deleted}}
+{{#node_claimed}}
+  new_count: {{new_count}}
+  node_id: {{node_id}}
+  owner_id: {{owner_id}}
+  tree_id: {{tree_id}}
+{{/node_claimed}}
+{{#node_released}}
+  new_count: {{new_count}}
+  node_id: {{node_id}}
+  owner_id: {{owner_id}}
+  tree_id: {{tree_id}}
+{{/node_released}}
+{{#node_scheduled_deletion}}
+  node_id: {{node_id}}
+  scheduled_at: {{scheduled_at}}
+  tree_id: {{tree_id}}
+{{/node_scheduled_deletion}}
+{{#node_archived}}
+  archived_at: {{archived_at}}
+  node_id: {{node_id}}
+  tree_id: {{tree_id}}
+{{/node_archived}}
+{{#node_refs}}
+  node_id: {{node_id}}
+  refs: owners={{refs.owners}} ref_count={{refs.ref_count}}
+  tree_id: {{tree_id}}
+{{/node_refs}}
+{{#tree_data}}
+  tree: archived_at={{tree.archived_at}} created_at={{tree.created_at}} id={{tree.id}} metadata={{tree.metadata}} nodes={{tree.nodes}} refs={{tree.refs}} root={{tree.root}} scheduled_deletion_at={{tree.scheduled_deletion_at}} state={{tree.state}} updated_at={{tree.updated_at}}
+{{/tree_data}}
+{{#tree_skeleton}}
+  skeleton: id={{skeleton.id}} nodes={{skeleton.nodes}} root={{skeleton.root}} state={{skeleton.state}}
+{{/tree_skeleton}}
+{{#node_data}}
+  node: archived_at={{node.archived_at}} children={{node.children}} created_at={{node.created_at}} data={{node.data}} id={{node.id}} metadata={{node.metadata}} parent={{node.parent}} refs={{node.refs}} scheduled_deletion_at={{node.scheduled_deletion_at}} state={{node.state}}
+  tree_id: {{tree_id}}
+{{/node_data}}
+{{#node_children}}
+  children: {{#children}}...{{/children}}
+  node_id: {{node_id}}
+  tree_id: {{tree_id}}
+{{/node_children}}
+{{#node_parent}}
+  node_id: {{node_id}}
+  parent: {{#parent}}{{.}}{{/parent}}{{^parent}}null{{/parent}}
+  tree_id: {{tree_id}}
+{{/node_parent}}
+{{#context_path}}
+  path: {{#path}}...{{/path}}
+  tree_id: {{tree_id}}
+{{/context_path}}
+{{#context_path_data}}
+  nodes: {{#nodes}}...{{/nodes}}
+  tree_id: {{tree_id}}
+{{/context_path_data}}
+{{#context_handles}}
+  handles: {{#handles}}...{{/handles}}
+  tree_id: {{tree_id}}
+{{/context_handles}}
+{{#context_leaves}}
+  leaves: {{#leaves}}...{{/leaves}}
+  tree_id: {{tree_id}}
+{{/context_leaves}}
+{{#trees_scheduled}}
+  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+{{/trees_scheduled}}
+{{#nodes_scheduled}}
+  node_ids: {{#node_ids}}...{{/node_ids}}
+  tree_id: {{tree_id}}
+{{/nodes_scheduled}}
+{{#trees_archived}}
+  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+{{/trees_archived}}
+{{#tree_render}}
+  render: {{render}}
+  tree_id: {{tree_id}}
+{{/tree_render}}
