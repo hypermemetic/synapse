@@ -1,2 +1,6 @@
-{{! cone.list }}
-{{cones}} {{message}}
+{{! cone.list - returns: ListResult }}
+{{! Variants: cone_list, error }}
+{{#cone_list}}
+  cones: {{#cones}}...{{/cones}}
+{{/cone_list}}
+{{#error}}{{{message}}}{{/error}}

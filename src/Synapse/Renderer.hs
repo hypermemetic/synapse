@@ -1,9 +1,11 @@
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 -- | Template-based output renderer
 --
 -- Runtime-configurable output rendering using Mustache templates.
--- Templates map content_type to human-readable output.
+-- Templates are resolved by METHOD name (not content_type), supporting
+-- unified templates with all variants visible.
 --
 -- = Template Resolution
 --
@@ -12,11 +14,18 @@
 -- 2. User global: @~/.config/synapse/templates/{namespace}/{method}.mustache@
 -- 3. Built-in defaults
 --
+-- = Method Hints
+--
+-- When a method path is set via 'withMethodPath', template lookup uses
+-- that path instead of parsing the content_type. This allows unified
+-- templates that handle all variants of a method's return type.
+--
 -- = Usage
 --
 -- @
 -- cfg <- defaultRendererConfig
--- result <- renderItem cfg item
+-- let cfg' = withMethodPath cfg ["cone", "chat"]
+-- result <- renderItem cfg' item
 -- case result of
 --   Just text -> TIO.putStrLn text
 --   Nothing   -> printJson item  -- fallback
@@ -25,6 +34,7 @@ module Synapse.Renderer
   ( -- * Configuration
     RendererConfig(..)
   , defaultRendererConfig
+  , withMethodPath
   , OutputMode(..)
 
     -- * Rendering
@@ -35,6 +45,7 @@ module Synapse.Renderer
 
     -- * Template Resolution
   , resolveTemplate
+  , resolveTemplateForMethod
   , templateSearchPaths
 
     -- * Template Loading
@@ -65,7 +76,13 @@ import Text.Mustache.Compile (localAutomaticCompile)
 import Text.Mustache.Render (substituteValue)
 import qualified Text.Mustache.Types as MT
 
-import Plexus.Types (PlexusStreamItem(..))
+import Synapse.Schema.Types
+  ( HubStreamItem
+  , pattern HubData
+  , pattern HubProgress
+  , pattern HubError
+  , pattern HubDone
+  )
 
 -- ============================================================================
 -- Types
@@ -83,6 +100,7 @@ data RendererConfig = RendererConfig
   { rcSearchPaths :: [FilePath]     -- ^ Template search paths
   , rcMode        :: OutputMode     -- ^ Output mode
   , rcCache       :: TemplateCache  -- ^ Template cache
+  , rcMethodPath  :: Maybe [Text]   -- ^ Method path hint for template lookup
   }
 
 -- | Template cache to avoid re-parsing
@@ -105,7 +123,19 @@ defaultRendererConfig = do
     { rcSearchPaths = paths
     , rcMode = ModeTemplate
     , rcCache = cache
+    , rcMethodPath = Nothing
     }
+
+-- | Set the method path for template resolution
+--
+-- When set, template lookup will use this path instead of parsing
+-- the content_type. This allows unified templates that handle all
+-- variants of a method's return type.
+--
+-- Example: @withMethodPath cfg ["cone", "chat"]@ will look for
+-- @cone/chat.mustache@ regardless of the content_type.
+withMethodPath :: RendererConfig -> [Text] -> RendererConfig
+withMethodPath cfg path = cfg { rcMethodPath = Just path }
 
 -- | Get template search paths
 templateSearchPaths :: IO [FilePath]
@@ -121,17 +151,26 @@ templateSearchPaths = do
 -- Template Resolution
 -- ============================================================================
 
--- | Resolve template path for a content type
--- Content type format: "namespace.method" (e.g., "echo.once", "arbor.tree_list")
+-- | Resolve template path for a method path
+--
 -- Search order:
---   1. {searchPath}/{namespace}/{event}.mustache (exact match)
+--   1. {searchPath}/{namespace}/{method}.mustache (exact match)
 --   2. {searchPath}/{namespace}/default.mustache (namespace default)
 --   3. {searchPath}/default.mustache (global default)
-resolveTemplate :: RendererConfig -> Text -> IO (Maybe FilePath)
-resolveTemplate cfg contentType = do
-  let (namespace, method) = parseContentType contentType
+resolveTemplateForMethod :: RendererConfig -> [Text] -> IO (Maybe FilePath)
+resolveTemplateForMethod cfg methodPath = case methodPath of
+  [] -> pure Nothing
+  [method] -> resolveTemplateByParts cfg "default" method
+  parts ->
+    let namespace = T.intercalate "." (init parts)
+        method = last parts
+    in resolveTemplateByParts cfg namespace method
+
+-- | Resolve template by namespace and method parts
+resolveTemplateByParts :: RendererConfig -> Text -> Text -> IO (Maybe FilePath)
+resolveTemplateByParts cfg namespace method = do
   let candidates =
-        -- Exact event match
+        -- Exact method match
         [ path </> T.unpack namespace </> T.unpack method <.> "mustache"
         | path <- rcSearchPaths cfg
         ]
@@ -143,7 +182,21 @@ resolveTemplate cfg contentType = do
         ++ [ path </> "default.mustache" | path <- rcSearchPaths cfg ]
   firstExisting candidates
 
--- | Parse content_type into (namespace, method)
+-- | Resolve template path for a content type (legacy, fallback)
+--
+-- Content type format: "namespace.variant" (e.g., "cone.start", "health.status")
+-- This is used when no method path hint is set.
+resolveTemplate :: RendererConfig -> Text -> IO (Maybe FilePath)
+resolveTemplate cfg contentType =
+  case rcMethodPath cfg of
+    -- Method path hint available: use it
+    Just methodPath -> resolveTemplateForMethod cfg methodPath
+    -- No hint: fall back to content_type parsing
+    Nothing -> do
+      let (namespace, method) = parseContentType contentType
+      resolveTemplateByParts cfg namespace method
+
+-- | Parse content_type into (namespace, method/variant)
 parseContentType :: Text -> (Text, Text)
 parseContentType ct = case T.splitOn "." ct of
   [ns, m] -> (ns, m)
@@ -189,19 +242,20 @@ getCachedTemplate cfg path = do
 -- ============================================================================
 
 -- | Render a stream item using templates
-renderItem :: RendererConfig -> PlexusStreamItem -> IO (Maybe Text)
+renderItem :: RendererConfig -> HubStreamItem -> IO (Maybe Text)
 renderItem cfg item = case rcMode cfg of
   ModeJson -> pure Nothing  -- Caller should use JSON
   ModeRaw  -> pure Nothing  -- Caller should extract content
   ModeTemplate -> case item of
-    StreamData _ _ contentType content ->
+    HubData _ _ contentType content ->
       renderValue cfg contentType content
-    StreamProgress _ _ msg _ ->
+    HubProgress _ _ msg _ ->
       pure $ Just msg
-    StreamError _ _ err _ ->
+    HubError _ _ err _ ->
       pure $ Just $ "Error: " <> err
-    StreamDone _ _ ->
+    HubDone _ _ ->
       pure Nothing
+    _ -> pure Nothing  -- Handle other variants (e.g., HubGuidance)
 
 -- | Render a value using template for content type
 renderValue :: RendererConfig -> Text -> Value -> IO (Maybe Text)
@@ -217,7 +271,25 @@ renderValue cfg contentType value = do
 
 -- | Render a value with a specific template
 renderWithTemplate :: Template -> Value -> Text
-renderWithTemplate template value = substituteValue template (toMustache value)
+renderWithTemplate template value =
+  let wrapped = wrapDiscriminatedUnion value
+  in substituteValue template (toMustache wrapped)
+
+-- | Wrap discriminated union data for mustache template compatibility
+--
+-- Templates expect variant data wrapped like: {"echo": {"count": 1, ...}}
+-- But actual responses are flat: {"type": "echo", "count": 1, ...}
+--
+-- This transforms flat discriminated unions into wrapped form so
+-- mustache sections like {{#echo}}...{{/echo}} will match.
+wrapDiscriminatedUnion :: Value -> Value
+wrapDiscriminatedUnion (Object obj) =
+  case KM.lookup "type" obj of
+    Just (String variant) ->
+      -- Wrap: {"variant": original_object}
+      Object $ KM.singleton (K.fromText variant) (Object obj)
+    _ -> Object obj
+wrapDiscriminatedUnion other = other
 
 -- ============================================================================
 -- Pretty Printing

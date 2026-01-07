@@ -1,2 +1,7 @@
-{{! claudecode.fork }}
-{{head}} {{id}} {{message}}
+{{! claudecode.fork - returns: ForkResult }}
+{{! Variants: forked, error }}
+{{#forked}}
+  head: node_id={{head.node_id}} tree_id={{head.tree_id}}
+  id: {{id}}
+{{/forked}}
+{{#error}}{{{message}}}{{/error}}

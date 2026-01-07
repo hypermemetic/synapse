@@ -1,2 +1,11 @@
-{{! bash.execute }}
-{{line}} {{code}}
+{{! bash.execute - returns: BashEvent }}
+{{! Variants: stdout, stderr, exit }}
+{{#stdout}}
+  line: {{line}}
+{{/stdout}}
+{{#stderr}}
+  line: {{line}}
+{{/stderr}}
+{{#exit}}
+  code: {{code}}
+{{/exit}}

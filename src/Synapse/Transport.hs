@@ -25,7 +25,6 @@ import qualified Data.Text as T
 
 import Substrate.Client (SubstrateConfig(..))
 import qualified Substrate.Transport as ST
-import Plexus.Types (PlexusStreamItem(..))
 
 import Synapse.Schema.Types
 import Synapse.Monad
@@ -54,7 +53,7 @@ fetchMethodSchema path methodName = do
     Right schema -> pure schema
 
 -- | Invoke a method and return stream items
-invoke :: Path -> Text -> Value -> SynapseM [PlexusStreamItem]
+invoke :: Path -> Text -> Value -> SynapseM [HubStreamItem]
 invoke namespacePath method params = do
   cfg <- getConfig
   result <- liftIO $ ST.invokeMethod cfg namespacePath method params
@@ -63,7 +62,7 @@ invoke namespacePath method params = do
     Right items -> pure items
 
 -- | Invoke with raw method path
-invokeRaw :: Text -> Value -> SynapseM [PlexusStreamItem]
+invokeRaw :: Text -> Value -> SynapseM [HubStreamItem]
 invokeRaw method params = do
   cfg <- getConfig
   result <- liftIO $ ST.invokeRaw cfg method params
@@ -72,7 +71,7 @@ invokeRaw method params = do
     Right items -> pure items
 
 -- | Invoke a method with streaming output - calls callback for each item
-invokeStreaming :: Path -> Text -> Value -> (PlexusStreamItem -> IO ()) -> SynapseM ()
+invokeStreaming :: Path -> Text -> Value -> (HubStreamItem -> IO ()) -> SynapseM ()
 invokeStreaming namespacePath method params onItem = do
   cfg <- getConfig
   result <- liftIO $ ST.invokeMethodStreaming cfg namespacePath method params onItem

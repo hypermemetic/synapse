@@ -1,2 +1,6 @@
-{{! claudecode.delete }}
-{{id}} {{message}}
+{{! claudecode.delete - returns: DeleteResult }}
+{{! Variants: cone_deleted, error }}
+{{#cone_deleted}}
+  cone_id: {{cone_id}}
+{{/cone_deleted}}
+{{#error}}{{{message}}}{{/error}}

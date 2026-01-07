@@ -1,4 +1,5 @@
 {-# LANGUAGE ApplicativeDo #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 -- | Synapse CLI - Algebraic Implementation
 --
@@ -23,16 +24,20 @@ import Options.Applicative
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
-import Plexus (PlexusStreamItem(..))
 
 import Synapse.Schema.Types
 import Synapse.Monad
 import Synapse.Algebra.Navigate
-import Synapse.Algebra.Render (renderSchema, renderMethodFull)
-import Synapse.Algebra.TemplateGen (GeneratedTemplate(..), generateAllTemplatesWithCallback)
+import Synapse.Algebra.Render (renderSchema)
+import Synapse.CLI.Help (renderMethodHelp)
+import Synapse.CLI.Parse (parseParams)
+import qualified Synapse.CLI.Parse as Parse
+import Synapse.IR.Types (IR, irMethods)
+import qualified Data.Map.Strict as Map
+import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
 import Synapse.IR.Builder (buildIR)
-import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue)
+import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
 import System.Directory (createDirectoryIfMissing)
 
 -- ============================================================================
@@ -46,9 +51,9 @@ data Args = Args
   , argRaw       :: Bool          -- ^ Output raw content (no templates)
   , argDryRun    :: Bool
   , argSchema    :: Bool          -- ^ Show raw schema JSON
-  , argGenerate  :: Bool          -- ^ Generate templates from schemas
+  , argGenerate  :: Bool          -- ^ Generate templates from IR
   , argEmitIR    :: Bool          -- ^ Emit IR for code generation
-  , argForce     :: Bool          -- ^ Force overwrite modified templates
+  , argForce     :: Bool          -- ^ Force overwrite modified templates (unused)
   , argParams    :: Maybe Text    -- ^ JSON params via -p
   , argRpc       :: Maybe Text    -- ^ Raw JSON-RPC passthrough
   , argPath      :: [Text]        -- ^ Path segments and --key value params
@@ -65,7 +70,7 @@ main = do
   case cmd of
     PlexusCmd args -> runPlexus args
 
--- | Run a plexus backend command
+-- | Run a Hub backend command
 runPlexus :: Args -> IO ()
 runPlexus args = do
   env <- initEnv (argHost args) (argPort args)
@@ -103,15 +108,15 @@ dispatch Args{..} rendererCfg = do
             Left err -> throwNav $ FetchError err pathSegs
             Right val -> liftIO $ LBS.putStrLn $ encode val
 
-        -- Mode 3: Generate templates
+        -- Mode 3: Generate templates (IR-driven approach)
         else if argGenerate
         then do
           let baseDir = ".substrate/templates"
               writeAndLog gt = do
-                writeGeneratedTemplate baseDir gt
-                TIO.putStrLn $ "  " <> T.pack (gtPath gt)
+                writeGeneratedTemplateIR baseDir gt
+                TIO.putStrLn $ "  " <> T.pack (TemplateIR.gtPath gt)
           liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
-          count <- generateAllTemplatesWithCallback writeAndLog pathSegs
+          count <- TemplateIR.generateAllTemplatesWithCallback writeAndLog pathSegs
           liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
 
         -- Mode 4: Emit IR for code generation
@@ -141,30 +146,55 @@ dispatch Args{..} rendererCfg = do
 
                 -- Landed on a method: invoke or show help
                 ViewMethod method path -> do
-                  -- Build params: start with schema defaults, then merge user params
-                  -- Schema defaults are extracted from methodParams JSON Schema
+                  -- Build IR for this method's namespace
+                  ir <- buildIR (init path)
+                  let fullPath = T.intercalate "." path
+
+                  -- Build params: use IR-driven parsing for inline params
                   let schemaDefaults = extractSchemaDefaults method
                   userParams <- case argParams of
+                    -- -p JSON: parse as raw JSON (bypass IR parsing)
                     Just jsonStr ->
                       case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
                         Left err -> throwParse $ T.pack err
                         Right p -> pure p
                     Nothing
-                      | not (null inlineParams) -> pure $ buildParamsObject inlineParams
+                      | not (null inlineParams) ->
+                          -- Use IR-driven parsing for inline params
+                          case Map.lookup fullPath (irMethods ir) of
+                            Just methodDef ->
+                              case parseParams ir methodDef inlineParams of
+                                Right p -> pure p
+                                Left errs -> do
+                                  liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
+                                  throwParse "Parameter parsing failed"
+                            Nothing ->
+                              -- Fallback to flat object if method not in IR
+                              pure $ buildParamsObject inlineParams
                       | otherwise -> pure $ object []
                   -- Merge: user params override schema defaults
                   let params = mergeParams schemaDefaults userParams
 
                   if argDryRun
                     then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
-                    else if hasRequiredParams method && params == object [] && null inlineParams
-                      then liftIO $ TIO.putStrLn $ renderMethodFull method
+                    -- Show help when: method has required params AND user provided no params
+                    else if hasRequiredParams method && userParams == object [] && null inlineParams
+                      then do
+                        -- Render help from IR
+                        case Map.lookup fullPath (irMethods ir) of
+                          Just methodDef ->
+                            liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                          Nothing ->
+                            -- Fallback: method not in IR, use basic info
+                            liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
                       else invokeMethod path params
   where
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
-      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg)
+      -- Set method path hint for template resolution
+      let rendererCfg' = withMethodPath rendererCfg path
+      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg')
 
     -- Extract default values from JSON Schema properties
     -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}
@@ -211,7 +241,7 @@ dispatch Args{..} rendererCfg = do
           pure $ Right $ toJSON detailedMethod
 
     -- Invoke raw JSON-RPC request
-    invokeRawRpc :: Value -> SynapseM [PlexusStreamItem]
+    invokeRawRpc :: Value -> SynapseM [HubStreamItem]
     invokeRawRpc rpcReq = do
       case rpcReq of
         Object o -> case (KM.lookup "method" o, KM.lookup "params" o) of
@@ -279,11 +309,11 @@ cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse plexus")
   where
     failure = parserFailure defaultPrefs plexusArgsInfo (ShowHelpText Nothing) mempty
 
--- | Parser info for plexus subcommand (used for help rendering)
+-- | Parser info for Hub subcommand (used for help rendering)
 plexusArgsInfo :: ParserInfo Args
 plexusArgsInfo = info (plexusArgsParser <**> helper)
   ( fullDesc
- <> header "synapse plexus - Algebraic CLI for Plexus"
+ <> header "synapse plexus - Algebraic CLI for Hub"
  <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
  <> forwardOptions
   )
@@ -309,12 +339,31 @@ renderError = \case
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
 
+-- | Render a parse error for display
+renderParseError :: Parse.ParseError -> String
+renderParseError = \case
+  Parse.UnknownParam name ->
+    "Unknown parameter: --" <> T.unpack name
+  Parse.MissingRequired name ->
+    "Missing required parameter: --" <> T.unpack name
+  Parse.InvalidValue name reason ->
+    "Invalid value for --" <> T.unpack name <> ": " <> T.unpack reason
+  Parse.AmbiguousVariant name variants ->
+    "Ambiguous variant for --" <> T.unpack name <> ": could be one of " <> show (map T.unpack variants)
+  Parse.MissingDiscriminator param field ->
+    "Missing discriminator for --" <> T.unpack param <> ": need --" <> T.unpack param <> "." <> T.unpack field
+  Parse.UnknownVariant param value valid ->
+    "Unknown variant '" <> T.unpack value <> "' for --" <> T.unpack param
+    <> ". Valid variants: " <> T.unpack (T.intercalate ", " valid)
+  Parse.TypeNotFound name ->
+    "Type not found in IR: " <> T.unpack name
+
 -- | Write a generated template to disk (no logging)
-writeGeneratedTemplate :: FilePath -> GeneratedTemplate -> IO ()
-writeGeneratedTemplate baseDir gt = do
-  let fullPath = baseDir </> gtPath gt
-  createDirectoryIfMissing True (baseDir </> T.unpack (gtNamespace gt))
-  TIO.writeFile fullPath (gtTemplate gt)
+writeGeneratedTemplateIR :: FilePath -> TemplateIR.GeneratedTemplate -> IO ()
+writeGeneratedTemplateIR baseDir gt = do
+  let fullPath = baseDir </> TemplateIR.gtPath gt
+  createDirectoryIfMissing True (baseDir </> T.unpack (TemplateIR.gtNamespace gt))
+  TIO.writeFile fullPath (TemplateIR.gtTemplate gt)
   where
     (</>) = \a b -> a ++ "/" ++ b
 
@@ -337,18 +386,18 @@ encodeDryRun namespacePath method params =
 -- argJson: output raw JSON stream items
 -- argRaw: skip template rendering, just output content JSON
 -- otherwise: try template rendering, fall back to content JSON
-printResult :: Bool -> Bool -> RendererConfig -> PlexusStreamItem -> IO ()
+printResult :: Bool -> Bool -> RendererConfig -> HubStreamItem -> IO ()
 printResult True _ _ item = LBS.putStrLn $ encode item
 printResult _ True _ item = case item of
   -- Raw mode: just output the content
-  StreamData _ _ _ dat -> do
+  HubData _ _ _ dat -> do
     LBS.putStrLn $ encode dat
     hFlush stdout
-  StreamProgress _ _ msg _ -> do
+  HubProgress _ _ msg _ -> do
     TIO.putStr msg
     TIO.putStr "\r"
     hFlush stdout
-  StreamError _ _ err _ ->
+  HubError _ _ err _ ->
     hPutStrLn stderr $ "Error: " <> T.unpack err
   _ -> pure ()
 printResult _ _ cfg item = do
@@ -360,14 +409,14 @@ printResult _ _ cfg item = do
       hFlush stdout
     Nothing -> case item of
       -- Fallback to pretty-printed content
-      StreamData _ _ _ dat -> do
+      HubData _ _ _ dat -> do
         TIO.putStrLn $ prettyValue dat
         hFlush stdout
-      StreamProgress _ _ msg _ -> do
+      HubProgress _ _ msg _ -> do
         TIO.putStr msg
         TIO.putStr "\r"
         hFlush stdout
-      StreamError _ _ err _ ->
+      HubError _ _ err _ ->
         hPutStrLn stderr $ "Error: " <> T.unpack err
       _ -> pure ()
 
@@ -400,7 +449,7 @@ commandParser :: Parser Command
 commandParser = hsubparser
   ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
       ( fullDesc
-     <> header "synapse plexus - Algebraic CLI for Plexus"
+     <> header "synapse plexus - Algebraic CLI for Hub"
      <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
      <> forwardOptions  -- Pass unrecognized --flags to positional args
       ))
@@ -411,11 +460,11 @@ plexusArgsParser = do
   argHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
    <> value "127.0.0.1" <> showDefault
-   <> help "Plexus server host" )
+   <> help "Hub server host" )
   argPort <- option auto
     ( long "port" <> short 'P' <> metavar "PORT"
    <> value 4444 <> showDefault
-   <> help "Plexus server port" )
+   <> help "Hub server port" )
   argJson <- switch
     ( long "json" <> short 'j'
    <> help "Output raw JSON stream items" )
@@ -430,10 +479,11 @@ plexusArgsParser = do
    <> help "Fetch raw schema JSON for path" )
   argGenerate <- switch
     ( long "generate-templates" <> short 'g'
-   <> help "Generate mustache templates from schemas" )
+   <> help "Generate mustache templates from IR" )
   argEmitIR <- switch
     ( long "emit-ir" <> short 'i'
    <> help "Emit IR for code generation (JSON)" )
+  let argForce = False  -- Not yet implemented
   argParams <- optional $ T.pack <$> strOption
     ( long "params" <> short 'p' <> metavar "JSON"
    <> help "Method parameters as JSON object" )
