@@ -277,9 +277,10 @@ parsePathAndParams = go [] []
       | Just key <- T.stripPrefix "--" x
       , not (T.null key) =
           go path ((key, "") : params) xs
-      -- Regular path segment
+      -- Regular path segment - split on dots to support plexus.cone.chat syntax
       | otherwise =
-          go (x : path) params xs
+          let segments = filter (not . T.null) $ T.splitOn "." x
+          in go (reverse segments ++ path) params xs
 
 -- | Build JSON object from key-value pairs
 buildParamsObject :: [(Text, Text)] -> Value
