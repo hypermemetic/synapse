@@ -1,0 +1,9 @@
+{{! plexus.hyperforge.version - returns: HyperforgeEvent }}
+{{! Variants: status, info }}
+{{#status}}
+  config_dir: {{config_dir}}
+  default_org: {{#default_org}}{{.}}{{/default_org}}{{^default_org}}null{{/default_org}}
+  org_count: {{org_count}}
+  version: {{version}}
+{{/status}}
+{{#info}}{{{message}}}{{/info}}

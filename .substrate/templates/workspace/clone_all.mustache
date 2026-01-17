@@ -1,0 +1,104 @@
+{{! plexus.hyperforge.workspace.clone_all - returns: WorkspaceEvent }}
+{{! Variants: listed, resolved, bound, unbound, not_bound, repos_discovered, repo_staged, error, diff_started, org_diff_result, org_diff_error, diff_complete, import_started, org_import_started, org_import_complete, import_complete, clone_all_started, org_clone_all_started, org_clone_all_complete, clone_all_complete, sync_started, org_sync_started, org_sync_complete, sync_complete }}
+{{#listed}}
+  bindings: {{#bindings}}...{{/bindings}}
+{{/listed}}
+{{#resolved}}
+  org_name: {{org_name}}
+  path: {{path}}
+  source: {{{source}}}
+{{/resolved}}
+{{#bound}}
+  org_name: {{org_name}}
+  path: {{path}}
+{{/bound}}
+{{#unbound}}
+  path: {{path}}
+{{/unbound}}
+{{#not_bound}}
+  path: {{path}}
+{{/not_bound}}
+{{#repos_discovered}}
+  path: {{path}}
+  repos: {{#repos}}{{.}} {{/repos}}
+{{/repos_discovered}}
+{{#repo_staged}}
+  repo_name: {{repo_name}}
+{{/repo_staged}}
+{{#error}}{{{message}}}{{/error}}
+{{#diff_started}}
+  org_count: {{org_count}}
+  workspace_path: {{workspace_path}}
+{{/diff_started}}
+{{#org_diff_result}}
+  in_sync: {{in_sync}}
+  org_name: {{org_name}}
+  to_create: {{to_create}}
+  to_delete: {{to_delete}}
+  to_update: {{to_update}}
+{{/org_diff_result}}
+{{#org_diff_error}}
+  message: {{{message}}}
+  org_name: {{org_name}}
+{{/org_diff_error}}
+{{#diff_complete}}
+  total_in_sync: {{total_in_sync}}
+  total_orgs: {{total_orgs}}
+  total_to_create: {{total_to_create}}
+  total_to_delete: {{total_to_delete}}
+  total_to_update: {{total_to_update}}
+{{/diff_complete}}
+{{#import_started}}
+  org_count: {{org_count}}
+  workspace_path: {{workspace_path}}
+{{/import_started}}
+{{#org_import_started}}
+  org_name: {{org_name}}
+{{/org_import_started}}
+{{#org_import_complete}}
+  errors: {{errors}}
+  imported: {{imported}}
+  org_name: {{org_name}}
+  skipped: {{skipped}}
+{{/org_import_complete}}
+{{#import_complete}}
+  total_errors: {{total_errors}}
+  total_imported: {{total_imported}}
+  total_skipped: {{total_skipped}}
+{{/import_complete}}
+{{#clone_all_started}}
+  org_count: {{org_count}}
+{{/clone_all_started}}
+{{#org_clone_all_started}}
+  org_name: {{org_name}}
+{{/org_clone_all_started}}
+{{#org_clone_all_complete}}
+  cloned: {{cloned}}
+  failed: {{failed}}
+  org_name: {{org_name}}
+  skipped: {{skipped}}
+{{/org_clone_all_complete}}
+{{#clone_all_complete}}
+  total_cloned: {{total_cloned}}
+  total_failed: {{total_failed}}
+  total_skipped: {{total_skipped}}
+{{/clone_all_complete}}
+{{#sync_started}}
+  org_count: {{org_count}}
+  workspace_path: {{workspace_path}}
+{{/sync_started}}
+{{#org_sync_started}}
+  org_name: {{org_name}}
+{{/org_sync_started}}
+{{#org_sync_complete}}
+  failed: {{failed}}
+  org_name: {{org_name}}
+  synced: {{synced}}
+  unchanged: {{unchanged}}
+{{/org_sync_complete}}
+{{#sync_complete}}
+  total_failed: {{total_failed}}
+  total_synced: {{total_synced}}
+  total_unchanged: {{total_unchanged}}
+  workspace_path: {{workspace_path}}
+{{/sync_complete}}
