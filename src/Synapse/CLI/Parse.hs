@@ -224,6 +224,15 @@ buildFromTypeDef ir paramName TypeDef{..} kvs = case tdKind of
     -- Follow the alias
     buildParamValue ir ParamDef{pdName = paramName, pdType = target, pdDescription = Nothing, pdRequired = True, pdDefault = Nothing} kvs
 
+  KindStringEnum allowedValues ->
+    -- Expect single string value from allowed set
+    case lookup "" kvs of
+      Just val
+        | val `elem` allowedValues -> Right $ String val
+        | otherwise -> Left $ InvalidValue paramName $
+            "must be one of: " <> T.intercalate ", " allowedValues
+      Nothing -> Left $ InvalidValue paramName "expected enum value"
+
   KindPrimitive typ mFmt ->
     -- Expect single value
     case lookup "" kvs of
