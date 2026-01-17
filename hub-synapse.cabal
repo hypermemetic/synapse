@@ -30,6 +30,7 @@ library
     Synapse.CLI.Parse
     Synapse.CLI.Support
     Synapse.CLI.Template
+    Synapse.CLI.Transform
   build-depends:
     base >= 4.17 && < 5,
     substrate-protocol,

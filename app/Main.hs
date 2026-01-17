@@ -32,10 +32,11 @@ import Synapse.Algebra.Render (renderSchema)
 import Synapse.CLI.Help (renderMethodHelp)
 import Synapse.CLI.Parse (parseParams)
 import qualified Synapse.CLI.Parse as Parse
-import Synapse.IR.Types (IR, irMethods)
+import Synapse.IR.Types (IR, irMethods, MethodDef)
 import qualified Data.Map.Strict as Map
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
+import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults)
 import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
 import System.Directory (createDirectoryIfMissing)
@@ -68,6 +69,7 @@ main :: IO ()
 main = do
   cmd <- execParser argsInfo
   case cmd of
+    NoCmd -> TIO.putStr topLevelHeader
     PlexusCmd args -> runPlexus args
 
 -- | Run a Hub backend command
@@ -97,7 +99,11 @@ dispatch Args{..} rendererCfg = do
 
     Nothing -> do
       -- Parse path and inline params (--key value pairs)
-      let (pathSegs, inlineParams) = parsePathAndParams argPath
+      let (pathSegs, rawParams) = parsePathAndParams argPath
+
+      -- Apply parameter transformations (path expansion, env vars)
+      transformEnv <- liftIO mkTransformEnv
+      inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
 
       -- Mode 2: Schema request
       if argSchema
@@ -162,8 +168,10 @@ dispatch Args{..} rendererCfg = do
                       | not (null inlineParams) ->
                           -- Use IR-driven parsing for inline params
                           case Map.lookup fullPath (irMethods ir) of
-                            Just methodDef ->
-                              case parseParams ir methodDef inlineParams of
+                            Just methodDef -> do
+                              -- Inject boolean defaults for flags without values
+                              let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
+                              case parseParams ir methodDef paramsWithBools of
                                 Right p -> pure p
                                 Left errs -> do
                                   liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
@@ -259,14 +267,16 @@ parsePathAndParams = go [] []
   where
     go path params [] = (reverse path, reverse params)
     go path params (x:xs)
-      -- --key value pair
+      -- --key value pair (value must not start with --)
       | Just key <- T.stripPrefix "--" x
       , not (T.null key)
-      , (val:rest) <- xs =
+      , (val:rest) <- xs
+      , not (T.isPrefixOf "--" val) =
           go path ((key, val) : params) rest
-      -- --key with no value (skip malformed)
-      | T.isPrefixOf "--" x =
-          go path params xs
+      -- --key with no value or next arg is another flag (boolean flag)
+      | Just key <- T.stripPrefix "--" x
+      , not (T.null key) =
+          go path ((key, "") : params) xs
       -- Regular path segment
       | otherwise =
           go (x : path) params xs
@@ -303,7 +313,13 @@ splash = T.unlines
   , ""
   ]
 
--- | Get CLI help text from optparse-applicative
+-- | Get CLI help text from optparse-applicative (top-level)
+topLevelHeader :: Text
+topLevelHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
+  where
+    failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
+
+-- | Get CLI help text from optparse-applicative (plexus subcommand)
 cliHeader :: Text
 cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse plexus")
   where
@@ -431,6 +447,7 @@ printResult _ _ cfg item = do
 -- | Top-level command structure with backend namespacing
 data Command
   = PlexusCmd Args  -- ^ synapse plexus <path...>
+  | NoCmd           -- ^ No subcommand - show splash
   deriving Show
 
 -- ============================================================================
@@ -446,14 +463,16 @@ argsInfo = info (commandParser <**> helper)
 
 -- | Top-level command parser with backend subcommands
 commandParser :: Parser Command
-commandParser = hsubparser
-  ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
-      ( fullDesc
-     <> header "synapse plexus - Algebraic CLI for Hub"
-     <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
-     <> forwardOptions  -- Pass unrecognized --flags to positional args
-      ))
-  )
+commandParser = subcommand <|> pure NoCmd
+  where
+    subcommand = hsubparser
+      ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
+          ( fullDesc
+         <> header "synapse plexus - Algebraic CLI for Hub"
+         <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
+         <> forwardOptions  -- Pass unrecognized --flags to positional args
+          ))
+      )
 
 plexusArgsParser :: Parser Args
 plexusArgsParser = do
