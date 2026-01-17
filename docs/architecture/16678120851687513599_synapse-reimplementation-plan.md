@@ -31,7 +31,7 @@ The bare `synapse` command now shows:
 
 ## 2. Backend Discovery Abstraction
 
-**Status**: 🔲 To Implement
+**Status**: ✅ Implemented (abstraction layer only)
 
 ### Problem
 
@@ -136,7 +136,7 @@ Run 'synapse <backend>' for backend-specific options.
 
 ## 3. Dot-Notation Path Support
 
-**Status**: 🔲 To Implement
+**Status**: ✅ Implemented
 
 ### Feature
 
@@ -266,8 +266,8 @@ Defer until we actually have multiple backends. Current hardcoded "plexus" is fi
 ## Implementation Order
 
 1. ✅ Splash screen (done)
-2. 🔲 Backend discovery abstraction + stub
-3. 🔲 Dot-notation paths (simple, low risk)
+2. ✅ Backend discovery abstraction + stub (done)
+3. ✅ Dot-notation paths (done)
 4. ✅ Transform layer integration (done)
 5. ✅ KindStringEnum fix (done)
 6. 🔲 Configurable backend (deferred)
@@ -278,10 +278,11 @@ Defer until we actually have multiple backends. Current hardcoded "plexus" is fi
 
 | File | Change |
 |------|--------|
-| `app/Main.hs` | Splash for bare `synapse`, Transform integration, boolean flag parsing fix |
+| `app/Main.hs` | Splash for bare `synapse`, Transform integration, boolean flag parsing fix, dot-notation paths |
 | `src/Synapse/CLI/Transform.hs` | Restored from reverted commit |
 | `src/Synapse/CLI/Parse.hs` | Added `KindStringEnum` handling |
-| `hub-synapse.cabal` | Added `Synapse.CLI.Transform` module |
+| `src/Synapse/Backend/Discovery.hs` | New: Backend discovery abstraction |
+| `hub-synapse.cabal` | Added `Synapse.CLI.Transform` and `Synapse.Backend.Discovery` modules |
 | `docs/architecture/...` | This document |
 
 ---
@@ -290,7 +291,7 @@ Defer until we actually have multiple backends. Current hardcoded "plexus" is fi
 
 - [x] `synapse` shows splash + available backends
 - [x] `synapse plexus` works as before
-- [ ] `synapse plexus.cone.chat` works (dot-notation not yet implemented)
+- [x] `synapse plexus.cone.chat` works (dot-notation)
 - [x] `synapse plexus cone chat` still works
 - [x] `--working_dir .` expands to absolute path
 - [x] `$USER` in params expands
