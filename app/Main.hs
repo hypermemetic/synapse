@@ -321,10 +321,9 @@ topLevelHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
     failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
 
 -- | Get CLI help text from optparse-applicative (plexus subcommand)
+-- Uses topLevelHeader so synapse and synapse plexus show consistent help
 cliHeader :: Text
-cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse plexus")
-  where
-    failure = parserFailure defaultPrefs plexusArgsInfo (ShowHelpText Nothing) mempty
+cliHeader = topLevelHeader
 
 -- | Parser info for Hub subcommand (used for help rendering)
 plexusArgsInfo :: ParserInfo Args
