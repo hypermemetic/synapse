@@ -84,8 +84,10 @@ getConfig :: SynapseM SubstrateConfig
 getConfig = do
   host <- asks seHost
   port <- asks sePort
+  backend <- asks seBackend
   pure $ SubstrateConfig
     { substrateHost = T.unpack host
     , substratePort = port
     , substratePath = "/"
+    , substrateBackend = backend
     }
