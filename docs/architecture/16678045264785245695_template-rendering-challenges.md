@@ -99,6 +99,30 @@ This means:
 | `app/Main.hs` | Default template output to `~/.config/synapse/templates/` |
 | `hub-synapse.cabal` | Added `filepath` dependency to executable |
 
+### 4. Template Search Path Priority
+
+**Problem**: After fixing the template generator, output still showed `head=fromList [...]`. The fix wasn't taking effect.
+
+**Root Cause**: Local `.substrate/templates/` took precedence over global `~/.config/synapse/templates/`. Old templates in `.substrate/templates/cone/list.mustache` still had:
+
+```mustache
+{{! Old broken template }}
+head={{head}}
+```
+
+While the newly generated templates in `~/.config/synapse/templates/` had the correct:
+
+```mustache
+{{! New fixed template }}
+node_id={{head.node_id}} tree_id={{head.tree_id}}
+```
+
+**Solution**: Removed `.substrate/templates/cone/` directory. Templates should live in `~/.config/synapse/templates/` (user-specific, not repo-specific).
+
+**Template search order** (renderer checks):
+1. `.substrate/templates/<plugin>/<method>.mustache` (local override)
+2. `~/.config/synapse/templates/<plugin>/<method>.mustache` (user default)
+
 ## Lessons Learned
 
 1. **Template format matters**: Mustache templates must not have bare field names that could be interpreted as variables when you want them as labels
@@ -106,3 +130,5 @@ This means:
 2. **Dot notation works**: The `mustache` library properly supports `{{a.b.c}}` path traversal. Issues are usually in template generation, not the library.
 
 3. **Test with raw output**: Using `--raw` flag to see actual JSON helps distinguish between data issues and rendering issues
+
+4. **Check template search paths**: When fixes don't take effect, verify which template file is actually being used. Local overrides can shadow global templates.
