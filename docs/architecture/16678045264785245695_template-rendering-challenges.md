@@ -2,7 +2,9 @@
 
 ## Summary
 
-The cone rendering issue has been partially resolved. We fixed the **IR type namespace collision** that caused templates to use wrong type definitions. However, **nested struct rendering** still shows Haskell's `Show` output instead of properly expanded fields.
+The cone rendering issue has been **resolved**. We fixed:
+1. **IR type namespace collision** - types now properly qualified
+2. **Nested struct rendering** - template generator no longer wraps structs incorrectly
 
 ## Completed Work
 
@@ -22,63 +24,57 @@ The cone rendering issue has been partially resolved. We fixed the **IR type nam
 
 **Change**: `--generate-templates` now writes to `~/.config/synapse/templates/` by default instead of `.substrate/templates/`.
 
-### 3. Array Struct Expansion
+### 3. Nested Struct Rendering Fix
 
-**Implemented**: Template generator now recursively expands nested struct fields for arrays:
+**Problem**: Template generator wrapped nested struct fields in `name=(...)` format:
 
 ```mustache
-{{! Before }}
-{{#cones}}
-  head={{head}}
-{{/cones}}
-
-{{! After }}
+{{! Generated (broken) }}
 {{#cones}}
   head=(node_id={{head.node_id}} tree_id={{head.tree_id}})
 {{/cones}}
 ```
 
-## Current Challenge: Mustache Dot Notation
+When mustache encountered `head=(...)`, it tried to render the literal text `head=` followed by the parenthesized content. But the parentheses caused confusion - mustache saw `head` as a variable to substitute, which resolved to the entire struct object, triggering Haskell's `Show` instance (`fromList [...]`).
 
-### Symptom
+**Root Cause Analysis**:
 
-Template has correct expansion:
+The bug was in `generateFieldRefInContext` (lines 412-423 of `src/Synapse/CLI/Template.hs`):
+
+```haskell
+-- BROKEN: Wraps struct fields in name=(...)
+RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
+  Just TypeDef{tdKind = KindStruct fields} ->
+    let displayFields = filter (not . isInternalField) fields
+        nestedRefs = map (generateFieldRefInContext ir fullPath) displayFields
+    in name <> "=(" <> T.intercalate " " nestedRefs <> ")"
+```
+
+The `name <> "=(" ... ")"` wrapper caused the issue. When mustache processed the template:
+1. It saw `head=(...)` as literal text with embedded variables
+2. But `head` appeared as a bare variable reference
+3. Mustache resolved `head` to the JSON object `{"node_id":"...", "tree_id":"..."}`
+4. Converting that object to string used Haskell's `Show` → `fromList [...]`
+
+**Solution**: Don't wrap nested structs. Generate flat dot-notation references:
+
+```haskell
+-- FIXED: Flatten to dot notation without wrapper
+RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
+  Just TypeDef{tdKind = KindStruct fields} ->
+    let displayFields = filter (not . isInternalField) fields
+        dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
+    in T.intercalate " " dotRefs
+```
+
+**Generated template (fixed)**:
 ```mustache
-head=(node_id={{head.node_id}} tree_id={{head.tree_id}})
+{{#cones}}
+  node_id={{head.node_id}} tree_id={{head.tree_id}} id={{id}} ...
+{{/cones}}
 ```
 
-But output shows Haskell's `Show` representation:
-```
-head=fromList [("tree_id","416b5068-..."),("node_id","f7286cb9-...")]
-```
-
-### Root Cause Investigation
-
-The rendering pipeline:
-1. Raw JSON: `{"head": {"node_id": "xxx", "tree_id": "yyy"}}`
-2. `wrapDiscriminatedUnion` wraps for variant sections
-3. `toMustache` converts aeson `Value` to mustache's value type
-4. `substituteValue` renders template
-
-The issue appears to be in step 3 or 4. The `toMustache` function from the `mustache` library may not be preserving nested object traversal, or path resolution like `{{head.node_id}}` isn't working as expected within array iteration contexts.
-
-### Possible Causes
-
-1. **Mustache library behavior**: The `stache` or `mustache` Haskell libraries may handle nested path resolution differently than expected
-
-2. **Context scoping**: Inside `{{#cones}}...{{/cones}}`, the context might not support nested object traversal via dot notation
-
-3. **toMustache conversion**: The `ToMustache` instance for aeson's `Value` might convert nested objects to something that doesn't support path lookup
-
-### Potential Solutions
-
-1. **Flatten nested structs in JSON before rendering**: Transform `{"head": {"node_id": "x"}}` to `{"head.node_id": "x"}` before passing to mustache
-
-2. **Use different mustache library**: Try `stache` which may have better nested object support
-
-3. **Custom ToMustache instance**: Implement custom conversion that preserves nested traversal
-
-4. **Pre-process template variables**: Replace `{{head.node_id}}` with something the library can handle
+**Key insight**: The mustache library's dot notation (`{{head.node_id}}`) works correctly. The problem was the template generator creating malformed templates where the struct field name appeared as a label that mustache tried to substitute.
 
 ## IR Architecture
 
@@ -99,13 +95,14 @@ This means:
 | File | Changes |
 |------|---------|
 | `src/Synapse/IR/Builder.hs` | Namespace-qualify all type names |
-| `src/Synapse/CLI/Template.hs` | Recursive struct expansion in arrays |
+| `src/Synapse/CLI/Template.hs` | Fix nested struct expansion - no wrapper |
 | `app/Main.hs` | Default template output to `~/.config/synapse/templates/` |
 | `hub-synapse.cabal` | Added `filepath` dependency to executable |
 
-## Next Steps
+## Lessons Learned
 
-1. Debug mustache variable resolution to understand why dot notation fails
-2. Consider pre-flattening nested objects before mustache rendering
-3. Evaluate alternative mustache libraries
-4. Add tests for template rendering with nested structures
+1. **Template format matters**: Mustache templates must not have bare field names that could be interpreted as variables when you want them as labels
+
+2. **Dot notation works**: The `mustache` library properly supports `{{a.b.c}}` path traversal. Issues are usually in template generation, not the library.
+
+3. **Test with raw output**: Using `--raw` flag to see actual JSON helps distinguish between data issues and rendering issues
