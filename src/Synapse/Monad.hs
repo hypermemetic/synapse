@@ -56,6 +56,7 @@ import Synapse.Schema.Types
 data SynapseEnv = SynapseEnv
   { seHost    :: !Text                        -- ^ Hub host
   , sePort    :: !Int                         -- ^ Hub port
+  , seBackend :: !Text                        -- ^ Backend name (e.g., "plexus")
   , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
   }
@@ -87,26 +88,27 @@ newtype SynapseM a = SynapseM
 runSynapseM :: SynapseEnv -> SynapseM a -> IO (Either SynapseError a)
 runSynapseM env action = runReaderT (runExceptT (unSynapseM action)) env
 
--- | Run a SynapseM action with default environment
-runSynapseM' :: SynapseM a -> IO (Either SynapseError a)
-runSynapseM' action = do
-  env <- defaultEnv
+-- | Run a SynapseM action with default host/port and specified backend
+runSynapseM' :: Text -> SynapseM a -> IO (Either SynapseError a)
+runSynapseM' backend action = do
+  env <- defaultEnv backend
   runSynapseM env action
 
--- | Initialize environment with given host/port
-initEnv :: Text -> Int -> IO SynapseEnv
-initEnv host port = do
+-- | Initialize environment with given host/port/backend
+initEnv :: Text -> Int -> Text -> IO SynapseEnv
+initEnv host port backend = do
   cache <- newIORef HM.empty
   visited <- newIORef HS.empty
   pure SynapseEnv
     { seHost = host
     , sePort = port
+    , seBackend = backend
     , seCache = cache
     , seVisited = visited
     }
 
--- | Default environment (localhost:4444)
-defaultEnv :: IO SynapseEnv
+-- | Default environment (localhost:4444, requires backend)
+defaultEnv :: Text -> IO SynapseEnv
 defaultEnv = initEnv "127.0.0.1" 4444
 
 -- | Throw a navigation error

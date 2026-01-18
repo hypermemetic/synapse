@@ -12,6 +12,7 @@
 module Main where
 
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Reader (asks)
 import Data.Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
@@ -26,7 +27,7 @@ import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 
 import Synapse.Schema.Types
-import Synapse.Monad
+import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse)
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema)
 import Synapse.CLI.Help (renderMethodHelp)
@@ -57,6 +58,7 @@ data Args = Args
   , argForce     :: Bool          -- ^ Force overwrite modified templates (unused)
   , argParams    :: Maybe Text    -- ^ JSON params via -p
   , argRpc       :: Maybe Text    -- ^ Raw JSON-RPC passthrough
+  , argBackend   :: Maybe Text    -- ^ Backend name (first positional arg)
   , argPath      :: [Text]        -- ^ Path segments and --key value params
   }
   deriving Show
@@ -68,12 +70,14 @@ data Args = Args
 main :: IO ()
 main = do
   args <- execParser argsInfo
-  run args
+  case argBackend args of
+    Nothing -> TIO.putStr cliHeader  -- No backend specified, show help
+    Just backend -> run backend args
 
--- | Run a Hub command
-run :: Args -> IO ()
-run args = do
-  env <- initEnv (argHost args) (argPort args)
+-- | Run a Hub command with specified backend
+run :: Text -> Args -> IO ()
+run backend args = do
+  env <- initEnv (argHost args) (argPort args) backend
   rendererCfg <- defaultRendererConfig
   result <- runSynapseM env (dispatch args rendererCfg)
   case result of
@@ -182,7 +186,9 @@ dispatch Args{..} rendererCfg = do
                   let params = mergeParams schemaDefaults userParams
 
                   if argDryRun
-                    then liftIO $ LBS.putStrLn $ encodeDryRun (init path) (last path) params
+                    then do
+                      backend <- asks seBackend
+                      liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
                     -- Show help when: method has required params AND user provided no params
                     else if hasRequiredParams method && userParams == object [] && null inlineParams
                       then do
@@ -368,14 +374,14 @@ writeGeneratedTemplateIR baseDir gt = do
     (</>) = \a b -> a ++ "/" ++ b
 
 -- | Encode a dry-run request
-encodeDryRun :: [Text] -> Text -> Value -> LBS.ByteString
-encodeDryRun namespacePath method params =
-  let fullPath = if null namespacePath then ["plexus"] else namespacePath
+encodeDryRun :: Text -> [Text] -> Text -> Value -> LBS.ByteString
+encodeDryRun backend namespacePath method params =
+  let fullPath = if null namespacePath then [backend] else namespacePath
       dotPath = T.intercalate "." (fullPath ++ [method])
   in encode $ object
     [ "jsonrpc" .= ("2.0" :: Text)
     , "id" .= (1 :: Int)
-    , "method" .= ("plexus.call" :: Text)
+    , "method" .= (backend <> ".call")
     , "params" .= object
         [ "method" .= dotPath
         , "params" .= params
@@ -467,7 +473,10 @@ argsParser = do
   argRpc <- optional $ T.pack <$> strOption
     ( long "rpc" <> short 'r' <> metavar "JSON"
    <> help "Raw JSON-RPC request (bypass navigation)" )
+  argBackend <- optional $ T.pack <$> argument str
+    ( metavar "BACKEND"
+   <> help "Backend name (e.g., plexus)" )
   argPath <- many $ T.pack <$> argument str
-    ( metavar "PATH... [--key value ...]"
+    ( metavar "[PATH...] [--key value ...]"
    <> help "Path to plugin/method, with optional --key value params" )
   pure Args{..}
