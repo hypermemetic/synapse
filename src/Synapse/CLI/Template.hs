@@ -412,10 +412,10 @@ generateFieldRefInContext ir prefix field =
     -- Named types: check if it's a struct that needs expansion
     RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
       Just TypeDef{tdKind = KindStruct fields} ->
-        -- Recursively expand struct fields
+        -- Flatten nested struct fields using dot notation (no wrapper)
         let displayFields = filter (not . isInternalField) fields
-            nestedRefs = map (generateFieldRefInContext ir fullPath) displayFields
-        in name <> "=(" <> T.intercalate " " nestedRefs <> ")"
+            dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
+        in T.intercalate " " dotRefs
       Just TypeDef{tdKind = KindPrimitive _ _} ->
         name <> "={{" <> fullPath <> "}}"
       _ ->
@@ -430,9 +430,10 @@ generateFieldRefInContext ir prefix field =
     RefOptional inner -> case inner of
       RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
         Just TypeDef{tdKind = KindStruct fields} ->
+          -- Flatten nested struct fields using dot notation (no wrapper)
           let displayFields = filter (not . isInternalField) fields
-              nestedRefs = map (generateFieldRefInContext ir fullPath) displayFields
-          in name <> "=(" <> T.intercalate " " nestedRefs <> ")"
+              dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
+          in T.intercalate " " dotRefs
         _ -> name <> "={{" <> fullPath <> "}}"
       _ -> name <> "={{" <> fullPath <> "}}"
 
