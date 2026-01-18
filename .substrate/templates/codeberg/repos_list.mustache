@@ -1,39 +1,40 @@
-{{! plexus.hyperforge.forge.codeberg.repos_list - returns: ForgeEvent }}
+{{! hyperforge.forge.codeberg.repos_list - returns: codeberg.ForgeEvent }}
 {{! Variants: repos_listed, repo_created, auth_status, api_progress, error, auth_started, auth_result, auth_failed, refresh_started, refresh_complete, refresh_failed }}
 {{#repos_listed}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   owner: {{owner}}
-  repos: {{#repos}}...{{/repos}}
+  repos: {{#repos}}
+    description={{description}} name={{name}} private={{private}} url={{url}}{{/repos}}
 {{/repos_listed}}
 {{#repo_created}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   owner: {{owner}}
   repo_name: {{repo_name}}
   url: {{url}}
 {{/repo_created}}
 {{#auth_status}}
   authenticated: {{authenticated}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   scopes: {{#scopes}}{{.}} {{/scopes}}
   user: {{#user}}{{.}}{{/user}}{{^user}}null{{/user}}
 {{/auth_status}}
 {{#api_progress}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   message: {{{message}}}
   operation: {{operation}}
 {{/api_progress}}
 {{#error}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   message: {{{message}}}
   operation: {{operation}}
   status_code: {{#status_code}}{{.}}{{/status_code}}{{^status_code}}null{{/status_code}}
 {{/error}}
 {{#auth_started}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
 {{/auth_started}}
 {{#auth_result}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   last_validated: {{#last_validated}}{{.}}{{/last_validated}}{{^last_validated}}null{{/last_validated}}
   org_name: {{org_name}}
   scopes: {{#scopes}}{{.}} {{/scopes}}
@@ -42,20 +43,20 @@
 {{/auth_result}}
 {{#auth_failed}}
   error: {{error}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
 {{/auth_failed}}
 {{#refresh_started}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
 {{/refresh_started}}
 {{#refresh_complete}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
   status: {{{status}}}
 {{/refresh_complete}}
 {{#refresh_failed}}
   error: {{error}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
 {{/refresh_failed}}

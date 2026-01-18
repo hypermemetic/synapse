@@ -91,6 +91,7 @@ irAlgebra (MethodF method namespace path) = do
 -- ============================================================================
 
 -- | Extract all types and methods from a plugin schema
+-- Types are namespace-qualified to avoid collisions (e.g., "cone.ListResult")
 extractFromPlugin :: Text -> Text -> PluginSchema -> (Map Text TypeDef, Map Text MethodDef)
 extractFromPlugin namespace pathPrefix schema =
   let methods = psMethods schema
@@ -110,11 +111,11 @@ extractMethodDef namespace pathPrefix method =
                  then namespace <> "." <> name
                  else pathPrefix <> "." <> name
 
-      -- Extract types from params
-      (paramTypes, params) = extractParams (methodParams method)
+      -- Extract types from params (namespace-qualified)
+      (paramTypes, params) = extractParams namespace (methodParams method)
 
-      -- Extract types from returns
-      (returnTypes, returnRef, streaming) = extractReturns name (methodReturns method)
+      -- Extract types from returns (namespace-qualified)
+      (returnTypes, returnRef, streaming) = extractReturns namespace name (methodReturns method)
 
       -- Combine all types
       allTypes = Map.union paramTypes returnTypes
@@ -135,16 +136,17 @@ extractMethodDef namespace pathPrefix method =
 -- ============================================================================
 
 -- | Extract types and param defs from method params schema
-extractParams :: Maybe Value -> (Map Text TypeDef, [ParamDef])
-extractParams Nothing = (Map.empty, [])
-extractParams (Just val) = case val of
-  Object o -> extractParamsFromObject o
+-- Types are namespace-qualified to avoid collisions
+extractParams :: Text -> Maybe Value -> (Map Text TypeDef, [ParamDef])
+extractParams _ Nothing = (Map.empty, [])
+extractParams namespace (Just val) = case val of
+  Object o -> extractParamsFromObject namespace o
   _ -> (Map.empty, [])
 
-extractParamsFromObject :: KM.KeyMap Value -> (Map Text TypeDef, [ParamDef])
-extractParamsFromObject o =
-  let -- Extract $defs
-      defs = extractDefs o
+extractParamsFromObject :: Text -> KM.KeyMap Value -> (Map Text TypeDef, [ParamDef])
+extractParamsFromObject namespace o =
+  let -- Extract $defs (namespace-qualified)
+      defs = extractDefs namespace o
 
       -- Extract properties
       props = case KM.lookup "properties" o of
@@ -160,7 +162,7 @@ extractParamsFromObject o =
       params =
         [ ParamDef
             { pdName = K.toText k
-            , pdType = schemaToTypeRef v
+            , pdType = schemaToTypeRef namespace v
             , pdDescription = extractDescription v
             , pdRequired = K.toText k `elem` required
             , pdDefault = extractDefault v
@@ -174,22 +176,24 @@ extractParamsFromObject o =
 -- ============================================================================
 
 -- | Extract types, return ref, and streaming flag from returns schema
-extractReturns :: Text -> Maybe Value -> (Map Text TypeDef, TypeRef, Bool)
-extractReturns methodName Nothing = (Map.empty, RefUnknown, False)
-extractReturns methodName (Just val) = case val of
+-- Types are namespace-qualified to avoid collisions (e.g., "cone.ListResult")
+extractReturns :: Text -> Text -> Maybe Value -> (Map Text TypeDef, TypeRef, Bool)
+extractReturns _ _ Nothing = (Map.empty, RefUnknown, False)
+extractReturns namespace methodName (Just val) = case val of
   Object o ->
-    let -- Extract $defs
-        defs = extractDefs o
+    let -- Extract $defs (namespace-qualified)
+        defs = extractDefs namespace o
 
-        -- Get the title (becomes the type name)
-        typeName = case KM.lookup "title" o of
+        -- Get the title and namespace-qualify it
+        rawTypeName = case KM.lookup "title" o of
           Just (String t) -> t
           _ -> methodName <> "Result"
+        typeName = namespace <> "." <> rawTypeName
 
         -- Check for oneOf (discriminated union)
         (typeDef, streaming) = case KM.lookup "oneOf" o of
           Just (Array variants) ->
-            let variantDefs = mapMaybe extractVariant (V.toList variants)
+            let variantDefs = mapMaybe (extractVariant namespace) (V.toList variants)
                 discriminator = inferDiscriminator variantDefs
                 nonErrorVariants = filter (\v -> vdName v /= "error") variantDefs
                 isStream = length nonErrorVariants > 1
@@ -213,8 +217,8 @@ extractReturns methodName (Just val) = case val of
   _ -> (Map.empty, RefUnknown, False)
 
 -- | Extract a variant from a oneOf element
-extractVariant :: Value -> Maybe VariantDef
-extractVariant (Object o) = case KM.lookup "properties" o of
+extractVariant :: Text -> Value -> Maybe VariantDef
+extractVariant namespace (Object o) = case KM.lookup "properties" o of
   Just (Object props) ->
     -- Find the discriminator value (look for "type" with const)
     let discriminatorValue = case KM.lookup "type" props of
@@ -227,7 +231,7 @@ extractVariant (Object o) = case KM.lookup "properties" o of
         fields =
           [ FieldDef
               { fdName = K.toText k
-              , fdType = schemaToTypeRef v
+              , fdType = schemaToTypeRef namespace v
               , fdDescription = extractDescription v
               , fdRequired = True  -- In variants, fields are typically required
               , fdDefault = Nothing
@@ -243,7 +247,7 @@ extractVariant (Object o) = case KM.lookup "properties" o of
            }
          Nothing -> Nothing
   _ -> Nothing
-extractVariant _ = Nothing
+extractVariant _ _ = Nothing
 
 -- | Infer the discriminator field name from variants
 inferDiscriminator :: [VariantDef] -> Text
@@ -263,35 +267,38 @@ extractStringConst _ = Nothing
 -- ============================================================================
 
 -- | Extract type definitions from $defs or definitions (draft-07 compatibility)
-extractDefs :: KM.KeyMap Value -> Map Text TypeDef
-extractDefs o =
+-- Types are namespace-qualified to avoid collisions
+extractDefs :: Text -> KM.KeyMap Value -> Map Text TypeDef
+extractDefs namespace o =
   let defs = case KM.lookup "$defs" o of
         Just (Object d) -> d
         _ -> case KM.lookup "definitions" o of
           Just (Object d) -> d
           _ -> KM.empty
-  in Map.fromList $ mapMaybe extractTypeDef (KM.toList defs)
+  in Map.fromList $ mapMaybe (extractTypeDef namespace) (KM.toList defs)
 
 -- | Extract a type definition from a $defs entry
-extractTypeDef :: (K.Key, Value) -> Maybe (Text, TypeDef)
-extractTypeDef (k, v) = case v of
+-- Type name is namespace-qualified (e.g., "cone.ConeInfo")
+extractTypeDef :: Text -> (K.Key, Value) -> Maybe (Text, TypeDef)
+extractTypeDef namespace (k, v) = case v of
   Object o ->
-    let name = K.toText k
+    let rawName = K.toText k
+        qualifiedName = namespace <> "." <> rawName
         desc = extractDescription v
-        kind = inferTypeKind o
-    in Just (name, TypeDef name desc kind)
+        kind = inferTypeKind namespace o
+    in Just (qualifiedName, TypeDef qualifiedName desc kind)
   _ -> Nothing
 
 -- | Infer the kind of a type from its JSON Schema
-inferTypeKind :: KM.KeyMap Value -> TypeKind
-inferTypeKind o
+inferTypeKind :: Text -> KM.KeyMap Value -> TypeKind
+inferTypeKind namespace o
   -- Check for oneOf (enum)
   | Just (Array variants) <- KM.lookup "oneOf" o =
       -- First check if this is a simple string enum (all variants are {const: X, type: "string"})
       let maybeStringValues = mapMaybe extractStringConst (V.toList variants)
       in if length maybeStringValues == V.length variants && not (null maybeStringValues)
          then KindStringEnum maybeStringValues
-         else let variantDefs = mapMaybe extractVariant (V.toList variants)
+         else let variantDefs = mapMaybe (extractVariant namespace) (V.toList variants)
               in KindEnum "type" variantDefs
 
   -- Check for enum (simple string enum)
@@ -307,7 +314,7 @@ inferTypeKind o
           fields =
             [ FieldDef
                 { fdName = K.toText k
-                , fdType = schemaToTypeRef v
+                , fdType = schemaToTypeRef namespace v
                 , fdDescription = extractDescription v
                 , fdRequired = K.toText k `elem` required
                 , fdDefault = extractDefault v
@@ -344,16 +351,18 @@ inferTypeKind o
 -- Distinguishes between:
 -- - RefAny: Schema present but no type constraints (intentionally dynamic, e.g. serde_json::Value)
 -- - RefUnknown: No schema at all (schema gap, should warn)
-schemaToTypeRef :: Value -> TypeRef
-schemaToTypeRef (Object o)
-  -- Check for $ref
+--
+-- Type references via $ref are namespace-qualified (e.g., "cone.ConeInfo")
+schemaToTypeRef :: Text -> Value -> TypeRef
+schemaToTypeRef namespace (Object o)
+  -- Check for $ref - namespace-qualify the reference
   | Just (String ref) <- KM.lookup "$ref" o =
-      RefNamed (extractRefName ref)
+      RefNamed (namespace <> "." <> extractRefName ref)
 
   -- Check for array
   | Just (String "array") <- KM.lookup "type" o =
       case KM.lookup "items" o of
-        Just items -> RefArray (schemaToTypeRef items)
+        Just items -> RefArray (schemaToTypeRef namespace items)
         Nothing -> RefArray RefAny  -- array without items = any[]
 
   -- Check for nullable
@@ -366,11 +375,11 @@ schemaToTypeRef (Object o)
              in if hasNull then RefOptional base else base
            _ -> RefAny  -- Multiple non-null types = any
 
-  -- Check for anyOf (often used for optional refs)
+  -- Check for anyOf (often used for optional refs) - namespace-qualify refs
   | Just (Array options) <- KM.lookup "anyOf" o =
       let refs = mapMaybe extractRefFromOption (V.toList options)
       in case refs of
-           [r] -> RefOptional (RefNamed r)
+           [r] -> RefOptional (RefNamed (namespace <> "." <> r))
            _ -> RefAny  -- Complex anyOf = any
 
   -- Check for primitive type
@@ -383,10 +392,10 @@ schemaToTypeRef (Object o)
 
 -- JSON Schema `true` is the "accept anything" schema - intentionally dynamic
 -- This is used when schemars emits a field like `input: true` for serde_json::Value
-schemaToTypeRef (Bool True) = RefAny
+schemaToTypeRef _ (Bool True) = RefAny
 
 -- Null, false, or non-JSON-Schema values = schema gap (should warn)
-schemaToTypeRef _ = RefUnknown
+schemaToTypeRef _ _ = RefUnknown
 
 -- | Extract ref name from a $ref string like "#/$defs/Position"
 extractRefName :: Text -> Text
@@ -424,6 +433,7 @@ extractFormat o = case KM.lookup "format" o of
   _ -> Nothing
 
 -- | Extract types from a full schema (for standalone use)
-extractTypesFromSchema :: Value -> Map Text TypeDef
-extractTypesFromSchema (Object o) = extractDefs o
-extractTypesFromSchema _ = Map.empty
+-- Types are namespace-qualified
+extractTypesFromSchema :: Text -> Value -> Map Text TypeDef
+extractTypesFromSchema namespace (Object o) = extractDefs namespace o
+extractTypesFromSchema _ _ = Map.empty

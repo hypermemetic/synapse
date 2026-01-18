@@ -40,7 +40,8 @@ import Synapse.Transport
 import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults)
 import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
-import System.Directory (createDirectoryIfMissing)
+import System.Directory (createDirectoryIfMissing, getHomeDirectory)
+import System.FilePath ((</>))
 
 -- ============================================================================
 -- Types
@@ -119,7 +120,8 @@ dispatch Args{..} rendererCfg = do
         -- Mode 3: Generate templates (IR-driven approach)
         else if argGenerate
         then do
-          let baseDir = ".substrate/templates"
+          homeDir <- liftIO getHomeDirectory
+          let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
               writeAndLog gt = do
                 writeGeneratedTemplateIR baseDir gt
                 TIO.putStrLn $ "  " <> T.pack (TemplateIR.gtPath gt)
@@ -370,8 +372,6 @@ writeGeneratedTemplateIR baseDir gt = do
   let fullPath = baseDir </> TemplateIR.gtPath gt
   createDirectoryIfMissing True (baseDir </> T.unpack (TemplateIR.gtNamespace gt))
   TIO.writeFile fullPath (TemplateIR.gtTemplate gt)
-  where
-    (</>) = \a b -> a ++ "/" ++ b
 
 -- | Encode a dry-run request
 encodeDryRun :: Text -> [Text] -> Text -> Value -> LBS.ByteString

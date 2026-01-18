@@ -1,6 +1,7 @@
-{{! claudecode.list - returns: ListResult }}
-{{! Variants: cone_list, error }}
-{{#cone_list}}
-  cones: {{#cones}}...{{/cones}}
-{{/cone_list}}
+{{! claudecode.list - returns: claudecode.ListResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  sessions: {{#sessions}}
+    claude_session_id={{claude_session_id}} created_at={{created_at}} head={{head}} id={{id}} loopback_enabled={{loopback_enabled}} model={{model}} name={{name}} working_dir={{working_dir}}{{/sessions}}
+{{/ok}}
 {{#error}}{{{message}}}{{/error}}

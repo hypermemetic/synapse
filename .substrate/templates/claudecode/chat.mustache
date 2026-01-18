@@ -1,16 +1,31 @@
-{{! claudecode.chat - returns: ChatEvent }}
-{{! Variants: chat_start, chat_content, chat_complete, error }}
-{{#chat_start}}
-  cone_id: {{cone_id}}
+{{! claudecode.chat - returns: claudecode.ChatEvent }}
+{{! Variants: start, content, thinking, tool_use, tool_result, complete, passthrough, error }}
+{{#start}}
+  id: {{id}}
   user_position: node_id={{user_position.node_id}} tree_id={{user_position.tree_id}}
-{{/chat_start}}
-{{#chat_content}}
-  cone_id: {{cone_id}}
-  content: {{{content}}}
-{{/chat_content}}
-{{#chat_complete}}
-  cone_id: {{cone_id}}
+{{/start}}
+{{#content}}{{{text}}}{{/content}}
+{{#thinking}}
+  thinking: {{thinking}}
+{{/thinking}}
+{{#tool_use}}
+  input: {{input}}
+  tool_name: {{tool_name}}
+  tool_use_id: {{tool_use_id}}
+{{/tool_use}}
+{{#tool_result}}
+  is_error: {{is_error}}
+  output: {{output}}
+  tool_use_id: {{tool_use_id}}
+{{/tool_result}}
+{{#complete}}
+  claude_session_id: {{claude_session_id}}
   new_head: node_id={{new_head.node_id}} tree_id={{new_head.tree_id}}
-  usage: {{#usage}}input_tokens={{input_tokens}} output_tokens={{output_tokens}} total_tokens={{total_tokens}}{{/usage}}{{^usage}}null{{/usage}}
-{{/chat_complete}}
+  usage: {{#usage}}cost_usd={{cost_usd}} input_tokens={{input_tokens}} num_turns={{num_turns}} output_tokens={{output_tokens}}{{/usage}}{{^usage}}null{{/usage}}
+{{/complete}}
+{{#passthrough}}
+  data: {{{data}}}
+  event_type: {{event_type}}
+  handle: {{handle}}
+{{/passthrough}}
 {{#error}}{{{message}}}{{/error}}

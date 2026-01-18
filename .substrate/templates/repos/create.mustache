@@ -1,8 +1,9 @@
-{{! plexus.hyperforge.org.juggernautlabs.repos.create - returns: RepoEvent }}
+{{! hyperforge.workspace.repos.create - returns: repos.RepoEvent }}
 {{! Variants: listed, details, staged, synced, sync_started, sync_progress, sync_complete, marked_for_deletion, protection_error, removed, remote_added, remotes_validated, outputs_captured, refresh_started, refresh_progress, refresh_complete, repo_diff, diff_summary, converge_started, converge_phase, converge_complete, clone_started, clone_progress, clone_remote_added, clone_complete, remote_sync_status, forge_skipped, error }}
 {{#listed}}
   org_name: {{org_name}}
-  repos: {{#repos}}...{{/repos}}
+  repos: {{#repos}}
+    forges={{forges}} name={{name}} synced={{synced}} visibility={{visibility}}{{/repos}}
   staged: {{staged}}
 {{/listed}}
 {{#details}}
@@ -14,7 +15,7 @@
   repo_name: {{repo_name}}
 {{/staged}}
 {{#synced}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
   repo_name: {{repo_name}}
   url: {{url}}
@@ -58,18 +59,18 @@
   repo_name: {{repo_name}}
 {{/remotes_validated}}
 {{#outputs_captured}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   id: {{#id}}{{.}}{{/id}}{{^id}}null{{/id}}
   org_name: {{org_name}}
   repo_name: {{repo_name}}
   url: {{url}}
 {{/outputs_captured}}
 {{#refresh_started}}
-  forges: {{#forges}}...{{/forges}}
+  forges: {{#forges}}{{.}}{{/forges}}
   org_name: {{org_name}}
 {{/refresh_started}}
 {{#refresh_progress}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
   repos_found: {{repos_found}}
 {{/refresh_progress}}
@@ -114,7 +115,7 @@
   target_path: {{target_path}}
 {{/clone_started}}
 {{#clone_progress}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
   repo_name: {{repo_name}}
   stage: {{stage}}
@@ -139,7 +140,7 @@
   repo_name: {{repo_name}}
 {{/remote_sync_status}}
 {{#forge_skipped}}
-  forge: {{forge}}
+  forge: {{{forge}}}
   org_name: {{org_name}}
   reason: {{reason}}
 {{/forge_skipped}}

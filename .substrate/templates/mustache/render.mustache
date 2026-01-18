@@ -1,4 +1,4 @@
-{{! mustache.render - returns: MustacheEvent }}
+{{! mustache.render - returns: mustache.MustacheEvent }}
 {{! Variants: rendered, registered, template, not_found, templates, deleted, error }}
 {{#rendered}}
   output: {{output}}
@@ -11,7 +11,8 @@
 {{/template}}
 {{#not_found}}{{{message}}}{{/not_found}}
 {{#templates}}
-  templates: {{#templates}}...{{/templates}}
+  templates: {{#templates}}
+    created_at={{created_at}} id={{id}} method={{method}} name={{name}} plugin_id={{plugin_id}} updated_at={{updated_at}}{{/templates}}
 {{/templates}}
 {{#deleted}}
   count: {{count}}
