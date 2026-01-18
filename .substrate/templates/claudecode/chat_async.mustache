@@ -1,0 +1,7 @@
+{{! claudecode.chat_async - returns: claudecode.ChatStartResult }}
+{{! Variants: started, error }}
+{{#started}}
+  session_id: {{session_id}}
+  stream_id: {{stream_id}}
+{{/started}}
+{{#error}}{{{message}}}{{/error}}

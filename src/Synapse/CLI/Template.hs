@@ -346,8 +346,16 @@ generateFieldValue ir typeRef fieldName field = case typeRef of
   RefArray inner -> case inner of
     RefPrimitive _ _ ->
       "{{#" <> fieldName <> "}}{{.}} {{/" <> fieldName <> "}}"
+    RefNamed name -> case Map.lookup name (irTypes ir) of
+      Just TypeDef{tdKind = KindStruct fields} ->
+        -- For arrays of structs, expand each item's fields on its own line
+        let displayFields = filter (not . isInternalField) fields
+            fieldRefs = map (generateFieldRefInContext ir "") displayFields
+        in "{{#" <> fieldName <> "}}\n    " <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
+      _ ->
+        "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
     _ ->
-      "{{#" <> fieldName <> "}}...{{/" <> fieldName <> "}}"
+      "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
 
   -- Named types: depends on what they are
   RefNamed name -> case Map.lookup name (irTypes ir) of
@@ -384,6 +392,52 @@ generateFieldValue ir typeRef fieldName field = case typeRef of
     if isContentField field
     then "{{{" <> fieldName <> "}}}"
     else "{{" <> fieldName <> "}}"
+
+-- ============================================================================
+-- Field Reference Generation (for array contexts)
+-- ============================================================================
+
+-- | Generate a field reference in the context of an array iteration
+-- Recursively expands struct fields using dot notation
+-- prefix is the path prefix (empty for top-level array items)
+generateFieldRefInContext :: IR -> Text -> FieldDef -> Text
+generateFieldRefInContext ir prefix field =
+  let name = fdName field
+      fullPath = if T.null prefix then name else prefix <> "." <> name
+  in case fdType field of
+    -- Primitives: simple reference
+    RefPrimitive _ _ ->
+      name <> "={{" <> fullPath <> "}}"
+
+    -- Named types: check if it's a struct that needs expansion
+    RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
+      Just TypeDef{tdKind = KindStruct fields} ->
+        -- Recursively expand struct fields
+        let displayFields = filter (not . isInternalField) fields
+            nestedRefs = map (generateFieldRefInContext ir fullPath) displayFields
+        in name <> "=(" <> T.intercalate " " nestedRefs <> ")"
+      Just TypeDef{tdKind = KindPrimitive _ _} ->
+        name <> "={{" <> fullPath <> "}}"
+      _ ->
+        -- Enum or unknown: just reference it
+        name <> "={{" <> fullPath <> "}}"
+
+    -- Arrays: indicate it's an array
+    RefArray _ ->
+      name <> "=[...]"
+
+    -- Optional: same as inner type but may be null
+    RefOptional inner -> case inner of
+      RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
+        Just TypeDef{tdKind = KindStruct fields} ->
+          let displayFields = filter (not . isInternalField) fields
+              nestedRefs = map (generateFieldRefInContext ir fullPath) displayFields
+          in name <> "=(" <> T.intercalate " " nestedRefs <> ")"
+        _ -> name <> "={{" <> fullPath <> "}}"
+      _ -> name <> "={{" <> fullPath <> "}}"
+
+    -- Fallback
+    _ -> name <> "={{" <> fullPath <> "}}"
 
 -- ============================================================================
 -- Field Classification

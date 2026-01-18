@@ -1,6 +1,6 @@
-{{! claudecode.get - returns: GetResult }}
-{{! Variants: cone_data, error }}
-{{#cone_data}}
-  cone: created_at={{cone.created_at}} head={{cone.head}} id={{cone.id}} metadata={{cone.metadata}} model_id={{cone.model_id}} name={{cone.name}} system_prompt={{cone.system_prompt}} updated_at={{cone.updated_at}}
-{{/cone_data}}
+{{! claudecode.get - returns: claudecode.GetResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  config: claude_session_id={{config.claude_session_id}} created_at={{config.created_at}} head={{config.head}} id={{config.id}} loopback_enabled={{config.loopback_enabled}} mcp_config={{config.mcp_config}} metadata={{config.metadata}} model={{config.model}} name={{config.name}} system_prompt={{config.system_prompt}} updated_at={{config.updated_at}} working_dir={{config.working_dir}}
+{{/ok}}
 {{#error}}{{{message}}}{{/error}}

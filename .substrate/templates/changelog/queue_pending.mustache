@@ -1,10 +1,11 @@
-{{! changelog.queue_pending - returns: ChangelogEvent }}
+{{! changelog.queue_pending - returns: changelog.ChangelogEvent }}
 {{! Variants: entry_added, entries, status, startup_check, queue_added, queue_updated, queue_entries, queue_item }}
 {{#entry_added}}
   entry: author={{entry.author}} created_at={{entry.created_at}} details={{entry.details}} hash={{entry.hash}} previous_hash={{entry.previous_hash}} queue_id={{entry.queue_id}} summary={{entry.summary}}
 {{/entry_added}}
 {{#entries}}
-  entries: {{#entries}}...{{/entries}}
+  entries: {{#entries}}
+    author={{author}} created_at={{created_at}} details={{details}} hash={{hash}} previous_hash={{previous_hash}} queue_id={{queue_id}} summary={{summary}}{{/entries}}
 {{/entries}}
 {{#status}}
   current_hash: {{current_hash}}
@@ -26,7 +27,8 @@
   entry: completed_at={{entry.completed_at}} completed_hash={{entry.completed_hash}} created_at={{entry.created_at}} description={{entry.description}} id={{entry.id}} status={{entry.status}} tags={{entry.tags}}
 {{/queue_updated}}
 {{#queue_entries}}
-  entries: {{#entries}}...{{/entries}}
+  entries: {{#entries}}
+    completed_at={{completed_at}} completed_hash={{completed_hash}} created_at={{created_at}} description={{description}} id={{id}} status={{status}} tags={{tags}}{{/entries}}
 {{/queue_entries}}
 {{#queue_item}}
   entry: {{#entry}}completed_at={{completed_at}} completed_hash={{completed_hash}} created_at={{created_at}} description={{description}} id={{id}} status={{status}} tags={{tags}}{{/entry}}{{^entry}}null{{/entry}}

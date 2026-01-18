@@ -1,0 +1,11 @@
+{{! claudecode.poll - returns: claudecode.PollResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  events: {{#events}}
+    seq={{seq}} timestamp={{timestamp}}{{/events}}
+  has_more: {{has_more}}
+  read_position: {{read_position}}
+  status: {{status}}
+  total_events: {{total_events}}
+{{/ok}}
+{{#error}}{{{message}}}{{/error}}

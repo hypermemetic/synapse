@@ -1,7 +1,8 @@
-{{! plexus.hyperforge.org.list - returns: OrgEvent }}
+{{! hyperforge.org.list - returns: org.OrgEvent }}
 {{! Variants: listed, details, created, removed, updated, ssh_config_updated, info, import_started, repo_imported, import_complete, error }}
 {{#listed}}
-  orgs: {{#orgs}}...{{/orgs}}
+  orgs: {{#orgs}}
+    forges={{forges}} name={{name}} owner={{owner}}{{/orgs}}
 {{/listed}}
 {{#details}}
   org: default_visibility={{org.default_visibility}} forges={{org.forges}} name={{org.name}} origin={{org.origin}} owner={{org.owner}} ssh_key={{org.ssh_key}}
@@ -26,12 +27,12 @@
   name: {{name}}
 {{/info}}
 {{#import_started}}
-  forges: {{#forges}}...{{/forges}}
+  forges: {{#forges}}{{.}}{{/forges}}
   org_name: {{org_name}}
 {{/import_started}}
 {{#repo_imported}}
   description: {{#description}}{{.}}{{/description}}{{^description}}null{{/description}}
-  forges: {{#forges}}...{{/forges}}
+  forges: {{#forges}}{{.}}{{/forges}}
   org_name: {{org_name}}
   repo_name: {{repo_name}}
   visibility: {{visibility}}

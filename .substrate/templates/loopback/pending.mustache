@@ -1,0 +1,7 @@
+{{! loopback.pending - returns: loopback.PendingResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  approvals: {{#approvals}}
+    created_at={{created_at}} id={{id}} input={{input}} resolved_at={{resolved_at}} response_message={{response_message}} session_id={{session_id}} status={{status}} tool_name={{tool_name}} tool_use_id={{tool_use_id}}{{/approvals}}
+{{/ok}}
+{{#error}}{{{message}}}{{/error}}

@@ -1,6 +1,7 @@
-{{! cone.list - returns: ListResult }}
+{{! cone.list - returns: cone.ListResult }}
 {{! Variants: cone_list, error }}
 {{#cone_list}}
-  cones: {{#cones}}...{{/cones}}
+  cones: {{#cones}}
+    created_at={{created_at}} head={{head}} id={{id}} model_id={{model_id}} name={{name}}{{/cones}}
 {{/cone_list}}
 {{#error}}{{{message}}}{{/error}}

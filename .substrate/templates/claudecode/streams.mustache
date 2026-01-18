@@ -1,0 +1,7 @@
+{{! claudecode.streams - returns: claudecode.StreamListResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  streams: {{#streams}}
+    ended_at={{ended_at}} error={{error}} event_count={{event_count}} read_position={{read_position}} session_id={{session_id}} started_at={{started_at}} status={{status}} stream_id={{stream_id}} user_position={{user_position}}{{/streams}}
+{{/ok}}
+{{#error}}{{{message}}}{{/error}}

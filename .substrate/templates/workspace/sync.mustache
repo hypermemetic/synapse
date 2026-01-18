@@ -1,7 +1,8 @@
-{{! plexus.hyperforge.workspace.sync - returns: WorkspaceEvent }}
-{{! Variants: listed, resolved, bound, unbound, not_bound, repos_discovered, repo_staged, error, diff_started, org_diff_result, org_diff_error, diff_complete, import_started, org_import_started, org_import_complete, import_complete, clone_all_started, org_clone_all_started, org_clone_all_complete, clone_all_complete, sync_started, org_sync_started, org_sync_complete, sync_complete }}
+{{! hyperforge.workspace.sync - returns: workspace.WorkspaceEvent }}
+{{! Variants: listed, resolved, bound, unbound, not_bound, repos_discovered, repo_staged, repos_listed, error, diff_started, org_diff_result, org_diff_error, diff_complete, import_started, org_import_started, org_import_complete, import_complete, clone_all_started, org_clone_all_started, org_clone_all_complete, clone_all_complete, preview_started, org_preview_started, preview_output, pulumi_importing, pulumi_imported, forge_preview, forge_synced, org_preview_complete, preview_complete, sync_started, org_sync_started, sync_output, org_sync_complete, sync_complete }}
 {{#listed}}
-  bindings: {{#bindings}}...{{/bindings}}
+  bindings: {{#bindings}}
+    org_name={{org_name}} path={{path}}{{/bindings}}
 {{/listed}}
 {{#resolved}}
   org_name: {{org_name}}
@@ -25,6 +26,12 @@
 {{#repo_staged}}
   repo_name: {{repo_name}}
 {{/repo_staged}}
+{{#repos_listed}}
+  org_name: {{org_name}}
+  repos: {{#repos}}
+    cloned={{cloned}} migrated={{migrated}} name={{name}}{{/repos}}
+  workspace_path: {{workspace_path}}
+{{/repos_listed}}
 {{#error}}{{{message}}}{{/error}}
 {{#diff_started}}
   org_count: {{org_count}}
@@ -83,6 +90,62 @@
   total_failed: {{total_failed}}
   total_skipped: {{total_skipped}}
 {{/clone_all_complete}}
+{{#preview_started}}
+  org_count: {{org_count}}
+  workspace_path: {{workspace_path}}
+{{/preview_started}}
+{{#org_preview_started}}
+  org_name: {{org_name}}
+{{/org_preview_started}}
+{{#preview_output}}
+  line: {{line}}
+{{/preview_output}}
+{{#pulumi_importing}}
+  forge: {{forge}}
+  org_name: {{org_name}}
+  repo_name: {{repo_name}}
+{{/pulumi_importing}}
+{{#pulumi_imported}}
+  forge: {{forge}}
+  imported: {{imported}}
+  org_name: {{org_name}}
+  repo_name: {{repo_name}}
+{{/pulumi_imported}}
+{{#forge_preview}}
+  forge: {{forge}}
+  in_sync: {{in_sync}}
+  org_name: {{org_name}}
+  repos: {{#repos}}
+    details={{details}} name={{name}} status={{status}}{{/repos}}
+  to_create: {{to_create}}
+  to_delete: {{to_delete}}
+  to_update: {{to_update}}
+{{/forge_preview}}
+{{#forge_synced}}
+  created: {{created}}
+  deleted: {{deleted}}
+  failed: {{failed}}
+  forge: {{forge}}
+  org_name: {{org_name}}
+  repos: {{#repos}}
+    details={{details}} name={{name}} status={{status}}{{/repos}}
+  unchanged: {{unchanged}}
+  updated: {{updated}}
+{{/forge_synced}}
+{{#org_preview_complete}}
+  org_name: {{org_name}}
+  to_create: {{to_create}}
+  to_delete: {{to_delete}}
+  to_update: {{to_update}}
+  unchanged: {{unchanged}}
+{{/org_preview_complete}}
+{{#preview_complete}}
+  total_to_create: {{total_to_create}}
+  total_to_delete: {{total_to_delete}}
+  total_to_update: {{total_to_update}}
+  total_unchanged: {{total_unchanged}}
+  workspace_path: {{workspace_path}}
+{{/preview_complete}}
 {{#sync_started}}
   org_count: {{org_count}}
   workspace_path: {{workspace_path}}
@@ -90,6 +153,9 @@
 {{#org_sync_started}}
   org_name: {{org_name}}
 {{/org_sync_started}}
+{{#sync_output}}
+  line: {{line}}
+{{/sync_output}}
 {{#org_sync_complete}}
   failed: {{failed}}
   org_name: {{org_name}}

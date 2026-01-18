@@ -1,4 +1,4 @@
-{{! arbor.node_get_children - returns: ArborEvent }}
+{{! arbor.node_get_children - returns: arbor.ArborEvent }}
 {{! Variants: tree_created, tree_deleted, tree_updated, tree_list, tree_claimed, tree_released, tree_scheduled_deletion, tree_archived, tree_refs, node_created, node_updated, node_deleted, node_claimed, node_released, node_scheduled_deletion, node_archived, node_refs, tree_data, tree_skeleton, node_data, node_children, node_parent, context_path, context_path_data, context_handles, context_leaves, trees_scheduled, nodes_scheduled, trees_archived, tree_render }}
 {{#tree_created}}
   tree_id: {{tree_id}}
@@ -10,7 +10,7 @@
   tree_id: {{tree_id}}
 {{/tree_updated}}
 {{#tree_list}}
-  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+  tree_ids: {{#tree_ids}}{{.}}{{/tree_ids}}
 {{/tree_list}}
 {{#tree_claimed}}
   new_count: {{new_count}}
@@ -86,7 +86,7 @@
   tree_id: {{tree_id}}
 {{/node_data}}
 {{#node_children}}
-  children: {{#children}}...{{/children}}
+  children: {{#children}}{{.}}{{/children}}
   node_id: {{node_id}}
   tree_id: {{tree_id}}
 {{/node_children}}
@@ -96,30 +96,32 @@
   tree_id: {{tree_id}}
 {{/node_parent}}
 {{#context_path}}
-  path: {{#path}}...{{/path}}
+  path: {{#path}}{{.}}{{/path}}
   tree_id: {{tree_id}}
 {{/context_path}}
 {{#context_path_data}}
-  nodes: {{#nodes}}...{{/nodes}}
+  nodes: {{#nodes}}
+    archived_at={{archived_at}} children={{children}} created_at={{created_at}} data={{data}} id={{id}} metadata={{metadata}} parent={{parent}} refs={{refs}} scheduled_deletion_at={{scheduled_deletion_at}} state={{state}}{{/nodes}}
   tree_id: {{tree_id}}
 {{/context_path_data}}
 {{#context_handles}}
-  handles: {{#handles}}...{{/handles}}
+  handles: {{#handles}}
+    meta={{meta}} method={{method}} plugin_id={{plugin_id}} version={{version}}{{/handles}}
   tree_id: {{tree_id}}
 {{/context_handles}}
 {{#context_leaves}}
-  leaves: {{#leaves}}...{{/leaves}}
+  leaves: {{#leaves}}{{.}}{{/leaves}}
   tree_id: {{tree_id}}
 {{/context_leaves}}
 {{#trees_scheduled}}
-  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+  tree_ids: {{#tree_ids}}{{.}}{{/tree_ids}}
 {{/trees_scheduled}}
 {{#nodes_scheduled}}
-  node_ids: {{#node_ids}}...{{/node_ids}}
+  node_ids: {{#node_ids}}{{.}}{{/node_ids}}
   tree_id: {{tree_id}}
 {{/nodes_scheduled}}
 {{#trees_archived}}
-  tree_ids: {{#tree_ids}}...{{/tree_ids}}
+  tree_ids: {{#tree_ids}}{{.}}{{/tree_ids}}
 {{/trees_archived}}
 {{#tree_render}}
   render: {{render}}

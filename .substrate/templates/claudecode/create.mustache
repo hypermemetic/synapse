@@ -1,7 +1,7 @@
-{{! claudecode.create - returns: CreateResult }}
-{{! Variants: cone_created, error }}
-{{#cone_created}}
-  cone_id: {{cone_id}}
+{{! claudecode.create - returns: claudecode.CreateResult }}
+{{! Variants: created, error }}
+{{#created}}
   head: node_id={{head.node_id}} tree_id={{head.tree_id}}
-{{/cone_created}}
+  id: {{id}}
+{{/created}}
 {{#error}}{{{message}}}{{/error}}

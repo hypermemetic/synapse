@@ -1,0 +1,6 @@
+{{! loopback.configure - returns: loopback.ConfigureResult }}
+{{! Variants: ok, error }}
+{{#ok}}
+  mcp_config: {{mcp_config}}
+{{/ok}}
+{{#error}}{{{message}}}{{/error}}

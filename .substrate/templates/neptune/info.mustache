@@ -1,7 +1,7 @@
-{{! solar.neptune.info - returns: SolarEvent }}
+{{! solar.neptune.info - returns: neptune.SolarEvent }}
 {{! Variants: body, system }}
 {{#body}}
-  body_type: {{{body_type}}}
+  body_type: {{body_type}}
   mass_kg: {{mass_kg}}
   name: {{name}}
   orbital_period_days: {{#orbital_period_days}}{{.}}{{/orbital_period_days}}{{^orbital_period_days}}null{{/orbital_period_days}}
