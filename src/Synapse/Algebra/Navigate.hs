@@ -54,10 +54,16 @@ type NavResult = SynapseM SchemaView
 
 -- | Navigate to a target from root
 -- Fetches root schema and navigates from there
+-- Note: If path starts with root namespace (e.g., "plexus"), it's stripped
+-- so that "synapse plexus cone" works the same as "synapse cone"
 navigate :: Path -> SynapseM SchemaView
 navigate target = do
   root <- fetchSchemaAt []
-  withFreshVisited $ navigateFrom root [] target
+  -- Normalize path: strip leading root namespace if present
+  let normalizedTarget = case target of
+        (seg:rest) | seg == psNamespace root -> rest
+        _ -> target
+  withFreshVisited $ navigateFrom root [] normalizedTarget
 
 -- | Navigate from a given schema
 -- visited: path taken so far

@@ -67,14 +67,12 @@ data Args = Args
 
 main :: IO ()
 main = do
-  cmd <- execParser argsInfo
-  case cmd of
-    NoCmd -> TIO.putStr topLevelHeader
-    PlexusCmd args -> runPlexus args
+  args <- execParser argsInfo
+  run args
 
--- | Run a Hub backend command
-runPlexus :: Args -> IO ()
-runPlexus args = do
+-- | Run a Hub command
+run :: Args -> IO ()
+run args = do
   env <- initEnv (argHost args) (argPort args)
   rendererCfg <- defaultRendererConfig
   result <- runSynapseM env (dispatch args rendererCfg)
@@ -314,25 +312,11 @@ splash = T.unlines
   , ""
   ]
 
--- | Get CLI help text from optparse-applicative (top-level)
-topLevelHeader :: Text
-topLevelHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
+-- | Get CLI help text from optparse-applicative
+cliHeader :: Text
+cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
   where
     failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
-
--- | Get CLI help text from optparse-applicative (plexus subcommand)
--- Uses topLevelHeader so synapse and synapse plexus show consistent help
-cliHeader :: Text
-cliHeader = topLevelHeader
-
--- | Parser info for Hub subcommand (used for help rendering)
-plexusArgsInfo :: ParserInfo Args
-plexusArgsInfo = info (plexusArgsParser <**> helper)
-  ( fullDesc
- <> header "synapse plexus - Algebraic CLI for Hub"
- <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
- <> forwardOptions
-  )
 
 -- | Render an error for display
 renderError :: SynapseError -> String
@@ -440,42 +424,16 @@ printResult _ _ cfg item = do
 -- Argument Parsing
 -- ============================================================================
 
--- ============================================================================
--- Command Types
--- ============================================================================
-
--- | Top-level command structure with backend namespacing
-data Command
-  = PlexusCmd Args  -- ^ synapse plexus <path...>
-  | NoCmd           -- ^ No subcommand - show splash
-  deriving Show
-
--- ============================================================================
--- Argument Parsing
--- ============================================================================
-
-argsInfo :: ParserInfo Command
-argsInfo = info (commandParser <**> helper)
+argsInfo :: ParserInfo Args
+argsInfo = info (argsParser <**> helper)
   ( fullDesc
- <> header "synapse - Multi-backend CLI"
- <> progDesc "Connect to various backends via explicit namespacing"
+ <> header "synapse - Algebraic CLI for Hub"
+ <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
+ <> forwardOptions  -- Pass unrecognized --flags to positional args
   )
 
--- | Top-level command parser with backend subcommands
-commandParser :: Parser Command
-commandParser = subcommand <|> pure NoCmd
-  where
-    subcommand = hsubparser
-      ( command "plexus" (info (PlexusCmd <$> plexusArgsParser <**> helper)
-          ( fullDesc
-         <> header "synapse plexus - Algebraic CLI for Hub"
-         <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
-         <> forwardOptions  -- Pass unrecognized --flags to positional args
-          ))
-      )
-
-plexusArgsParser :: Parser Args
-plexusArgsParser = do
+argsParser :: Parser Args
+argsParser = do
   argHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
    <> value "127.0.0.1" <> showDefault
