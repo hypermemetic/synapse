@@ -55,8 +55,10 @@ buildIR path = do
 -- - Merge with child results
 irAlgebra :: SchemaF IR -> SynapseM IR
 irAlgebra (PluginF schema path childIRs) = do
-  let namespace = psNamespace schema
-      pathPrefix = T.intercalate "." path
+  -- Use full path as namespace to avoid collisions
+  -- e.g., "hyperforge.workspace.repos" instead of just "repos"
+  let namespace = T.intercalate "." path
+      pathPrefix = namespace  -- Same as namespace
 
   -- Extract types and methods from this plugin
   let (localTypes, localMethods) = extractFromPlugin namespace pathPrefix schema
@@ -65,8 +67,8 @@ irAlgebra (PluginF schema path childIRs) = do
   let childIR = foldr mergeIR emptyIR childIRs
   let pluginMethods = map mdName (Map.elems localMethods)
 
-  -- Use this plugin's hash if at root (path is empty or just namespace)
-  let thisHash = if null path || path == [namespace]
+  -- Use this plugin's hash if at root (path is empty)
+  let thisHash = if null path
                  then Just (psHash schema)
                  else irHash childIR
 
