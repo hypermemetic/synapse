@@ -177,6 +177,9 @@ canCLIRepresentTypeDef ir TypeDef{..} = case tdKind of
           [] -> Right ()
           _ -> Left ReasonComplexUnion
 
+  -- String enums are representable (simple string literals)
+  KindStringEnum _ -> Right ()
+
 isLeftE :: Either a b -> Bool
 isLeftE (Left _) = True
 isLeftE (Right _) = False

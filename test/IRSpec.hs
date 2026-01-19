@@ -5,7 +5,10 @@
 -- | Integration tests for IR-based CLI
 --
 -- Requires a running Hub backend on localhost:4444
--- (or port specified by PLEXUS_PORT environment variable)
+--
+-- Usage: cabal test ir-test --test-options="<backend> [--port <port>]"
+-- Example: cabal test ir-test --test-options="plexus"
+--          cabal test ir-test --test-options="plexus --port 5555"
 --
 -- Tests that for every method in the schema:
 -- 1. IR builds successfully
@@ -20,7 +23,7 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Environment (lookupEnv)
+import System.Environment (getArgs, withArgs)
 import Test.Hspec
 import Text.Read (readMaybe)
 
@@ -32,34 +35,39 @@ import Synapse.Monad
 
 main :: IO ()
 main = do
-  -- Get port from environment or use default
-  port <- getHubPort
-  putStrLn $ "Running IR integration tests against localhost:" <> show port
+  args <- getArgs
+  case parseArgs args of
+    Nothing -> do
+      putStrLn "Usage: ir-test <backend> [--port <port>]"
+      putStrLn "Example: cabal test ir-test --test-options=\"plexus\""
+      error "Backend argument required"
+    Just (backend, port) -> do
+      putStrLn $ "Running IR integration tests against localhost:" <> show port <> " (backend: " <> T.unpack backend <> ")"
 
-  -- Initialize environment
-  env <- initEnv "127.0.0.1" port
+      -- Initialize environment
+      env <- initEnv "127.0.0.1" port backend
 
-  -- Build IR once for all tests
-  irResult <- runSynapseM env (buildIR [])
+      -- Build IR once for all tests
+      irResult <- runSynapseM env (buildIR [])
 
-  case irResult of
-    Left err -> do
-      putStrLn $ "Failed to build IR: " <> show err
-      putStrLn "Is the Hub backend running?"
-      -- Run minimal spec that reports the failure
-      hspec $ describe "IR Integration Tests" $
-        it "connects to Hub backend" $
-          expectationFailure $ "Could not connect: " <> show err
+      case irResult of
+        Left err -> do
+          putStrLn $ "Failed to build IR: " <> show err
+          putStrLn "Is the Hub backend running?"
+          -- Run minimal spec that reports the failure
+          hspec $ describe "IR Integration Tests" $
+            it "connects to Hub backend" $
+              expectationFailure $ "Could not connect: " <> show err
 
-    Right ir -> hspec $ irSpec ir
+        Right ir -> withArgs [] $ hspec $ irSpec ir
 
--- | Get Hub port from PLEXUS_PORT env var or default to 4444
-getHubPort :: IO Int
-getHubPort = do
-  mPort <- lookupEnv "PLEXUS_PORT"
-  pure $ case mPort >>= readMaybe of
-    Just p -> p
-    Nothing -> 4444
+-- | Parse command-line arguments: <backend> [--port <port>]
+parseArgs :: [String] -> Maybe (Text, Int)
+parseArgs [] = Nothing
+parseArgs (backend:rest) = Just (T.pack backend, parsePort rest)
+  where
+    parsePort ("--port":p:_) = maybe 4444 id (readMaybe p)
+    parsePort _ = 4444
 
 -- | Main spec using pre-built IR
 irSpec :: IR -> Spec

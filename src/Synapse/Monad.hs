@@ -56,7 +56,7 @@ import Synapse.Schema.Types
 data SynapseEnv = SynapseEnv
   { seHost    :: !Text                        -- ^ Hub host
   , sePort    :: !Int                         -- ^ Hub port
-  , seBackend :: !Text                        -- ^ Backend name (e.g., "plexus")
+  , seBackend :: !Text                        -- ^ Backend name (first CLI argument)
   , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
   }

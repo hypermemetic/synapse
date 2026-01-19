@@ -224,6 +224,9 @@ expandTypeDef ir prefix TypeDef{..} = case tdKind of
   -- Primitives don't expand
   KindPrimitive _ _ -> []
 
+  -- String enums don't expand (just string literals)
+  KindStringEnum _ -> []
+
 -- | Expand an enum (discriminated union) into variant examples
 expandEnum :: IR -> Text -> Text -> [VariantDef] -> [Text]
 expandEnum ir prefix discriminator variants =
