@@ -73,7 +73,10 @@ main = do
   args <- execParser argsInfo
   case argBackend args of
     Nothing -> TIO.putStr cliHeader  -- No backend specified, show help
-    Just backend -> run backend args
+    Just backend
+      -- Handle --help/-h as backend (forwardOptions treats flags as positional args)
+      | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
+      | otherwise -> run backend args
 
 -- | Run a Hub command with specified backend
 run :: Text -> Args -> IO ()
@@ -102,7 +105,7 @@ dispatch Args{..} rendererCfg = do
 
     Nothing -> do
       -- Parse path and inline params (--key value pairs)
-      let (pathSegs, rawParams) = parsePathAndParams argPath
+      let (pathSegs, rawParams, helpRequested) = parsePathAndParams argPath
 
       -- Apply parameter transformations (path expansion, env vars)
       transformEnv <- liftIO mkTransformEnv
@@ -160,48 +163,57 @@ dispatch Args{..} rendererCfg = do
                   ir <- buildIR (init path)
                   let fullPath = T.intercalate "." path
 
-                  -- Build params: use IR-driven parsing for inline params
-                  let schemaDefaults = extractSchemaDefaults method
-                  userParams <- case argParams of
-                    -- -p JSON: parse as raw JSON (bypass IR parsing)
-                    Just jsonStr ->
-                      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
-                        Left err -> throwParse $ T.pack err
-                        Right p -> pure p
-                    Nothing
-                      | not (null inlineParams) ->
-                          -- Use IR-driven parsing for inline params
-                          case Map.lookup fullPath (irMethods ir) of
-                            Just methodDef -> do
-                              -- Inject boolean defaults for flags without values
-                              let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
-                              case parseParams ir methodDef paramsWithBools of
-                                Right p -> pure p
-                                Left errs -> do
-                                  liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
-                                  throwParse "Parameter parsing failed"
-                            Nothing ->
-                              -- Fallback to flat object if method not in IR
-                              pure $ buildParamsObject inlineParams
-                      | otherwise -> pure $ object []
-                  -- Merge: user params override schema defaults
-                  let params = mergeParams schemaDefaults userParams
-
-                  if argDryRun
+                  -- If --help was explicitly requested, show help and exit
+                  if helpRequested
                     then do
-                      backend <- asks seBackend
-                      liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
-                    -- Show help when: method has required params AND user provided no params
-                    else if hasRequiredParams method && userParams == object [] && null inlineParams
-                      then do
-                        -- Render help from IR
-                        case Map.lookup fullPath (irMethods ir) of
-                          Just methodDef ->
-                            liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
-                          Nothing ->
-                            -- Fallback: method not in IR, use basic info
-                            liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
-                      else invokeMethod path params
+                      case Map.lookup fullPath (irMethods ir) of
+                        Just methodDef ->
+                          liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                        Nothing ->
+                          liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
+                    else do
+                      -- Build params: use IR-driven parsing for inline params
+                      let schemaDefaults = extractSchemaDefaults method
+                      userParams <- case argParams of
+                        -- -p JSON: parse as raw JSON (bypass IR parsing)
+                        Just jsonStr ->
+                          case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
+                            Left err -> throwParse $ T.pack err
+                            Right p -> pure p
+                        Nothing
+                          | not (null inlineParams) ->
+                              -- Use IR-driven parsing for inline params
+                              case Map.lookup fullPath (irMethods ir) of
+                                Just methodDef -> do
+                                  -- Inject boolean defaults for flags without values
+                                  let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
+                                  case parseParams ir methodDef paramsWithBools of
+                                    Right p -> pure p
+                                    Left errs -> do
+                                      liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
+                                      throwParse "Parameter parsing failed"
+                                Nothing ->
+                                  -- Fallback to flat object if method not in IR
+                                  pure $ buildParamsObject inlineParams
+                          | otherwise -> pure $ object []
+                      -- Merge: user params override schema defaults
+                      let params = mergeParams schemaDefaults userParams
+
+                      if argDryRun
+                        then do
+                          backend <- asks seBackend
+                          liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
+                        -- Show help when: method has required params AND user provided no params
+                        else if hasRequiredParams method && userParams == object [] && null inlineParams
+                          then do
+                            -- Render help from IR
+                            case Map.lookup fullPath (irMethods ir) of
+                              Just methodDef ->
+                                liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                              Nothing ->
+                                -- Fallback: method not in IR, use basic info
+                                liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
+                          else invokeMethod path params
   where
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
@@ -265,28 +277,33 @@ dispatch Args{..} rendererCfg = do
         _ -> throwParse "JSON-RPC must be an object"
 
 -- | Parse path segments and --key value params
--- Returns (path segments, [(key, value)] params)
+-- Returns (path segments, [(key, value)] params, help requested)
 -- Example: ["echo", "once", "--message", "hello", "--count", "3"]
---       -> (["echo", "once"], [("message", "hello"), ("count", "3")])
-parsePathAndParams :: [Text] -> ([Text], [(Text, Text)])
-parsePathAndParams = go [] []
+--       -> (["echo", "once"], [("message", "hello"), ("count", "3")], False)
+-- Example: ["echo", "once", "--help"]
+--       -> (["echo", "once"], [], True)
+parsePathAndParams :: [Text] -> ([Text], [(Text, Text)], Bool)
+parsePathAndParams = go [] [] False
   where
-    go path params [] = (reverse path, reverse params)
-    go path params (x:xs)
+    go path params helpReq [] = (reverse path, reverse params, helpReq)
+    go path params helpReq (x:xs)
+      -- --help flag: mark help requested, don't add as param
+      | x == "--help" || x == "-h" =
+          go path params True xs
       -- --key value pair (value must not start with --)
       | Just key <- T.stripPrefix "--" x
       , not (T.null key)
       , (val:rest) <- xs
       , not (T.isPrefixOf "--" val) =
-          go path ((key, val) : params) rest
+          go path ((key, val) : params) helpReq rest
       -- --key with no value or next arg is another flag (boolean flag)
       | Just key <- T.stripPrefix "--" x
       , not (T.null key) =
-          go path ((key, "") : params) xs
+          go path ((key, "") : params) helpReq xs
       -- Regular path segment - split on dots to support plexus.cone.chat syntax
       | otherwise =
           let segments = filter (not . T.null) $ T.splitOn "." x
-          in go (reverse segments ++ path) params xs
+          in go (reverse segments ++ path) params helpReq xs
 
 -- | Build JSON object from key-value pairs
 buildParamsObject :: [(Text, Text)] -> Value
@@ -431,12 +448,14 @@ printResult _ _ cfg item = do
 -- ============================================================================
 
 argsInfo :: ParserInfo Args
-argsInfo = info (argsParser <**> helper)
+argsInfo = info argsParser
   ( fullDesc
  <> header "synapse - Algebraic CLI for Hub"
  <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
  <> forwardOptions  -- Pass unrecognized --flags to positional args
   )
+  -- Note: We don't use `helper` here because we want --help to be forwarded
+  -- to argPath so subcommand help works (e.g., `synapse plexus solar --help`)
 
 argsParser :: Parser Args
 argsParser = do

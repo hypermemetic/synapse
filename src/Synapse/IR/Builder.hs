@@ -5,7 +5,7 @@
 --
 -- Uses the existing schema walker with a custom algebra that:
 -- 1. Extracts types from $defs in methodParams and methodReturns
--- 2. Deduplicates types by name
+-- 2. Deduplicates types by content hash (prefer parent namespace, then shortest)
 -- 3. Infers streaming from return type structure
 -- 4. Builds method definitions with type references
 module Synapse.IR.Builder
@@ -22,6 +22,7 @@ import Control.Monad (forM)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import Data.List (minimumBy)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, mapMaybe, catMaybes)
@@ -40,8 +41,11 @@ import Synapse.IR.Types
 -- ============================================================================
 
 -- | Build IR by walking the schema tree from a given path
+-- After walking, deduplicate types that have identical structure
 buildIR :: Path -> SynapseM IR
-buildIR = walkSchema irAlgebra
+buildIR path = do
+  raw <- walkSchema irAlgebra path
+  pure (deduplicateTypes raw)
 
 -- | Algebra for building IR from schema tree
 --
@@ -85,6 +89,126 @@ irAlgebra (MethodF method namespace path) = do
     , irMethods = Map.singleton fullPath mdef
     , irPlugins = Map.singleton namespace [methodName method]
     }
+
+-- ============================================================================
+-- Type Deduplication
+-- ============================================================================
+
+-- | Deduplicate types by content hash
+--
+-- When multiple namespaces define identical types (e.g., solar.SolarEvent and
+-- jupiter.SolarEvent), we deduplicate them by keeping one canonical version.
+--
+-- Strategy:
+-- 1. Hash each TypeDef by its structure (name + kind, ignoring namespace)
+-- 2. Group duplicates
+-- 3. Pick canonical: prefer parent namespace, then shortest namespace
+-- 4. Update all RefNamed references to point to canonical qualified name
+deduplicateTypes :: IR -> IR
+deduplicateTypes ir =
+  let -- Group types by their content hash
+      typesByHash = Map.fromListWith (++)
+        [ (hashTypeStructure td, [(fullName, td)])
+        | (fullName, td) <- Map.toList (irTypes ir)
+        ]
+
+      -- Pick canonical version for each group
+      canonical = Map.fromList
+        [ (hash, selectCanonical group)
+        | (hash, group) <- Map.toList typesByHash
+        ]
+
+      -- Build redirect map: old qualified name -> canonical qualified name
+      redirects = Map.fromList
+        [ (oldName, canonicalName)
+        | group <- Map.elems typesByHash
+        , let canonicalName = fst (selectCanonical group)
+        , (oldName, _) <- group
+        , oldName /= canonicalName
+        ]
+
+      -- Keep only canonical types
+      dedupedTypes = Map.fromList [canon | canon <- Map.elems canonical]
+
+      -- Update all method references
+      dedupedMethods = Map.map (updateMethodRefs redirects) (irMethods ir)
+
+  in ir { irTypes = dedupedTypes, irMethods = dedupedMethods }
+
+-- | Hash a TypeDef by its structure (ignoring namespace and description)
+-- Types are considered identical if they have the same name and kind
+-- We normalize TypeRefs (strip namespaces) before hashing to detect structural identity
+hashTypeStructure :: TypeDef -> Text
+hashTypeStructure TypeDef{..} =
+  tdName <> "::" <> T.pack (show (normalizeTypeKind tdKind))
+  where
+    -- Normalize a TypeKind by stripping namespaces from all RefNamed types
+    normalizeTypeKind :: TypeKind -> TypeKind
+    normalizeTypeKind = \case
+      KindStruct fields -> KindStruct (map normalizeField fields)
+      KindEnum disc variants -> KindEnum disc (map normalizeVariant variants)
+      KindStringEnum vals -> KindStringEnum vals
+      KindAlias target -> KindAlias (normalizeTypeRef target)
+      KindPrimitive t f -> KindPrimitive t f
+
+    normalizeField :: FieldDef -> FieldDef
+    normalizeField fd = fd { fdType = normalizeTypeRef (fdType fd) }
+
+    normalizeVariant :: VariantDef -> VariantDef
+    normalizeVariant vd = vd { vdFields = map normalizeField (vdFields vd) }
+
+    normalizeTypeRef :: TypeRef -> TypeRef
+    normalizeTypeRef = \case
+      RefNamed name ->
+        -- Strip namespace: "solar.BodyType" -> "BodyType"
+        RefNamed (T.takeWhileEnd (/= '.') name)
+      RefArray inner -> RefArray (normalizeTypeRef inner)
+      RefOptional inner -> RefOptional (normalizeTypeRef inner)
+      other -> other
+
+-- | Select the canonical version from a group of duplicate types
+-- Strategy: prefer parent namespace, then shortest namespace
+selectCanonical :: [(Text, TypeDef)] -> (Text, TypeDef)
+selectCanonical dups =
+  case dups of
+    [] -> error "selectCanonical: empty list"
+    [single] -> single
+    multiple -> minimumBy compareNamespacePreference multiple
+  where
+    -- Compare two (fullName, typedef) pairs
+    compareNamespacePreference (_, td1) (_, td2) =
+      let ns1 = tdNamespace td1
+          ns2 = tdNamespace td2
+          -- Check if one is parent of the other
+          isParent n1 n2 = n2 `T.isPrefixOf` n1 && T.length n1 > T.length n2
+      in case (isParent ns1 ns2, isParent ns2 ns1) of
+           (True, False) -> GT  -- ns2 is parent of ns1, prefer ns2
+           (False, True) -> LT  -- ns1 is parent of ns2, prefer ns1
+           _ -> compare (T.length ns1) (T.length ns2)  -- Fallback: shortest wins
+
+-- | Update all RefNamed references in a method using redirect map
+updateMethodRefs :: Map Text Text -> MethodDef -> MethodDef
+updateMethodRefs redirects md = md
+  { mdParams = map (updateParamRefs redirects) (mdParams md)
+  , mdReturns = updateTypeRef redirects (mdReturns md)
+  }
+
+-- | Update type references in a parameter
+updateParamRefs :: Map Text Text -> ParamDef -> ParamDef
+updateParamRefs redirects pd = pd
+  { pdType = updateTypeRef redirects (pdType pd)
+  }
+
+-- | Recursively update a TypeRef to use canonical names
+updateTypeRef :: Map Text Text -> TypeRef -> TypeRef
+updateTypeRef redirects = \case
+  RefNamed name ->
+    RefNamed (Map.findWithDefault name name redirects)
+  RefArray inner ->
+    RefArray (updateTypeRef redirects inner)
+  RefOptional inner ->
+    RefOptional (updateTypeRef redirects inner)
+  other -> other
 
 -- ============================================================================
 -- Extraction from Plugin
