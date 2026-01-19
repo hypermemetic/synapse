@@ -176,19 +176,17 @@ extractParamsFromObject namespace o =
 -- ============================================================================
 
 -- | Extract types, return ref, and streaming flag from returns schema
--- Types are namespace-qualified to avoid collisions (e.g., "cone.ListResult")
 extractReturns :: Text -> Text -> Maybe Value -> (Map Text TypeDef, TypeRef, Bool)
 extractReturns _ _ Nothing = (Map.empty, RefUnknown, False)
 extractReturns namespace methodName (Just val) = case val of
   Object o ->
-    let -- Extract $defs (namespace-qualified)
+    let -- Extract $defs
         defs = extractDefs namespace o
 
-        -- Get the title and namespace-qualify it
-        rawTypeName = case KM.lookup "title" o of
+        -- Get the type name from title or generate from method name
+        typeName = case KM.lookup "title" o of
           Just (String t) -> t
           _ -> methodName <> "Result"
-        typeName = namespace <> "." <> rawTypeName
 
         -- Check for oneOf (discriminated union)
         (typeDef, streaming) = case KM.lookup "oneOf" o of
@@ -199,6 +197,7 @@ extractReturns namespace methodName (Just val) = case val of
                 isStream = length nonErrorVariants > 1
             in ( Just $ TypeDef
                    { tdName = typeName
+                   , tdNamespace = namespace
                    , tdDescription = extractDescription val
                    , tdKind = KindEnum discriminator variantDefs
                    }
@@ -210,10 +209,13 @@ extractReturns namespace methodName (Just val) = case val of
 
         -- Add the return type to defs if it's a union
         allDefs = case typeDef of
-          Just td -> Map.insert typeName td defs
+          Just td -> Map.insert (tdFullName td) td defs
           Nothing -> defs
 
-    in (allDefs, RefNamed typeName, streaming)
+        -- Return type reference uses full name for lookup
+        fullTypeName = namespace <> "." <> typeName
+
+    in (allDefs, RefNamed fullTypeName, streaming)
   _ -> (Map.empty, RefUnknown, False)
 
 -- | Extract a variant from a oneOf element
@@ -278,15 +280,14 @@ extractDefs namespace o =
   in Map.fromList $ mapMaybe (extractTypeDef namespace) (KM.toList defs)
 
 -- | Extract a type definition from a $defs entry
--- Type name is namespace-qualified (e.g., "cone.ConeInfo")
 extractTypeDef :: Text -> (K.Key, Value) -> Maybe (Text, TypeDef)
 extractTypeDef namespace (k, v) = case v of
   Object o ->
-    let rawName = K.toText k
-        qualifiedName = namespace <> "." <> rawName
+    let name = K.toText k
         desc = extractDescription v
         kind = inferTypeKind namespace o
-    in Just (qualifiedName, TypeDef qualifiedName desc kind)
+        td = TypeDef name namespace desc kind
+    in Just (tdFullName td, td)
   _ -> Nothing
 
 -- | Infer the kind of a type from its JSON Schema

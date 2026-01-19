@@ -29,6 +29,7 @@ module Synapse.IR.Types
 
     -- * Type Definitions
   , TypeDef(..)
+  , tdFullName
   , TypeKind(..)
   , FieldDef(..)
   , VariantDef(..)
@@ -95,12 +96,17 @@ mergeIR a b = IR
 
 -- | A type definition extracted from schemas
 data TypeDef = TypeDef
-  { tdName        :: Text           -- ^ Type name (e.g., "Position", "ChatEvent")
+  { tdName        :: Text           -- ^ Type name (e.g., "ListResult", "ChatEvent")
+  , tdNamespace   :: Text           -- ^ Namespace (e.g., "cone", "arbor")
   , tdDescription :: Maybe Text     -- ^ Documentation
   , tdKind        :: TypeKind       -- ^ What kind of type this is
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)
+
+-- | Compute the fully qualified type name
+tdFullName :: TypeDef -> Text
+tdFullName td = tdNamespace td <> "." <> tdName td
 
 -- | The kind of a type definition
 data TypeKind
