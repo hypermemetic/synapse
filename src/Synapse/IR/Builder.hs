@@ -127,13 +127,17 @@ deduplicateTypes ir =
         , oldName /= canonicalName
         ]
 
-      -- Keep only canonical types
-      dedupedTypes = Map.fromList [canon | canon <- Map.elems canonical]
+      -- Keep only canonical types and update their internal type references
+      canonicalPairs = [canon | canon <- Map.elems canonical]
+      dedupedTypesWithUpdatedRefs = Map.fromList
+        [ (qualName, updateTypeDefRefs redirects td)
+        | (qualName, td) <- canonicalPairs
+        ]
 
       -- Update all method references
       dedupedMethods = Map.map (updateMethodRefs redirects) (irMethods ir)
 
-  in ir { irTypes = dedupedTypes, irMethods = dedupedMethods }
+  in ir { irTypes = dedupedTypesWithUpdatedRefs, irMethods = dedupedMethods }
 
 -- | Hash a TypeDef by its structure (ignoring namespace and description)
 -- Types are considered identical if they have the same name and kind
@@ -209,6 +213,29 @@ updateTypeRef redirects = \case
   RefOptional inner ->
     RefOptional (updateTypeRef redirects inner)
   other -> other
+
+-- | Update all type references in a TypeDef
+updateTypeDefRefs :: Map Text Text -> TypeDef -> TypeDef
+updateTypeDefRefs redirects td = td { tdKind = updateTypeKind (tdKind td) }
+  where
+    updateTypeKind :: TypeKind -> TypeKind
+    updateTypeKind = \case
+      KindStruct fields ->
+        KindStruct (map updateField fields)
+      KindEnum disc variants ->
+        KindEnum disc (map updateVariant variants)
+      KindAlias target ->
+        KindAlias (updateTypeRef redirects target)
+      KindStringEnum vals ->
+        KindStringEnum vals
+      KindPrimitive t f ->
+        KindPrimitive t f
+
+    updateField :: FieldDef -> FieldDef
+    updateField fd = fd { fdType = updateTypeRef redirects (fdType fd) }
+
+    updateVariant :: VariantDef -> VariantDef
+    updateVariant vd = vd { vdFields = map updateField (vdFields vd) }
 
 -- ============================================================================
 -- Extraction from Plugin
