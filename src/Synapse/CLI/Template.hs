@@ -150,19 +150,21 @@ generateHeader method mTypeName variants =
 -- | Generate template body for a method, returning (body, variants, typeName)
 generateMethodBody :: IR -> MethodDef -> (Text, [Text], Maybe Text)
 generateMethodBody ir method = case mdReturns method of
-  RefNamed name -> case Map.lookup name (irTypes ir) of
-    Just typeDef@TypeDef{tdKind = KindEnum _ variants} ->
-      -- Union type: generate sections for ALL variants (exhaustive)
-      -- No blank lines between sections to avoid whitespace in output
-      let variantNames = map vdName variants
-          body = T.intercalate "\n" (map (variantToMustache ir 0) variants) <> "\n"
-      in (body, variantNames, Just name)
-    Just typeDef ->
-      -- Non-union named type
-      (typeDefToMustache ir 0 typeDef, [], Just name)
-    Nothing ->
-      -- Type not found
-      ("{{.}}", [], Just name)
+  RefNamed qn ->
+    let name = qualifiedNameFull qn
+    in case Map.lookup name (irTypes ir) of
+      Just typeDef@TypeDef{tdKind = KindEnum _ variants} ->
+        -- Union type: generate sections for ALL variants (exhaustive)
+        -- No blank lines between sections to avoid whitespace in output
+        let variantNames = map vdName variants
+            body = T.intercalate "\n" (map (variantToMustache ir 0) variants) <> "\n"
+        in (body, variantNames, Just name)
+      Just typeDef ->
+        -- Non-union named type
+        (typeDefToMustache ir 0 typeDef, [], Just name)
+      Nothing ->
+        -- Type not found
+        ("{{.}}", [], Just name)
   other ->
     -- Primitive or other
     (typeRefToMustache ir 0 other, [], Nothing)
@@ -250,9 +252,11 @@ typeRefToMustache ir indent = \case
   RefPrimitive _ _ -> "{{.}}"
 
   -- Named types: look up the definition
-  RefNamed name -> case Map.lookup name (irTypes ir) of
-    Just typeDef -> typeDefToMustache ir indent typeDef
-    Nothing -> "{{.}}"  -- Fallback if type not found
+  RefNamed qn ->
+    let name = qualifiedNameFull qn
+    in case Map.lookup name (irTypes ir) of
+      Just typeDef -> typeDefToMustache ir indent typeDef
+      Nothing -> "{{.}}"  -- Fallback if type not found
 
   -- Arrays: iterate with section
   RefArray inner ->
@@ -324,12 +328,14 @@ generateFieldLine ir indent field@FieldDef{..} =
 -- | Generate value for inside an optional section (no outer wrapper needed)
 generateOptionalInnerValue :: IR -> TypeRef -> Text
 generateOptionalInnerValue ir typeRef = case typeRef of
-  RefNamed name -> case Map.lookup name (irTypes ir) of
-    Just TypeDef{tdKind = KindStruct fields} ->
-      let displayFields = filter (not . isInternalField) fields
-          fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
-      in T.intercalate " " fieldRefs
-    _ -> "{{.}}"
+  RefNamed qn ->
+    let name = qualifiedNameFull qn
+    in case Map.lookup name (irTypes ir) of
+      Just TypeDef{tdKind = KindStruct fields} ->
+        let displayFields = filter (not . isInternalField) fields
+            fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
+        in T.intercalate " " fieldRefs
+      _ -> "{{.}}"
   RefPrimitive _ _ -> "{{.}}"
   _ -> "{{.}}"
 
@@ -346,40 +352,46 @@ generateFieldValue ir typeRef fieldName field = case typeRef of
   RefArray inner -> case inner of
     RefPrimitive _ _ ->
       "{{#" <> fieldName <> "}}{{.}} {{/" <> fieldName <> "}}"
-    RefNamed name -> case Map.lookup name (irTypes ir) of
-      Just TypeDef{tdKind = KindStruct fields} ->
-        -- For arrays of structs, expand each item's fields on its own line
-        let displayFields = filter (not . isInternalField) fields
-            fieldRefs = map (generateFieldRefInContext ir "") displayFields
-        in "{{#" <> fieldName <> "}}\n    " <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
-      _ ->
-        "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
+    RefNamed qn ->
+      let name = qualifiedNameFull qn
+      in case Map.lookup name (irTypes ir) of
+        Just TypeDef{tdKind = KindStruct fields} ->
+          -- For arrays of structs, expand each item's fields on its own line
+          let displayFields = filter (not . isInternalField) fields
+              fieldRefs = map (generateFieldRefInContext ir "") displayFields
+          in "{{#" <> fieldName <> "}}\n    " <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
+        _ ->
+          "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
     _ ->
       "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
 
   -- Named types: depends on what they are
-  RefNamed name -> case Map.lookup name (irTypes ir) of
-    Just TypeDef{tdKind = KindPrimitive _ _} ->
-      "{{" <> fieldName <> "}}"
-    Just TypeDef{tdKind = KindStruct fields} ->
-      -- Expand struct fields with dot notation to avoid Haskell Show output
-      let displayFields = filter (not . isInternalField) fields
-          fieldRefs = map (\f -> fdName f <> "={{" <> fieldName <> "." <> fdName f <> "}}") displayFields
-      in T.intercalate " " fieldRefs
-    Just TypeDef{tdKind = KindEnum _ _} ->
-      "{{{" <> fieldName <> "}}}"  -- Nested union: use triple braces for unescaped JSON
-    _ ->
-      "{{" <> fieldName <> "}}"
+  RefNamed qn ->
+    let name = qualifiedNameFull qn
+    in case Map.lookup name (irTypes ir) of
+      Just TypeDef{tdKind = KindPrimitive _ _} ->
+        "{{" <> fieldName <> "}}"
+      Just TypeDef{tdKind = KindStruct fields} ->
+        -- Expand struct fields with dot notation to avoid Haskell Show output
+        let displayFields = filter (not . isInternalField) fields
+            fieldRefs = map (\f -> fdName f <> "={{" <> fieldName <> "." <> fdName f <> "}}") displayFields
+        in T.intercalate " " fieldRefs
+      Just TypeDef{tdKind = KindEnum _ _} ->
+        "{{{" <> fieldName <> "}}}"  -- Nested union: use triple braces for unescaped JSON
+      _ ->
+        "{{" <> fieldName <> "}}"
 
   -- Optional: wrap in section so null renders nothing
   RefOptional inner -> case inner of
     -- For optional structs, wrap expansion in a section
-    RefNamed name -> case Map.lookup name (irTypes ir) of
-      Just TypeDef{tdKind = KindStruct fields} ->
-        let displayFields = filter (not . isInternalField) fields
-            fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
-        in "{{#" <> fieldName <> "}}" <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
-      _ -> "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
+    RefNamed qn ->
+      let name = qualifiedNameFull qn
+      in case Map.lookup name (irTypes ir) of
+        Just TypeDef{tdKind = KindStruct fields} ->
+          let displayFields = filter (not . isInternalField) fields
+              fieldRefs = map (\f -> fdName f <> "={{" <> fdName f <> "}}") displayFields
+          in "{{#" <> fieldName <> "}}" <> T.intercalate " " fieldRefs <> "{{/" <> fieldName <> "}}"
+        _ -> "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
     -- For optional primitives, simple section
     _ -> "{{#" <> fieldName <> "}}{{.}}{{/" <> fieldName <> "}}"
 
@@ -410,17 +422,19 @@ generateFieldRefInContext ir prefix field =
       name <> "={{" <> fullPath <> "}}"
 
     -- Named types: check if it's a struct that needs expansion
-    RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
-      Just TypeDef{tdKind = KindStruct fields} ->
-        -- Flatten nested struct fields using dot notation (no wrapper)
-        let displayFields = filter (not . isInternalField) fields
-            dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
-        in T.intercalate " " dotRefs
-      Just TypeDef{tdKind = KindPrimitive _ _} ->
-        name <> "={{" <> fullPath <> "}}"
-      _ ->
-        -- Enum or unknown: just reference it
-        name <> "={{" <> fullPath <> "}}"
+    RefNamed qn ->
+      let typeName = qualifiedNameFull qn
+      in case Map.lookup typeName (irTypes ir) of
+        Just TypeDef{tdKind = KindStruct fields} ->
+          -- Flatten nested struct fields using dot notation (no wrapper)
+          let displayFields = filter (not . isInternalField) fields
+              dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
+          in T.intercalate " " dotRefs
+        Just TypeDef{tdKind = KindPrimitive _ _} ->
+          name <> "={{" <> fullPath <> "}}"
+        _ ->
+          -- Enum or unknown: just reference it
+          name <> "={{" <> fullPath <> "}}"
 
     -- Arrays: indicate it's an array
     RefArray _ ->
@@ -428,13 +442,15 @@ generateFieldRefInContext ir prefix field =
 
     -- Optional: same as inner type but may be null
     RefOptional inner -> case inner of
-      RefNamed typeName -> case Map.lookup typeName (irTypes ir) of
-        Just TypeDef{tdKind = KindStruct fields} ->
-          -- Flatten nested struct fields using dot notation (no wrapper)
-          let displayFields = filter (not . isInternalField) fields
-              dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
-          in T.intercalate " " dotRefs
-        _ -> name <> "={{" <> fullPath <> "}}"
+      RefNamed qn ->
+        let typeName = qualifiedNameFull qn
+        in case Map.lookup typeName (irTypes ir) of
+          Just TypeDef{tdKind = KindStruct fields} ->
+            -- Flatten nested struct fields using dot notation (no wrapper)
+            let displayFields = filter (not . isInternalField) fields
+                dotRefs = map (\f -> fdName f <> "={{" <> fullPath <> "." <> fdName f <> "}}") displayFields
+            in T.intercalate " " dotRefs
+          _ -> name <> "={{" <> fullPath <> "}}"
       _ -> name <> "={{" <> fullPath <> "}}"
 
     -- Fallback

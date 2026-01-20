@@ -168,7 +168,7 @@ renderParamHelpWith style ir param = renderParamBlock style ir param
 --   RefNamed "ConeIdentifier" -> "ConeIdentifier"
 renderTypeRef :: IR -> TypeRef -> Text
 renderTypeRef ir = \case
-  RefNamed name -> name
+  RefNamed qn -> qualifiedNameFull qn
 
   RefPrimitive typ mFormat
     | Just fmt <- mFormat -> fmt  -- Use format as type (uuid, int64, etc.)
@@ -196,7 +196,7 @@ renderTypeRef ir = \case
 -- @
 expandType :: IR -> Text -> TypeRef -> [Text]
 expandType ir prefix = \case
-  RefNamed name -> expandNamedType ir prefix name
+  RefNamed qn -> expandNamedType ir prefix (qualifiedNameFull qn)
   RefOptional inner -> expandType ir prefix inner
   _ -> []  -- Primitives and arrays don't expand
 
@@ -254,8 +254,9 @@ renderFieldFlag ir prefix FieldDef{..} =
 
 -- | Check if a type is a string enum and get its values
 getStringEnumValues :: IR -> TypeRef -> Maybe [Text]
-getStringEnumValues ir (RefNamed name) =
-  case Map.lookup name (irTypes ir) of
+getStringEnumValues ir (RefNamed qn) =
+  let name = qualifiedNameFull qn
+  in case Map.lookup name (irTypes ir) of
     Just TypeDef{tdKind = KindEnum "value" variants} ->
       Just $ map vdName variants
     _ -> Nothing

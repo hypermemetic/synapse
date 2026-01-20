@@ -171,8 +171,9 @@ buildParamValue ir param kvs = case pdType param of
       Just val -> Right $ inferTypedValue typ mFmt val
       Nothing -> Left $ InvalidValue (pdName param) "expected simple value"
 
-  RefNamed typeName ->
-    case Map.lookup typeName (irTypes ir) of
+  RefNamed qn ->
+    let typeName = qualifiedNameFull qn
+    in case Map.lookup typeName (irTypes ir) of
       Just typeDef -> buildFromTypeDef ir (pdName param) typeDef kvs
       Nothing ->
         -- Type not in IR, treat as simple value
@@ -276,8 +277,9 @@ buildStruct ir paramName fields kvs = do
 buildTypedValue :: IR -> TypeRef -> Text -> Value
 buildTypedValue ir ref val = case ref of
   RefPrimitive typ mFmt -> inferTypedValue typ mFmt val
-  RefNamed typeName ->
-    case Map.lookup typeName (irTypes ir) of
+  RefNamed qn ->
+    let typeName = qualifiedNameFull qn
+    in case Map.lookup typeName (irTypes ir) of
       Just TypeDef{tdKind = KindPrimitive typ mFmt} -> inferTypedValue typ mFmt val
       _ -> String val
   RefOptional inner -> buildTypedValue ir inner val

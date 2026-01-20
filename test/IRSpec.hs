@@ -18,11 +18,14 @@
 module Main where
 
 import Control.Monad (forM_, unless)
+import Data.Aeson (encode, decode)
+import qualified Data.ByteString.Lazy as BSL
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust, isNothing)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8)
 import System.Environment (getArgs, withArgs)
 import Test.Hspec
 import Text.Read (readMaybe)
@@ -74,7 +77,7 @@ irSpec :: IR -> Spec
 irSpec ir = do
   describe "Schema fetching" $ do
     it "builds IR from root" $
-      irVersion ir `shouldBe` "1.0"
+      irVersion ir `shouldBe` "2.0"
 
     it "IR contains methods" $
       Map.size (irMethods ir) `shouldSatisfy` (> 0)
@@ -109,6 +112,40 @@ irSpec ir = do
           FullSupport -> pure ()
           PartialSupport params -> length params `shouldSatisfy` (>= 0)
           NoSupport params -> length params `shouldSatisfy` (> 0)
+
+  describe "QualifiedName serialization" $ do
+    it "serializes to structured JSON" $ do
+      let qn = QualifiedName { qnNamespace = "cone", qnLocalName = "UUID" }
+      let typeRef = RefNamed qn
+      let json = encode typeRef
+      -- Check that JSON contains expected structure
+      let jsonText = decodeUtf8 (BSL.toStrict json)
+      jsonText `shouldSatisfy` T.isInfixOf "qnNamespace"
+      jsonText `shouldSatisfy` T.isInfixOf "qnLocalName"
+      jsonText `shouldSatisfy` T.isInfixOf "cone"
+      jsonText `shouldSatisfy` T.isInfixOf "UUID"
+
+    it "serializes QualifiedName with empty namespace" $ do
+      let qn = QualifiedName { qnNamespace = "", qnLocalName = "GlobalType" }
+      let typeRef = RefNamed qn
+      let json = encode typeRef
+      let jsonText = decodeUtf8 (BSL.toStrict json)
+      jsonText `shouldSatisfy` T.isInfixOf "GlobalType"
+      -- Empty namespace should still be present in JSON
+      jsonText `shouldSatisfy` T.isInfixOf "qnNamespace"
+
+    it "qualifiedNameFull handles namespaces correctly" $ do
+      qualifiedNameFull (QualifiedName "ns" "Type") `shouldBe` "ns.Type"
+      qualifiedNameFull (QualifiedName "" "Type") `shouldBe` "Type"
+
+    it "shows expected JSON format" $ do
+      -- Test exact JSON format by printing it
+      let qn = QualifiedName { qnNamespace = "test", qnLocalName = "MyType" }
+      let typeRef = RefNamed qn
+      let jsonText = decodeUtf8 (BSL.toStrict (encode typeRef))
+      -- Should have "tag" and "contents" for sum type
+      jsonText `shouldSatisfy` T.isInfixOf "RefNamed"
+      jsonText `shouldSatisfy` T.isInfixOf "contents"
 
   describe "Specific methods" $ do
     -- Test cone.chat if it exists (has ConeIdentifier discriminated union)
@@ -173,7 +210,8 @@ irSpec ir = do
 -- | Check that a TypeRef resolves (if named, exists in irTypes)
 checkTypeRefResolves :: IR -> Text -> Text -> TypeRef -> Expectation
 checkTypeRefResolves ir methodPath paramName = \case
-  RefNamed name ->
+  RefNamed qn -> do
+    let name = qualifiedNameFull qn
     unless (Map.member name (irTypes ir)) $
       expectationFailure $ T.unpack $
         "Unresolved type ref: " <> name <>
@@ -187,7 +225,7 @@ checkTypeRefResolves ir methodPath paramName = \case
 -- | Check that no RefNamed references are unresolved
 checkNoUnresolvedRefs :: IR -> TypeRef -> Bool
 checkNoUnresolvedRefs ir = \case
-  RefNamed name -> Map.member name (irTypes ir)
+  RefNamed qn -> Map.member (qualifiedNameFull qn) (irTypes ir)
   RefArray inner -> checkNoUnresolvedRefs ir inner
   RefOptional inner -> checkNoUnresolvedRefs ir inner
   RefPrimitive _ _ -> True
@@ -197,9 +235,11 @@ checkNoUnresolvedRefs ir = \case
 -- | Get list of unresolved RefNamed names
 getUnresolvedRefs :: IR -> TypeRef -> [Text]
 getUnresolvedRefs ir = \case
-  RefNamed name
-    | Map.member name (irTypes ir) -> []
-    | otherwise -> [name]
+  RefNamed qn ->
+    let name = qualifiedNameFull qn
+    in if Map.member name (irTypes ir)
+       then []
+       else [name]
   RefArray inner -> getUnresolvedRefs ir inner
   RefOptional inner -> getUnresolvedRefs ir inner
   RefPrimitive _ _ -> []

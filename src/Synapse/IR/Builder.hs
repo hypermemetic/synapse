@@ -34,7 +34,8 @@ import Synapse.Schema.Types
 import Synapse.Schema.Functor (SchemaF(..))
 import Synapse.Algebra.Walk (walkSchema)
 import Synapse.Monad
-import Synapse.IR.Types
+import Synapse.IR.Types hiding (QualifiedName(..), qualifiedNameFull)
+import Synapse.IR.Types (QualifiedName(..), qualifiedNameFull)
 
 -- ============================================================================
 -- Building IR
@@ -73,7 +74,7 @@ irAlgebra (PluginF schema path childIRs) = do
                  else irHash childIR
 
   pure $ IR
-    { irVersion = "1.0"
+    { irVersion = irVersion emptyIR  -- Use version from emptyIR
     , irHash = thisHash
     , irTypes = Map.union localTypes (irTypes childIR)  -- Local wins on conflict
     , irMethods = Map.union localMethods (irMethods childIR)
@@ -85,7 +86,7 @@ irAlgebra (MethodF method namespace path) = do
   let fullPath = T.intercalate "." path
   let (types, mdef) = extractMethodDef namespace fullPath method
   pure $ IR
-    { irVersion = "1.0"
+    { irVersion = irVersion emptyIR  -- Use version from emptyIR
     , irHash = Nothing  -- Methods don't carry hash
     , irTypes = types
     , irMethods = Map.singleton fullPath mdef
@@ -165,9 +166,9 @@ hashTypeStructure TypeDef{..} =
 
     normalizeTypeRef :: TypeRef -> TypeRef
     normalizeTypeRef = \case
-      RefNamed name ->
-        -- Strip namespace: "solar.BodyType" -> "BodyType"
-        RefNamed (T.takeWhileEnd (/= '.') name)
+      RefNamed qn ->
+        -- Strip namespace: keep only local name
+        RefNamed qn { qnNamespace = "" }
       RefArray inner -> RefArray (normalizeTypeRef inner)
       RefOptional inner -> RefOptional (normalizeTypeRef inner)
       other -> other
@@ -192,6 +193,17 @@ selectCanonical dups =
            (False, True) -> LT  -- ns1 is parent of ns2, prefer ns1
            _ -> compare (T.length ns1) (T.length ns2)  -- Fallback: shortest wins
 
+-- | Parse a qualified name from a full name string (e.g., "cone.UUID" -> QualifiedName "cone" "UUID")
+parseQualifiedName :: Text -> Maybe QualifiedName
+parseQualifiedName t =
+  case T.breakOnEnd "." t of
+    ("", _) -> Nothing  -- No dot found
+    (ns, local) | T.null local -> Nothing  -- Ends with dot
+                | otherwise -> Just QualifiedName
+                    { qnNamespace = T.dropEnd 1 ns  -- Remove trailing dot
+                    , qnLocalName = local
+                    }
+
 -- | Update all RefNamed references in a method using redirect map
 updateMethodRefs :: Map Text Text -> MethodDef -> MethodDef
 updateMethodRefs redirects md = md
@@ -208,8 +220,12 @@ updateParamRefs redirects pd = pd
 -- | Recursively update a TypeRef to use canonical names
 updateTypeRef :: Map Text Text -> TypeRef -> TypeRef
 updateTypeRef redirects = \case
-  RefNamed name ->
-    RefNamed (Map.findWithDefault name name redirects)
+  RefNamed qn ->
+    let fullName = qualifiedNameFull qn
+        canonicalName = Map.findWithDefault fullName fullName redirects
+    in case parseQualifiedName canonicalName of
+         Just qn' -> RefNamed qn'
+         Nothing -> RefNamed qn  -- Fallback if parse fails
   RefArray inner ->
     RefArray (updateTypeRef redirects inner)
   RefOptional inner ->
@@ -365,10 +381,13 @@ extractReturns namespace methodName (Just val) = case val of
           Just td -> Map.insert (tdFullName td) td defs
           Nothing -> defs
 
-        -- Return type reference uses full name for lookup
-        fullTypeName = namespace <> "." <> typeName
+        -- Return type reference uses QualifiedName
+        typeRef = RefNamed QualifiedName
+          { qnNamespace = namespace
+          , qnLocalName = typeName
+          }
 
-    in (allDefs, RefNamed fullTypeName, streaming)
+    in (allDefs, typeRef, streaming)
   _ -> (Map.empty, RefUnknown, False)
 
 -- | Extract a variant from a oneOf element
@@ -511,7 +530,10 @@ schemaToTypeRef :: Text -> Value -> TypeRef
 schemaToTypeRef namespace (Object o)
   -- Check for $ref - namespace-qualify the reference
   | Just (String ref) <- KM.lookup "$ref" o =
-      RefNamed (namespace <> "." <> extractRefName ref)
+      RefNamed QualifiedName
+        { qnNamespace = namespace
+        , qnLocalName = extractRefName ref
+        }
 
   -- Check for array
   | Just (String "array") <- KM.lookup "type" o =
@@ -533,7 +555,10 @@ schemaToTypeRef namespace (Object o)
   | Just (Array options) <- KM.lookup "anyOf" o =
       let refs = mapMaybe extractRefFromOption (V.toList options)
       in case refs of
-           [r] -> RefOptional (RefNamed (namespace <> "." <> r))
+           [r] -> RefOptional (RefNamed QualifiedName
+                    { qnNamespace = namespace
+                    , qnLocalName = r
+                    })
            _ -> RefAny  -- Complex anyOf = any
 
   -- Check for primitive type

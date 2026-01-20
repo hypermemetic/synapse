@@ -72,7 +72,10 @@ main :: IO ()
 main = do
   args <- execParser argsInfo
   case argBackend args of
-    Nothing -> TIO.putStr cliHeader  -- No backend specified, show help
+    Nothing
+      -- Suppress banner for data output modes
+      | argEmitIR args || argSchema args || argJson args || argRaw args -> run "plexus" args
+      | otherwise -> TIO.putStr cliHeader  -- No backend specified, show help
     Just backend
       -- Handle --help/-h as backend (forwardOptions treats flags as positional args)
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader

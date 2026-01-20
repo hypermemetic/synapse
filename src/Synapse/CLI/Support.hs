@@ -141,7 +141,7 @@ canCLIRepresentWithReason ir = \case
   RefUnknown -> Left ReasonUnknown
 
   -- Named types: look up and check
-  RefNamed name -> canCLIRepresentNamed ir name
+  RefNamed qn -> canCLIRepresentNamed ir (qualifiedNameFull qn)
 
 -- | Check if a named type is CLI representable
 canCLIRepresentNamed :: IR -> Text -> Either SupportReason ()
@@ -247,7 +247,7 @@ canCLIRepresentWithDepth ir depth typeRef = case typeRef of
   RefArray _ -> False  -- Arrays always fail
   RefAny -> False
   RefUnknown -> False
-  RefNamed name -> canCLIRepresentNamedWithDepth ir (depth - 1) name
+  RefNamed qn -> canCLIRepresentNamedWithDepth ir (depth - 1) (qualifiedNameFull qn)
 
 -- | Check named type with depth
 canCLIRepresentNamedWithDepth :: IR -> Int -> Text -> Bool
