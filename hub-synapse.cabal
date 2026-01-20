@@ -126,11 +126,29 @@ test-suite ir-test
     hub-synapse,
     text >= 2.0 && < 2.2,
     containers >= 0.6 && < 0.8,
-    hspec >= 2.10 && < 2.12
+    hspec >= 2.10 && < 2.12,
+    aeson >= 2.2 && < 2.3,
+    bytestring >= 0.11 && < 0.13
   hs-source-dirs:   test
   default-language: GHC2021
   default-extensions:
     OverloadedStrings
     LambdaCase
     RecordWildCards
+  ghc-options:      -threaded
+
+test-suite typeref-json
+  type:             exitcode-stdio-1.0
+  main-is:          TypeRefJson.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    hub-synapse,
+    text >= 2.0 && < 2.2,
+    aeson >= 2.2 && < 2.3,
+    aeson-pretty >= 0.8 && < 0.9,
+    bytestring >= 0.11 && < 0.13
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
   ghc-options:      -threaded

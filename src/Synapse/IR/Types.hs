@@ -39,6 +39,8 @@ module Synapse.IR.Types
   , ParamDef(..)
 
     -- * Type References
+  , QualifiedName(..)
+  , qualifiedNameFull
   , TypeRef(..)
   , typeRefName
 
@@ -73,7 +75,7 @@ data IR = IR
 -- | Empty IR for folding
 emptyIR :: IR
 emptyIR = IR
-  { irVersion = "1.0"
+  { irVersion = "2.0"  -- Bumped: TypeRef now uses structured QualifiedName
   , irHash = Nothing
   , irTypes = Map.empty
   , irMethods = Map.empty
@@ -182,9 +184,24 @@ data ParamDef = ParamDef
 -- Type References
 -- ============================================================================
 
+-- | A qualified name for a type, with namespace and local name
+data QualifiedName = QualifiedName
+  { qnNamespace :: Text  -- ^ Namespace (can be empty for global types)
+  , qnLocalName :: Text  -- ^ Local name within namespace
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON)
+
+-- | Get the full qualified name as a single Text
+-- Returns just the local name if namespace is empty, otherwise "namespace.localName"
+qualifiedNameFull :: QualifiedName -> Text
+qualifiedNameFull qn
+  | T.null (qnNamespace qn) = qnLocalName qn
+  | otherwise = qnNamespace qn <> "." <> qnLocalName qn
+
 -- | A reference to a type
 data TypeRef
-  = RefNamed Text                   -- ^ Reference to a named type (e.g., "Position")
+  = RefNamed QualifiedName          -- ^ Reference to a named type (e.g., QualifiedName "cone" "UUID")
   | RefPrimitive Text (Maybe Text)  -- ^ Primitive type with optional format
   | RefArray TypeRef                -- ^ Array of some type
   | RefOptional TypeRef             -- ^ Optional (nullable) type
@@ -195,7 +212,7 @@ data TypeRef
 
 -- | Get the name from a type reference (if it's a named ref)
 typeRefName :: TypeRef -> Maybe Text
-typeRefName (RefNamed n) = Just n
+typeRefName (RefNamed qn) = Just (qualifiedNameFull qn)
 typeRefName _ = Nothing
 
 -- ============================================================================
