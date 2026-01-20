@@ -154,7 +154,11 @@ test-suite typeref-json
   main-is:          TypeRefJson.hs
   build-depends:
     base >= 4.17 && < 5,
+<<<<<<< HEAD:plexus-synapse.cabal
     plexus-synapse,
+=======
+    hub-synapse,
+>>>>>>> 836c3ab (fix: suppress banner for data output modes and complete TypeRef v2.0 migration):hub-synapse.cabal
     text >= 2.0 && < 2.2,
     aeson >= 2.2 && < 2.3,
     aeson-pretty >= 0.8 && < 0.9,
@@ -164,6 +168,7 @@ test-suite typeref-json
   default-extensions:
     OverloadedStrings
   ghc-options:      -threaded
+<<<<<<< HEAD:plexus-synapse.cabal
 
 test-suite parse-test
   type:             exitcode-stdio-1.0
@@ -194,3 +199,5 @@ test-suite path-normalization-test
   default-extensions:
     OverloadedStrings
   ghc-options:      -threaded
+=======
+>>>>>>> 836c3ab (fix: suppress banner for data output modes and complete TypeRef v2.0 migration):hub-synapse.cabal
