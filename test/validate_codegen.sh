@@ -178,10 +178,14 @@ cd "$GEN_DIR"
 npm install --silent 2>&1 | grep -v "^npm WARN" || true
 
 echo "${YELLOW}→ Compiling TypeScript...${NC}"
-if npx tsc --noEmit 2>&1 | tee /tmp/tsc-output.txt; then
+# Use PIPESTATUS to capture tsc exit code, not tee's exit code
+npx tsc --noEmit 2>&1 | tee /tmp/tsc-output.txt
+TSC_EXIT=${PIPESTATUS[0]}
+
+if [ $TSC_EXIT -eq 0 ]; then
   echo "${GREEN}✓ TypeScript compilation successful${NC}"
 else
-  echo "${RED}✗ TypeScript compilation failed:${NC}"
+  echo "${RED}✗ TypeScript compilation failed with exit code $TSC_EXIT:${NC}"
   cat /tmp/tsc-output.txt
   exit 1
 fi
