@@ -37,7 +37,7 @@ import Synapse.IR.Types (IR, irMethods, MethodDef)
 import qualified Data.Map.Strict as Map
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
-import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults)
+import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults, injectSmartDefaults)
 import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
@@ -210,7 +210,9 @@ dispatch Args{..} rendererCfg = do
                                         Just methodDef -> do
                                           -- Inject boolean defaults for flags without values
                                           let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
-                                          case parseParams ir methodDef paramsWithBools of
+                                          -- Inject smart defaults for missing required params (e.g., --path defaults to cwd)
+                                          paramsWithDefaults <- liftIO $ injectSmartDefaults transformEnv ir methodDef paramsWithBools
+                                          case parseParams ir methodDef paramsWithDefaults of
                                             Right p -> pure p
                                             Left errs -> do
                                               liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
