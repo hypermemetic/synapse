@@ -109,7 +109,9 @@ templateList patternText = do
       else do
         TIO.putStrLn $ "Found " <> T.pack (show (length matchingFiles)) <> " template(s):\n"
         forM_ (sort matchingFiles) $ \(namespace, method) -> do
+          let path = baseDir </> T.unpack namespace </> T.unpack method <.> "mustache"
           TIO.putStrLn $ "  " <> backend <> "." <> namespace <> "." <> method
+          TIO.putStrLn $ "    " <> T.pack path
 
 -- Helper to check if a string matches a pattern
 matchPattern :: String -> MethodPattern -> Bool
