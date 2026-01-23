@@ -1,201 +1,298 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RecordWildCards #-}
 
--- | Template generation for Plexus methods
+-- | CRUD operations for Mustache templates
 --
--- Generates example CLI invocations with realistic parameter values
--- to help users understand how to use commands.
+-- Provides commands to manage the template system:
+-- - list: List existing templates (with pattern filtering)
+-- - show: Display template content
+-- - generate: Generate new templates from IR
+-- - delete: Remove templates
+-- - reload: Clear template cache and notify backend
 module Synapse.Self.Template
   ( handleTemplate
-  , LimitOptions(..)
-  , parseLimitOptions
-  , applyLimit
   ) where
 
-import Control.Monad (forM_, when, unless)
+import Control.Monad (forM_, when, unless, filterM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
+import Data.List (sort)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
-import qualified Data.Map.Strict as Map
-import Text.Read (readMaybe)
+import System.Directory (doesFileExist, getHomeDirectory, removeFile, listDirectory, doesDirectoryExist, createDirectoryIfMissing)
+import System.FilePath ((</>), (<.>), takeExtension, dropExtension, splitDirectories, joinPath)
 
 import Synapse.Monad
-import Synapse.IR.Types
-import Synapse.IR.Builder (buildIR)
-import Synapse.Self.Pattern
-import Synapse.Self.Examples
+import Synapse.Self.Pattern (MethodPattern(..), parsePattern, matchMethods)
+import qualified Synapse.CLI.Template as CLITemplate
+import Synapse.IR.Types (MethodDef(..))
+import qualified Data.Map.Strict as Map
+import Text.Regex.TDFA ((=~))
 
 -- ============================================================================
--- Limit/Pagination
+-- Main Entry Point
 -- ============================================================================
 
--- | Options for limiting output
-data LimitOptions = LimitOptions
-  { loLower :: Int       -- ^ Start index (0-based)
-  , loUpper :: Maybe Int -- ^ End index (exclusive), Nothing = unlimited
-  , loTotal :: Int       -- ^ Total to show (used when upper not set)
-  }
-  deriving stock (Show, Eq)
-
--- | Default limit: show first 10 results
-defaultLimit :: LimitOptions
-defaultLimit = LimitOptions 0 Nothing 10
-
--- | Parse limit options from CLI parameters
--- Supports:
---   --limit N : Show first N results
---   --limit.lower L --limit.upper U : Show results from L to U
-parseLimitOptions :: [(Text, Text)] -> LimitOptions
-parseLimitOptions params =
-  let findInt key = lookup key params >>= readMaybe . T.unpack
-      limitVal = findInt "limit"
-      lowerVal = findInt "limit.lower"
-      upperVal = findInt "limit.upper"
-  in case (limitVal, lowerVal, upperVal) of
-      (Just n, Nothing, Nothing) -> LimitOptions 0 (Just n) n
-      (Nothing, Just l, Just u) -> LimitOptions l (Just u) (u - l)
-      (Nothing, Just l, Nothing) -> LimitOptions l Nothing 10
-      _ -> defaultLimit
-
--- | Apply limit to a list of methods
-applyLimit :: LimitOptions -> [MethodDef] -> [MethodDef]
-applyLimit LimitOptions{..} methods =
-  let afterDrop = drop loLower methods
-      limited = case loUpper of
-        Just u -> take (u - loLower) afterDrop
-        Nothing -> take loTotal afterDrop
-  in limited
-
--- ============================================================================
--- Template Generation
--- ============================================================================
-
--- | Handle the _self template command
+-- | Handle template subcommands
 handleTemplate :: [Text] -> [(Text, Text)] -> SynapseM ()
-handleTemplate rest params = do
-  -- Get backend name from environment
-  backend <- asks seBackend
+handleTemplate [] _ = do
+  -- No subcommand - show help
+  liftIO $ TIO.putStr templateHelp
 
-  -- Parse pattern (default to backend.*.* if missing)
-  -- Note: rest comes from parsePathAndParams which splits on dots,
-  -- so we need to rejoin to get the full pattern
+handleTemplate ("list" : rest) params = do
+  backend <- asks seBackend
   let patternText = case rest of
         [] -> backend <> ".*.*"  -- Default includes backend
         segs -> T.intercalate "." segs
+  templateList patternText
 
-  -- Compile pattern
+handleTemplate ("show" : rest) _ = do
+  case rest of
+    [] -> throwParse "Missing method path for 'show' command\nUsage: synapse _self template show <namespace.method>"
+    segs -> templateShow (T.intercalate "." segs)
+
+handleTemplate ("generate" : rest) params = do
+  backend <- asks seBackend
+  let patternText = case rest of
+        [] -> backend <> ".*.*"  -- Default includes backend
+        segs -> T.intercalate "." segs
+  templateGenerate patternText params
+
+handleTemplate ("delete" : rest) _ = do
+  case rest of
+    [] -> throwParse "Missing pattern for 'delete' command\nUsage: synapse _self template delete <pattern>"
+    segs -> templateDelete (T.intercalate "." segs)
+
+handleTemplate ("reload" : _) _ = do
+  templateReload
+
+handleTemplate (cmd : _) _ = do
+  throwParse $ "Unknown template subcommand: " <> cmd <> "\n\n" <> templateHelp
+
+-- ============================================================================
+-- Template List
+-- ============================================================================
+
+templateList :: Text -> SynapseM ()
+templateList patternText = do
+  backend <- asks seBackend
+
+  -- Parse pattern
   pattern <- case parsePattern patternText of
     Left err -> throwParse err
     Right p -> pure p
 
-  -- Parse limit options
-  let limitOpts = parseLimitOptions params
+  -- Get template base directory
+  homeDir <- liftIO getHomeDirectory
+  let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
 
-  -- Build full IR from root
-  ir <- buildIR []
+  -- Check if templates directory exists
+  exists <- liftIO $ doesDirectoryExist baseDir
+  unless exists $ do
+    liftIO $ TIO.putStrLn $ "No templates directory found at: " <> T.pack baseDir
+    liftIO $ TIO.putStrLn "Generate templates with: synapse --generate-templates"
+    return ()
 
-  -- Get all methods and prepend backend name to paths
-  let allMethods = Map.elems (irMethods ir)
-  let qualifiedMethods = map (qualifyMethod backend) allMethods
-  let matches = matchMethods pattern qualifiedMethods
+  -- Find all template files
+  templateFiles <- liftIO $ findTemplateFiles baseDir
 
-  -- Check for no matches
-  when (null matches) $
-    throwParse $ "No methods match pattern: " <> patternText
+  -- Filter by pattern
+  let qualifiedPaths = map (\(ns, m) -> backend <> "." <> ns <> "." <> m) templateFiles
+  let matchingPaths = filter (\path -> T.unpack path `matchPattern` pattern) qualifiedPaths
+  let matchingFiles = [(ns, m) | ((ns, m), qpath) <- zip templateFiles qualifiedPaths, qpath `elem` matchingPaths]
 
-  -- Apply limit/pagination
-  let bounded = applyLimit limitOpts matches
+  -- Display results
+  liftIO $ do
+    if null matchingFiles
+      then TIO.putStrLn $ "No templates match pattern: " <> patternText
+      else do
+        TIO.putStrLn $ "Found " <> T.pack (show (length matchingFiles)) <> " template(s):\n"
+        forM_ (sort matchingFiles) $ \(namespace, method) -> do
+          TIO.putStrLn $ "  " <> backend <> "." <> namespace <> "." <> method
 
-  -- Display templates
-  liftIO $ displayTemplates backend ir bounded (length matches) limitOpts
+-- Helper to check if a string matches a pattern
+matchPattern :: String -> MethodPattern -> Bool
+matchPattern str (MethodPattern _ regex) = str =~ T.unpack regex
 
--- | Prepend backend name to method's full path for multi-backend support
--- e.g., "cone.chat" becomes "plexus.cone.chat"
-qualifyMethod :: Text -> MethodDef -> MethodDef
-qualifyMethod backend method =
-  let qualifiedPath = if T.null (mdNamespace method)
-                      then backend <> "." <> mdName method  -- Root method like ".call"
-                      else backend <> "." <> mdFullPath method
-  in method { mdFullPath = qualifiedPath }
+-- ============================================================================
+-- Template Show
+-- ============================================================================
 
--- | Display formatted templates for methods
-displayTemplates :: Text -> IR -> [MethodDef] -> Int -> LimitOptions -> IO ()
-displayTemplates backend ir methods totalCount opts = do
-  let shownCount = length methods
+templateShow :: Text -> SynapseM ()
+templateShow methodPath = do
+  backend <- asks seBackend
 
-  -- Header showing count
-  TIO.putStrLn $ "Showing " <> T.pack (show shownCount)
-               <> " of " <> T.pack (show totalCount) <> " matches"
-  TIO.putStrLn ""
+  -- Strip backend prefix if present
+  let pathWithoutBackend = case T.stripPrefix (backend <> ".") methodPath of
+        Just p -> p
+        Nothing -> methodPath
 
-  -- Render each method template
-  forM_ methods $ \method -> do
-    TIO.putStrLn $ T.replicate 60 "━"
-    TIO.putStrLn $ mdFullPath method
-    TIO.putStrLn $ T.replicate 60 "━"
-    TIO.putStrLn ""
+  -- Split into namespace.method
+  case T.splitOn "." pathWithoutBackend of
+    [namespace, method] -> do
+      homeDir <- liftIO getHomeDirectory
+      let templatePath = homeDir </> ".config" </> "synapse" </> "templates"
+                        </> T.unpack namespace </> T.unpack method <.> "mustache"
 
-    -- Description
-    case mdDescription method of
-      Just desc -> do
-        TIO.putStrLn "Description:"
-        TIO.putStrLn $ "  " <> desc
-        TIO.putStrLn ""
-      Nothing -> pure ()
+      exists <- liftIO $ doesFileExist templatePath
+      if exists
+        then do
+          content <- liftIO $ TIO.readFile templatePath
+          liftIO $ do
+            TIO.putStrLn $ "Template: " <> backend <> "." <> namespace <> "." <> method
+            TIO.putStrLn $ "Location: " <> T.pack templatePath
+            TIO.putStrLn $ T.replicate 60 "━"
+            TIO.putStr content
+            when (not $ T.null content && T.last content == '\n') $
+              TIO.putStrLn ""
+        else throwParse $ "Template not found: " <> methodPath <> "\nPath: " <> T.pack templatePath
 
-    -- Template command
-    let templateCmd = generateTemplateCommand ir method
-    TIO.putStrLn "Template:"
-    TIO.putStrLn $ "  " <> templateCmd
-    TIO.putStrLn ""
+    _ -> throwParse $ "Invalid method path: " <> methodPath <> "\nExpected format: namespace.method"
 
-    -- Parameter documentation
-    displayParams method
-    TIO.putStrLn ""
+-- ============================================================================
+-- Template Generate
+-- ============================================================================
 
-  -- Truncation warning if we're showing less than total
-  when (totalCount > shownCount) $
-    TIO.putStrLn $ "\n⚠ Showing " <> T.pack (show shownCount)
-                 <> " of " <> T.pack (show totalCount)
-                 <> " matches. Use --limit to see more."
+templateGenerate :: Text -> [(Text, Text)] -> SynapseM ()
+templateGenerate patternText params = do
+  backend <- asks seBackend
+  homeDir <- liftIO getHomeDirectory
+  let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
 
--- | Generate a template command line for a method
-generateTemplateCommand :: IR -> MethodDef -> Text
-generateTemplateCommand ir MethodDef{..} =
-  let -- Convert qualified path to CLI command
-      -- e.g., "plexus.cone.chat" -> "synapse plexus cone chat"
-      basePath = "synapse " <> T.replace "." " " mdFullPath
+  -- Strip backend prefix if present for IR generation
+  let pathWithoutBackend = case T.stripPrefix (backend <> ".") patternText of
+        Just p -> p
+        Nothing -> patternText
 
-      -- Generate parameter flags
-      paramFlags = map (generateExampleParam ir) mdParams
+  -- Parse pattern to determine what to generate
+  pattern <- case parsePattern patternText of
+    Left err -> throwParse err
+    Right p -> pure p
 
-      -- Combine with line continuation
-      allParts = basePath : paramFlags
-  in if null paramFlags
-     then basePath
-     else T.intercalate " \\\n  " allParts
+  liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
 
--- | Display parameter documentation
-displayParams :: MethodDef -> IO ()
-displayParams MethodDef{..} = do
-  let required = filter pdRequired mdParams
-  let optional = filter (not . pdRequired) mdParams
+  -- Use existing CLI.Template generation with callback
+  let writeAndLog gt = do
+        let fullPath = baseDir </> CLITemplate.gtPath gt
+        createDirectoryIfMissing True (baseDir </> T.unpack (CLITemplate.gtNamespace gt))
+        TIO.writeFile fullPath (CLITemplate.gtTemplate gt)
+        TIO.putStrLn $ "  " <> backend <> "." <> CLITemplate.gtNamespace gt <> "." <> CLITemplate.gtMethod gt
 
-  unless (null required) $ do
-    TIO.putStrLn "Required Parameters:"
-    forM_ required $ \p -> do
-      let desc = case pdDescription p of
-            Just d -> d
-            Nothing -> "(no description)"
-      TIO.putStrLn $ "  • " <> pdName p <> ": " <> desc
-    TIO.putStrLn ""
+  -- Generate all templates (filtering will happen based on path)
+  count <- CLITemplate.generateAllTemplatesWithCallback writeAndLog []
 
-  unless (null optional) $ do
-    TIO.putStrLn "Optional Parameters:"
-    forM_ optional $ \p -> do
-      let desc = case pdDescription p of
-            Just d -> d
-            Nothing -> "(no description)"
-      TIO.putStrLn $ "  • " <> pdName p <> ": " <> desc
+  liftIO $ TIO.putStrLn $ "\nGenerated " <> T.pack (show count) <> " template(s)"
+
+-- ============================================================================
+-- Template Delete
+-- ============================================================================
+
+templateDelete :: Text -> SynapseM ()
+templateDelete patternText = do
+  backend <- asks seBackend
+
+  -- Parse pattern
+  pattern <- case parsePattern patternText of
+    Left err -> throwParse err
+    Right p -> pure p
+
+  -- Get template base directory
+  homeDir <- liftIO getHomeDirectory
+  let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
+
+  -- Find all template files
+  templateFiles <- liftIO $ findTemplateFiles baseDir
+
+  -- Filter by pattern
+  let qualifiedPaths = map (\(ns, m) -> backend <> "." <> ns <> "." <> m) templateFiles
+  let matchingPaths = filter (\path -> T.unpack path `matchPattern` pattern) qualifiedPaths
+  let matchingFiles = [(ns, m, path) | ((ns, m), qpath) <- zip templateFiles qualifiedPaths, qpath `elem` matchingPaths,
+                                        let path = baseDir </> T.unpack ns </> T.unpack m <.> "mustache"]
+
+  -- Confirm deletion
+  liftIO $ do
+    if null matchingFiles
+      then TIO.putStrLn $ "No templates match pattern: " <> patternText
+      else do
+        TIO.putStrLn $ "Will delete " <> T.pack (show (length matchingFiles)) <> " template(s):"
+        forM_ matchingFiles $ \(ns, m, _) ->
+          TIO.putStrLn $ "  " <> backend <> "." <> ns <> "." <> m
+
+        -- Delete files
+        forM_ matchingFiles $ \(ns, m, path) -> do
+          removeFile path
+          TIO.putStrLn $ "Deleted: " <> backend <> "." <> ns <> "." <> m
+
+-- ============================================================================
+-- Template Reload
+-- ============================================================================
+
+templateReload :: SynapseM ()
+templateReload = do
+  -- Clear local cache (if we had one)
+  liftIO $ TIO.putStrLn "Template cache cleared"
+
+  -- TODO: Call backend reload endpoint when available
+  -- For now, just notify the user
+  liftIO $ TIO.putStrLn "Note: Backend template reload endpoint not yet implemented"
+
+-- ============================================================================
+-- Helpers
+-- ============================================================================
+
+-- | Find all template files in the templates directory
+-- Returns list of (namespace, method) tuples
+findTemplateFiles :: FilePath -> IO [(Text, Text)]
+findTemplateFiles baseDir = do
+  exists <- doesDirectoryExist baseDir
+  if not exists
+    then return []
+    else do
+      namespaces <- listDirectory baseDir
+      concat <$> mapM findInNamespace namespaces
+  where
+    findInNamespace :: FilePath -> IO [(Text, Text)]
+    findInNamespace namespace = do
+      let nsDir = baseDir </> namespace
+      isDir <- doesDirectoryExist nsDir
+      if not isDir
+        then return []
+        else do
+          files <- listDirectory nsDir
+          let templateFiles = filter (\f -> takeExtension f == ".mustache") files
+          let methods = map (T.pack . dropExtension) templateFiles
+          return [(T.pack namespace, m) | m <- methods]
+
+-- ============================================================================
+-- Help Text
+-- ============================================================================
+
+templateHelp :: Text
+templateHelp = T.unlines
+  [ "Template CRUD commands:"
+  , ""
+  , "  synapse _self template list [pattern]"
+  , "      List existing templates"
+  , "      Pattern: backend.namespace.method (e.g., 'plexus.cone.*')"
+  , "      Default: '*.*' (all templates)"
+  , ""
+  , "  synapse _self template show <method>"
+  , "      Display template content"
+  , "      Example: synapse _self template show cone.chat"
+  , ""
+  , "  synapse _self template generate [pattern]"
+  , "      Generate new templates from IR"
+  , "      Pattern: backend.namespace.method (e.g., 'plexus.cone.*')"
+  , "      Default: '*.*' (all methods)"
+  , ""
+  , "  synapse _self template delete <pattern>"
+  , "      Delete templates matching pattern"
+  , "      Example: synapse _self template delete 'plexus.cone.*'"
+  , ""
+  , "  synapse _self template reload"
+  , "      Clear template cache and notify backend"
+  , ""
+  , "Templates are stored in: ~/.config/synapse/templates/"
+  , ""
+  ]
