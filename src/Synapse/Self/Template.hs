@@ -14,6 +14,7 @@ module Synapse.Self.Template
 
 import Control.Monad (forM_, when, unless)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Reader (asks)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
@@ -74,11 +75,14 @@ applyLimit LimitOptions{..} methods =
 -- | Handle the _self template command
 handleTemplate :: [Text] -> [(Text, Text)] -> SynapseM ()
 handleTemplate rest params = do
-  -- Parse pattern (default to *.* if missing)
+  -- Get backend name from environment
+  backend <- asks seBackend
+
+  -- Parse pattern (default to backend.*.* if missing)
   -- Note: rest comes from parsePathAndParams which splits on dots,
   -- so we need to rejoin to get the full pattern
   let patternText = case rest of
-        [] -> "*.*"
+        [] -> backend <> ".*.*"  -- Default includes backend
         segs -> T.intercalate "." segs
 
   -- Compile pattern
@@ -92,9 +96,10 @@ handleTemplate rest params = do
   -- Build full IR from root
   ir <- buildIR []
 
-  -- Get all methods and filter by pattern
+  -- Get all methods and prepend backend name to paths
   let allMethods = Map.elems (irMethods ir)
-  let matches = matchMethods pattern allMethods
+  let qualifiedMethods = map (qualifyMethod backend) allMethods
+  let matches = matchMethods pattern qualifiedMethods
 
   -- Check for no matches
   when (null matches) $
@@ -104,11 +109,20 @@ handleTemplate rest params = do
   let bounded = applyLimit limitOpts matches
 
   -- Display templates
-  liftIO $ displayTemplates ir bounded (length matches) limitOpts
+  liftIO $ displayTemplates backend ir bounded (length matches) limitOpts
+
+-- | Prepend backend name to method's full path for multi-backend support
+-- e.g., "cone.chat" becomes "plexus.cone.chat"
+qualifyMethod :: Text -> MethodDef -> MethodDef
+qualifyMethod backend method =
+  let qualifiedPath = if T.null (mdNamespace method)
+                      then backend <> "." <> mdName method  -- Root method like ".call"
+                      else backend <> "." <> mdFullPath method
+  in method { mdFullPath = qualifiedPath }
 
 -- | Display formatted templates for methods
-displayTemplates :: IR -> [MethodDef] -> Int -> LimitOptions -> IO ()
-displayTemplates ir methods totalCount opts = do
+displayTemplates :: Text -> IR -> [MethodDef] -> Int -> LimitOptions -> IO ()
+displayTemplates backend ir methods totalCount opts = do
   let shownCount = length methods
 
   -- Header showing count
@@ -150,9 +164,9 @@ displayTemplates ir methods totalCount opts = do
 -- | Generate a template command line for a method
 generateTemplateCommand :: IR -> MethodDef -> Text
 generateTemplateCommand ir MethodDef{..} =
-  let -- Convert namespace.method to CLI path
-      -- e.g., "cone.chat" -> "synapse plexus cone chat"
-      basePath = "synapse plexus " <> T.replace "." " " mdNamespace <> " " <> mdName
+  let -- Convert qualified path to CLI command
+      -- e.g., "plexus.cone.chat" -> "synapse plexus cone chat"
+      basePath = "synapse " <> T.replace "." " " mdFullPath
 
       -- Generate parameter flags
       paramFlags = map (generateExampleParam ir) mdParams
