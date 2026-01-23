@@ -42,6 +42,7 @@ import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 import System.FilePath ((</>))
+import qualified Synapse.Self.Commands as Self
 
 -- ============================================================================
 -- Types
@@ -79,6 +80,8 @@ main = do
     Just backend
       -- Handle --help/-h as backend (forwardOptions treats flags as positional args)
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
+      -- Handle _self meta-commands (use plexus as backend for RPC)
+      | backend == "_self" -> run "plexus" args
       | otherwise -> run backend args
 
 -- | Run a Hub command with specified backend
@@ -96,127 +99,144 @@ run backend args = do
 -- | Dispatch based on navigation result
 dispatch :: Args -> RendererConfig -> SynapseM ()
 dispatch Args{..} rendererCfg = do
-  -- Mode 1: Raw JSON-RPC passthrough
-  case argRpc of
-    Just rpcJson -> do
-      case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 rpcJson) of
-        Left err -> throwParse $ T.pack err
-        Right rpcReq -> do
-          items <- invokeRawRpc rpcReq
-          liftIO $ mapM_ (printResult argJson argRaw rendererCfg) items
-      return ()
+  -- Check for _self commands first (before anything else)
+  case argBackend of
+    Just "_self" -> do
+      -- _self meta-command: parse subcommand and rest from argPath
+      let (pathSegs, rawParams, _) = parsePathAndParams argPath
+      case pathSegs of
+        (subcommand : rest) -> do
+          Self.dispatch subcommand rest rawParams
+          return ()
+        [] -> do
+          -- No subcommand provided, show help
+          Self.showHelp
+          return ()
 
-    Nothing -> do
-      -- Parse path and inline params (--key value pairs)
-      let (pathSegs, rawParams, helpRequested) = parsePathAndParams argPath
+    -- Normal dispatch
+    _ -> do
+      -- Mode 1: Raw JSON-RPC passthrough
+      case argRpc of
+        Just rpcJson -> do
+          case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 rpcJson) of
+            Left err -> throwParse $ T.pack err
+            Right rpcReq -> do
+              items <- invokeRawRpc rpcReq
+              liftIO $ mapM_ (printResult argJson argRaw rendererCfg) items
+          return ()
 
-      -- Apply parameter transformations (path expansion, env vars)
-      transformEnv <- liftIO mkTransformEnv
-      inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
+        Nothing -> do
+          -- Parse path and inline params (--key value pairs)
+          let (pathSegs, rawParams, helpRequested) = parsePathAndParams argPath
 
-      -- Mode 2: Schema request
-      if argSchema
-        then do
-          -- Try to navigate and determine if last segment is a method
-          schemaResult <- fetchSchemaForPath pathSegs
-          case schemaResult of
-            Left err -> throwNav $ FetchError err pathSegs
-            Right val -> liftIO $ LBS.putStrLn $ encode val
+          -- Normal Plexus routing
+          -- Apply parameter transformations (path expansion, env vars)
+          transformEnv <- liftIO mkTransformEnv
+          inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
 
-        -- Mode 3: Generate templates (IR-driven approach)
-        else if argGenerate
-        then do
-          homeDir <- liftIO getHomeDirectory
-          let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
-              writeAndLog gt = do
-                writeGeneratedTemplateIR baseDir gt
-                TIO.putStrLn $ "  " <> T.pack (TemplateIR.gtPath gt)
-          liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
-          count <- TemplateIR.generateAllTemplatesWithCallback writeAndLog pathSegs
-          liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
-
-        -- Mode 4: Emit IR for code generation
-        else if argEmitIR
-        then do
-          ir <- buildIR pathSegs
-          liftIO $ LBS.putStrLn $ encode ir
-
-        else do
-          -- Mode 4: Normal navigation
-          if null pathSegs
+          -- Mode 2: Schema request
+          if argSchema
             then do
-              rootSchema <- navigate []
-              case rootSchema of
-                ViewPlugin schema _ -> liftIO $ do
-                  TIO.putStr cliHeader
-                  TIO.putStr "\n\n"
-                  TIO.putStr $ renderSchema schema
-                _ -> pure ()
-            else do
-              -- Navigate to target
-              view <- navigate pathSegs
-              case view of
-                -- Landed on a plugin: show help
-                ViewPlugin schema _ ->
-                  liftIO $ TIO.putStr $ renderSchema schema
+              -- Try to navigate and determine if last segment is a method
+              schemaResult <- fetchSchemaForPath pathSegs
+              case schemaResult of
+                Left err -> throwNav $ FetchError err pathSegs
+                Right val -> liftIO $ LBS.putStrLn $ encode val
 
-                -- Landed on a method: invoke or show help
-                ViewMethod method path -> do
-                  -- Build IR for this method's namespace
-                  ir <- buildIR (init path)
-                  let fullPath = T.intercalate "." path
+            -- Mode 3: Generate templates (IR-driven approach)
+            else if argGenerate
+              then do
+                homeDir <- liftIO getHomeDirectory
+                let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
+                    writeAndLog gt = do
+                      writeGeneratedTemplateIR baseDir gt
+                      TIO.putStrLn $ "  " <> T.pack (TemplateIR.gtPath gt)
+                liftIO $ TIO.putStrLn $ "Generating templates in " <> T.pack baseDir <> "..."
+                count <- TemplateIR.generateAllTemplatesWithCallback writeAndLog pathSegs
+                liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
 
-                  -- If --help was explicitly requested, show help and exit
-                  if helpRequested
+              -- Mode 4: Emit IR for code generation
+              else if argEmitIR
+                then do
+                  ir <- buildIR pathSegs
+                  liftIO $ LBS.putStrLn $ encode ir
+
+                else do
+                  -- Mode 5: Normal navigation
+                  if null pathSegs
                     then do
-                      case Map.lookup fullPath (irMethods ir) of
-                        Just methodDef ->
-                          liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
-                        Nothing ->
-                          liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
+                      rootSchema <- navigate []
+                      case rootSchema of
+                        ViewPlugin schema _ -> liftIO $ do
+                          TIO.putStr cliHeader
+                          TIO.putStr "\n\n"
+                          TIO.putStr $ renderSchema schema
+                        _ -> pure ()
                     else do
-                      -- Build params: use IR-driven parsing for inline params
-                      let schemaDefaults = extractSchemaDefaults method
-                      userParams <- case argParams of
-                        -- -p JSON: parse as raw JSON (bypass IR parsing)
-                        Just jsonStr ->
-                          case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
-                            Left err -> throwParse $ T.pack err
-                            Right p -> pure p
-                        Nothing
-                          | not (null inlineParams) ->
-                              -- Use IR-driven parsing for inline params
-                              case Map.lookup fullPath (irMethods ir) of
-                                Just methodDef -> do
-                                  -- Inject boolean defaults for flags without values
-                                  let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
-                                  case parseParams ir methodDef paramsWithBools of
-                                    Right p -> pure p
-                                    Left errs -> do
-                                      liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
-                                      throwParse "Parameter parsing failed"
-                                Nothing ->
-                                  -- Fallback to flat object if method not in IR
-                                  pure $ buildParamsObject inlineParams
-                          | otherwise -> pure $ object []
-                      -- Merge: user params override schema defaults
-                      let params = mergeParams schemaDefaults userParams
+                      -- Navigate to target
+                      view <- navigate pathSegs
+                      case view of
+                        -- Landed on a plugin: show help
+                        ViewPlugin schema _ ->
+                          liftIO $ TIO.putStr $ renderSchema schema
 
-                      if argDryRun
-                        then do
-                          backend <- asks seBackend
-                          liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
-                        -- Show help when: method has required params AND user provided no params
-                        else if hasRequiredParams method && userParams == object [] && null inlineParams
-                          then do
-                            -- Render help from IR
-                            case Map.lookup fullPath (irMethods ir) of
-                              Just methodDef ->
-                                liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
-                              Nothing ->
-                                -- Fallback: method not in IR, use basic info
-                                liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
-                          else invokeMethod path params
+                        -- Landed on a method: invoke or show help
+                        ViewMethod method path -> do
+                          -- Build IR for this method's namespace
+                          ir <- buildIR (init path)
+                          let fullPath = T.intercalate "." path
+
+                          -- If --help was explicitly requested, show help and exit
+                          if helpRequested
+                            then do
+                              case Map.lookup fullPath (irMethods ir) of
+                                Just methodDef ->
+                                  liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                                Nothing ->
+                                  liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
+                            else do
+                              -- Build params: use IR-driven parsing for inline params
+                              let schemaDefaults = extractSchemaDefaults method
+                              userParams <- case argParams of
+                                -- -p JSON: parse as raw JSON (bypass IR parsing)
+                                Just jsonStr ->
+                                  case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
+                                    Left err -> throwParse $ T.pack err
+                                    Right p -> pure p
+                                Nothing
+                                  | not (null inlineParams) ->
+                                      -- Use IR-driven parsing for inline params
+                                      case Map.lookup fullPath (irMethods ir) of
+                                        Just methodDef -> do
+                                          -- Inject boolean defaults for flags without values
+                                          let paramsWithBools = injectBooleanDefaults ir methodDef inlineParams
+                                          case parseParams ir methodDef paramsWithBools of
+                                            Right p -> pure p
+                                            Left errs -> do
+                                              liftIO $ mapM_ (hPutStrLn stderr . renderParseError) errs
+                                              throwParse "Parameter parsing failed"
+                                        Nothing ->
+                                          -- Fallback to flat object if method not in IR
+                                          pure $ buildParamsObject inlineParams
+                                  | otherwise -> pure $ object []
+                              -- Merge: user params override schema defaults
+                              let params = mergeParams schemaDefaults userParams
+
+                              if argDryRun
+                                then do
+                                  backend <- asks seBackend
+                                  liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
+                                -- Show help when: method has required params AND user provided no params
+                                else if hasRequiredParams method && userParams == object [] && null inlineParams
+                                  then do
+                                    -- Render help from IR
+                                    case Map.lookup fullPath (irMethods ir) of
+                                      Just methodDef ->
+                                        liftIO $ TIO.putStr $ renderMethodHelp ir methodDef
+                                      Nothing ->
+                                        -- Fallback: method not in IR, use basic info
+                                        liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
+                                  else invokeMethod path params
   where
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
@@ -298,11 +318,13 @@ parsePathAndParams = go [] [] False
       , not (T.null key)
       , (val:rest) <- xs
       , not (T.isPrefixOf "--" val) =
-          go path ((key, val) : params) helpReq rest
+          let normalizedKey = T.replace "-" "_" key  -- Normalize kebab-case to snake_case
+          in go path ((normalizedKey, val) : params) helpReq rest
       -- --key with no value or next arg is another flag (boolean flag)
       | Just key <- T.stripPrefix "--" x
       , not (T.null key) =
-          go path ((key, "") : params) helpReq xs
+          let normalizedKey = T.replace "-" "_" key  -- Normalize kebab-case to snake_case
+          in go path ((normalizedKey, "") : params) helpReq xs
       -- Regular path segment - split on dots to support plexus.cone.chat syntax
       | otherwise =
           let segments = filter (not . T.null) $ T.splitOn "." x
@@ -342,9 +364,27 @@ splash = T.unlines
 
 -- | Get CLI help text from optparse-applicative
 cliHeader :: Text
-cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse")
+cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse") <> selfHelp
   where
     failure = parserFailure defaultPrefs argsInfo (ShowHelpText Nothing) mempty
+    selfHelp = T.unlines
+      [ ""
+      , "Meta-commands (local, no RPC):"
+      , ""
+      , "  synapse _self template <pattern>"
+      , "      Generate example CLI invocations from schemas"
+      , ""
+      , "      Pattern examples:"
+      , "        plexus.cone.create      # Exact match"
+      , "        plexus.cone.*           # All cone methods"
+      , "        plexus.*.create         # All create methods"
+      , "        plexus.(cone|arbor).*   # Regex pattern"
+      , ""
+      , "      Options:"
+      , "        --limit N                           # Show first N results (default: 10)"
+      , "        --limit.lower L --limit.upper U     # Show results L through U"
+      , ""
+      ]
 
 -- | Render an error for display
 renderError :: SynapseError -> String
