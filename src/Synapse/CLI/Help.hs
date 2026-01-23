@@ -125,7 +125,7 @@ renderParamBlock style ir param =
       indent2 = T.replicate (hsIndent style * 2) " "
 
       -- Parameter header line
-      flagName = "--" <> pdName param
+      flagName = "--" <> T.replace "_" "-" (pdName param)  -- Display as kebab-case
       typeStr = renderTypeRef ir (pdType param)
       reqText = if pdRequired param then "(required)" else "(optional)"
       headerLine = indent' <> flagName <> " <" <> typeStr <> ">  " <> reqText
@@ -237,8 +237,10 @@ expandEnum ir prefix discriminator variants =
 -- Example: "--identifier.type by_name --identifier.name <string>"
 renderVariantExample :: IR -> Text -> Text -> VariantDef -> Text
 renderVariantExample ir prefix discriminator VariantDef{..} =
-  let discFlag = "--" <> prefix <> "." <> discriminator <> " " <> vdName
-      fieldFlags = map (renderFieldFlag ir prefix) vdFields
+  let prefix' = T.replace "_" "-" prefix  -- Display as kebab-case
+      disc' = T.replace "_" "-" discriminator  -- Display as kebab-case
+      discFlag = "--" <> prefix' <> "." <> disc' <> " " <> vdName
+      fieldFlags = map (renderFieldFlag ir prefix') vdFields
   in T.intercalate " " (discFlag : fieldFlags)
 
 -- | Render a field as a CLI flag
@@ -246,7 +248,8 @@ renderVariantExample ir prefix discriminator VariantDef{..} =
 -- Example: "--identifier.name <string>"
 renderFieldFlag :: IR -> Text -> FieldDef -> Text
 renderFieldFlag ir prefix FieldDef{..} =
-  "--" <> prefix <> "." <> fdName <> " <" <> renderTypeRef ir fdType <> ">"
+  let name' = T.replace "_" "-" fdName  -- Display as kebab-case
+  in "--" <> prefix <> "." <> name' <> " <" <> renderTypeRef ir fdType <> ">"
 
 -- ============================================================================
 -- String Enum Helpers
