@@ -157,3 +157,33 @@ test-suite typeref-json
   default-extensions:
     OverloadedStrings
   ghc-options:      -threaded
+
+test-suite parse-test
+  type:             exitcode-stdio-1.0
+  main-is:          ParseSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    hub-synapse,
+    text >= 2.0 && < 2.2,
+    aeson >= 2.2 && < 2.3,
+    containers >= 0.6 && < 0.8,
+    vector >= 0.12 && < 0.14,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded
+
+test-suite path-normalization-test
+  type:             exitcode-stdio-1.0
+  main-is:          PathNormalizationSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    text >= 2.0 && < 2.2,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded

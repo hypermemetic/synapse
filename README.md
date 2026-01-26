@@ -551,6 +551,19 @@ synapse/
 
 ---
 
+## Architecture Documentation
+
+Detailed architecture docs, decision records, and implementation notes are in [`docs/architecture/`](./docs/architecture/).
+
+See the [Architecture Index](./docs/architecture/INDEX.md) for a curated list of important documents.
+
+Recent updates:
+- **[Array and Normalization Fixes](./docs/architecture/16677498315934040575_array-and-normalization-fixes.md)** - CLI parser improvements for arrays and hyphenated method names
+- **[Dynamic CLI Implementation](./docs/architecture/16680974430007725567_dynamic-cli-implementation.md)** - How the schema-driven CLI works
+- **[Schema to CLI Pipeline](./docs/architecture/16680606527890548735_schema-to-cli-pipeline.md)** - Parameter parsing and type correspondence
+
+---
+
 ## License
 
 MIT

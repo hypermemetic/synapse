@@ -32,6 +32,16 @@
 -- @
 --
 -- Each group is then built according to its parameter's TypeRef.
+--
+-- = Arrays
+--
+-- Repeated flags are collected into arrays:
+--
+-- @
+-- --tags backend --tags critical --tags urgent
+-- -> [("tags", [("", "backend"), ("", "critical"), ("", "urgent")])]
+-- -> {"tags": ["backend", "critical", "urgent"]}
+-- @
 module Synapse.CLI.Parse
   ( -- * Parsing
     parseParams
@@ -50,6 +60,7 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Scientific (Scientific)
+import qualified Data.Vector as V
 import Text.Read (readMaybe)
 
 import Synapse.IR.Types
@@ -187,11 +198,12 @@ buildParamValue ir param kvs = case pdType param of
       then Right Null
       else buildParamValue ir param{pdType = inner} kvs
 
-  RefArray _ ->
-    -- Arrays need JSON input
-    case lookup "" kvs of
-      Just val -> parseJsonValue val
-      Nothing -> Left $ InvalidValue (pdName param) "arrays need JSON input"
+  RefArray innerType ->
+    -- Collect all repeated --key value entries
+    let values = [val | ("", val) <- kvs]
+    in if null values
+       then Left $ InvalidValue (pdName param) "array requires at least one value"
+       else Right $ Array $ V.fromList $ map (buildTypedValue ir innerType) values
 
   RefAny ->
     -- Dynamic type, try to parse as JSON or use as string

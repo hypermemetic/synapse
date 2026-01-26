@@ -43,6 +43,7 @@ import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, pret
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 import System.FilePath ((</>))
 import qualified Synapse.Self.Commands as Self
+import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends)
 
 -- ============================================================================
 -- Types
@@ -66,28 +67,86 @@ data Args = Args
   deriving Show
 
 -- ============================================================================
+-- Constants
+-- ============================================================================
+
+defaultHost :: Text
+defaultHost = "127.0.0.1"
+
+defaultPort :: Int
+defaultPort = 4444
+
+-- ============================================================================
 -- Main
 -- ============================================================================
 
 main :: IO ()
 main = do
   args <- execParser argsInfo
+  -- Use specified host/port for registry discovery
+  let discovery = registryDiscovery (argHost args) (argPort args)
+
   case argBackend args of
     Nothing
       -- Suppress banner for data output modes
-      | argEmitIR args || argSchema args || argJson args || argRaw args -> run "plexus" args
-      | otherwise -> TIO.putStr cliHeader  -- No backend specified, show help
+      | argEmitIR args || argSchema args || argJson args || argRaw args ->
+          runWithDiscovery discovery "plexus" args
+      | otherwise -> do
+          -- No backend specified, show available backends
+          TIO.putStr cliHeader
+          backends <- discoverBackends discovery
+          -- Ping backends to check if they're reachable
+          backendsWithStatus <- pingBackends backends
+          TIO.putStrLn "\nAvailable backends:"
+          mapM_ printBackend backendsWithStatus
+          TIO.putStrLn "\nUsage: synapse <backend> [command...]"
     Just backend
       -- Handle --help/-h as backend (forwardOptions treats flags as positional args)
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
       -- Handle _self meta-commands (use plexus as backend for RPC)
-      | backend == "_self" -> run "plexus" args
-      | otherwise -> run backend args
+      | backend == "_self" -> runWithDiscovery discovery "plexus" args
+      | otherwise -> runWithDiscovery discovery backend args
 
--- | Run a Hub command with specified backend
-run :: Text -> Args -> IO ()
-run backend args = do
-  env <- initEnv (argHost args) (argPort args) backend
+-- | Print a backend in the list
+printBackend :: Backend -> IO ()
+printBackend b = do
+  let nameField = T.justifyLeft 15 ' ' (backendName b)
+  let hostPort = backendHost b <> ":" <> T.pack (show (backendPort b))
+  let status = case backendReachable b of
+        Just True  -> " ✓"
+        Just False -> " ✗"
+        Nothing    -> ""
+  let desc = if T.null (backendDescription b)
+             then ""
+             else " - " <> backendDescription b
+  TIO.putStrLn $ "  " <> nameField <> hostPort <> status <> desc
+
+-- | Run a Hub command with backend discovery
+runWithDiscovery :: BackendDiscovery -> Text -> Args -> IO ()
+runWithDiscovery discovery backendName args = do
+  -- Try to discover backend info
+  maybeBackend <- getBackendInfo discovery backendName
+
+  case maybeBackend of
+    Just backend -> do
+      -- Use discovered host/port from registry, but allow explicit --host/--port to override
+      -- If user didn't specify (still at default), use discovered values
+      -- If user explicitly specified (different from default), use their values
+      let host = if argHost args == defaultHost
+                 then backendHost backend
+                 else argHost args
+      let port = if argPort args == defaultPort
+                 then backendPort backend
+                 else argPort args
+      run backendName host port args
+    Nothing -> do
+      -- Backend not found in registry, use command-line arguments
+      run backendName (argHost args) (argPort args) args
+
+-- | Run a Hub command with specified backend and connection details
+run :: Text -> Text -> Int -> Args -> IO ()
+run backend host port args = do
+  env <- initEnv host port backend
   rendererCfg <- defaultRendererConfig
   result <- runSynapseM env (dispatch args rendererCfg)
   case result of
@@ -329,7 +388,7 @@ parsePathAndParams = go [] [] False
           in go path ((normalizedKey, "") : params) helpReq xs
       -- Regular path segment - split on dots to support plexus.cone.chat syntax
       | otherwise =
-          let segments = filter (not . T.null) $ T.splitOn "." x
+          let segments = map (T.replace "-" "_") $ filter (not . T.null) $ T.splitOn "." x
           in go (reverse segments ++ path) params helpReq xs
 
 -- | Build JSON object from key-value pairs
@@ -508,12 +567,12 @@ argsParser :: Parser Args
 argsParser = do
   argHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
-   <> value "127.0.0.1" <> showDefault
-   <> help "Hub server host" )
+   <> value (T.unpack defaultHost) <> showDefault
+   <> help "Hub server host (default: 127.0.0.1)" )
   argPort <- option auto
     ( long "port" <> short 'P' <> metavar "PORT"
-   <> value 4444 <> showDefault
-   <> help "Hub server port" )
+   <> value defaultPort <> showDefault
+   <> help "Hub server port (default: 4444)" )
   argJson <- switch
     ( long "json" <> short 'j'
    <> help "Output raw JSON stream items" )
