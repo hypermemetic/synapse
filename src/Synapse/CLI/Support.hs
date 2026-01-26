@@ -18,7 +18,7 @@
 -- - Primitives: string, integer, number, boolean (always representable)
 -- - UUID/formatted strings: representable as strings
 -- - Optional T: representable if T is representable (flag is omittable)
--- - Arrays: NOT representable as simple flags (need JSON or repeated flags)
+-- - Arrays: representable via repeated flags (--key val1 --key val2 --key val3)
 -- - Structs: representable if all required fields are representable
 -- - Enums (discriminated): representable via --field.type variant --field.x ...
 -- - String enums: representable (finite set of string values)
@@ -133,8 +133,8 @@ canCLIRepresentWithReason ir = \case
   -- Optional types: representable if inner type is
   RefOptional inner -> canCLIRepresentWithReason ir inner
 
-  -- Arrays are not directly representable as simple flags
-  RefArray _ -> Left ReasonArray
+  -- Arrays are representable via repeated flags if the element type is representable
+  RefArray innerType -> canCLIRepresentWithReason ir innerType
 
   -- Any/Unknown require JSON
   RefAny -> Left ReasonAny
@@ -244,7 +244,7 @@ canCLIRepresentWithDepth _ depth _
 canCLIRepresentWithDepth ir depth typeRef = case typeRef of
   RefPrimitive _ _ -> True
   RefOptional inner -> canCLIRepresentWithDepth ir depth inner
-  RefArray _ -> False  -- Arrays always fail
+  RefArray innerType -> canCLIRepresentWithDepth ir depth innerType
   RefAny -> False
   RefUnknown -> False
   RefNamed qn -> canCLIRepresentNamedWithDepth ir (depth - 1) (qualifiedNameFull qn)
