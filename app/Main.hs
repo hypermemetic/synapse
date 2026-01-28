@@ -129,18 +129,11 @@ runWithDiscovery discovery backendName args = do
 
   case maybeBackend of
     Just backend -> do
-      -- Use discovered host/port from registry, but allow explicit --host/--port to override
-      -- If user didn't specify (still at default), use discovered values
-      -- If user explicitly specified (different from default), use their values
-      let host = if argHost args == defaultHost
-                 then backendHost backend
-                 else argHost args
-      let port = if argPort args == defaultPort
-                 then backendPort backend
-                 else argPort args
-      run backendName host port args
+      -- Always use discovered host/port from registry
+      -- The --host/--port flags specify where to find the registry, not the target backend
+      run backendName (backendHost backend) (backendPort backend) args
     Nothing -> do
-      -- Backend not found in registry, use command-line arguments
+      -- Backend not found in registry, use command-line arguments as fallback
       run backendName (argHost args) (argPort args) args
 
 -- | Run a Hub command with specified backend and connection details
