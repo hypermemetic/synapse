@@ -144,7 +144,7 @@ data RegistryEvent
 
 instance FromJSON RegistryEvent where
   parseJSON = withObject "RegistryEvent" $ \o -> do
-    eventType <- o .: "type"
+    eventType <- o .: "type"  -- Rust uses #[serde(tag = "type")]
     case eventType :: Text of
       "backends" -> BackendsEvent <$> o .: "backends"
       "backend"  -> BackendEvent <$> o .: "backend"
