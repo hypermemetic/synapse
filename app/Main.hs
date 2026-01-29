@@ -8,7 +8,11 @@
 -- - Reified algebras for navigation, rendering, completion
 -- - Proper error handling
 --
--- Compare with Main.hs which takes pragmatic shortcuts.
+-- CLI Structure:
+--   synapse [OPTIONS] <backend> <path...> [--param value ...]
+--
+-- Options must appear BEFORE the backend. Everything after the backend
+-- is passed through for method invocation.
 module Main where
 
 import Control.Monad.IO.Class (liftIO)
@@ -49,22 +53,30 @@ import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDis
 -- Types
 -- ============================================================================
 
-data Args = Args
-  { argHost      :: Text
-  , argPort      :: Int
-  , argJson      :: Bool          -- ^ Output raw JSON stream items
-  , argRaw       :: Bool          -- ^ Output raw content (no templates)
-  , argDryRun    :: Bool
-  , argSchema    :: Bool          -- ^ Show raw schema JSON
-  , argGenerate  :: Bool          -- ^ Generate templates from IR
-  , argEmitIR    :: Bool          -- ^ Emit IR for code generation
-  , argForce     :: Bool          -- ^ Force overwrite modified templates (unused)
-  , argParams    :: Maybe Text    -- ^ JSON params via -p
-  , argRpc       :: Maybe Text    -- ^ Raw JSON-RPC passthrough
-  , argBackend   :: Maybe Text    -- ^ Backend name (first positional arg)
-  , argPath      :: [Text]        -- ^ Path segments and --key value params
+-- | Synapse-level options (must appear before backend)
+-- Controls connection settings and output format
+data SynapseOpts = SynapseOpts
+  { soHost     :: Text          -- ^ Registry host for discovery
+  , soPort     :: Int           -- ^ Registry port for discovery
+  , soJson     :: Bool          -- ^ Output raw JSON stream items
+  , soRaw      :: Bool          -- ^ Output raw content (no templates)
+  , soDryRun   :: Bool          -- ^ Show request without sending
+  , soSchema   :: Bool          -- ^ Fetch raw schema JSON
+  , soGenerate :: Bool          -- ^ Generate templates from IR
+  , soEmitIR   :: Bool          -- ^ Emit IR for code generation
+  , soParams   :: Maybe Text    -- ^ JSON params via -p
+  , soRpc      :: Maybe Text    -- ^ Raw JSON-RPC passthrough
   }
   deriving Show
+
+-- | Full CLI arguments after two-phase parsing
+data Args = Args
+  { argOpts    :: SynapseOpts   -- ^ Synapse-level options
+  , argBackend :: Maybe Text    -- ^ Backend name (first positional)
+  , argPath    :: [Text]        -- ^ Path segments and --key value params (raw)
+  }
+  deriving Show
+
 
 -- ============================================================================
 -- Constants
@@ -77,19 +89,22 @@ defaultPort :: Int
 defaultPort = 4444
 
 -- ============================================================================
+-- Argument Splitting
+-- ============================================================================
 -- Main
 -- ============================================================================
 
 main :: IO ()
 main = do
   args <- execParser argsInfo
+  let opts = argOpts args
   -- Use specified host/port for registry discovery
-  let discovery = registryDiscovery (argHost args) (argPort args)
+  let discovery = registryDiscovery (soHost opts) (soPort opts)
 
   case argBackend args of
     Nothing
       -- Suppress banner for data output modes
-      | argEmitIR args || argSchema args || argJson args || argRaw args ->
+      | soEmitIR opts || soSchema opts || soJson opts || soRaw opts ->
           runWithDiscovery discovery "plexus" args
       | otherwise -> do
           -- No backend specified, show available backends
@@ -101,7 +116,7 @@ main = do
           mapM_ printBackend backendsWithStatus
           TIO.putStrLn "\nUsage: synapse <backend> [command...]"
     Just backend
-      -- Handle --help/-h as backend (forwardOptions treats flags as positional args)
+      -- Handle --help/-h if it somehow ends up as the backend
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
       -- Handle _self meta-commands (use plexus as backend for RPC)
       | backend == "_self" -> runWithDiscovery discovery "plexus" args
@@ -124,17 +139,18 @@ printBackend b = do
 -- | Run a Hub command with backend discovery
 runWithDiscovery :: BackendDiscovery -> Text -> Args -> IO ()
 runWithDiscovery discovery backendName args = do
+  let opts = argOpts args
   -- Try to discover backend info
   maybeBackend <- getBackendInfo discovery backendName
 
   case maybeBackend of
     Just backend -> do
       -- Always use discovered host/port from registry
-      -- The --host/--port flags specify where to find the registry, not the target backend
+      -- The -H/-P flags specify where to find the registry, not the target backend
       run backendName (backendHost backend) (backendPort backend) args
     Nothing -> do
       -- Backend not found in registry, use command-line arguments as fallback
-      run backendName (argHost args) (argPort args) args
+      run backendName (soHost opts) (soPort opts) args
 
 -- | Run a Hub command with specified backend and connection details
 run :: Text -> Text -> Int -> Args -> IO ()
@@ -150,7 +166,7 @@ run backend host port args = do
 
 -- | Dispatch based on navigation result
 dispatch :: Args -> RendererConfig -> SynapseM ()
-dispatch Args{..} rendererCfg = do
+dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
   -- Check for _self commands first (before anything else)
   case argBackend of
     Just "_self" -> do
@@ -168,13 +184,13 @@ dispatch Args{..} rendererCfg = do
     -- Normal dispatch
     _ -> do
       -- Mode 1: Raw JSON-RPC passthrough
-      case argRpc of
+      case soRpc of
         Just rpcJson -> do
           case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 rpcJson) of
             Left err -> throwParse $ T.pack err
             Right rpcReq -> do
               items <- invokeRawRpc rpcReq
-              liftIO $ mapM_ (printResult argJson argRaw rendererCfg) items
+              liftIO $ mapM_ (printResult soJson soRaw rendererCfg) items
           return ()
 
         Nothing -> do
@@ -187,7 +203,7 @@ dispatch Args{..} rendererCfg = do
           inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
 
           -- Mode 2: Schema request
-          if argSchema
+          if soSchema
             then do
               -- Try to navigate and determine if last segment is a method
               schemaResult <- fetchSchemaForPath pathSegs
@@ -196,7 +212,7 @@ dispatch Args{..} rendererCfg = do
                 Right val -> liftIO $ LBS.putStrLn $ encode val
 
             -- Mode 3: Generate templates (IR-driven approach)
-            else if argGenerate
+            else if soGenerate
               then do
                 homeDir <- liftIO getHomeDirectory
                 let baseDir = homeDir </> ".config" </> "synapse" </> "templates"
@@ -208,7 +224,7 @@ dispatch Args{..} rendererCfg = do
                 liftIO $ TIO.putStrLn $ "Generated " <> T.pack (show count) <> " templates"
 
               -- Mode 4: Emit IR for code generation
-              else if argEmitIR
+              else if soEmitIR
                 then do
                   ir <- buildIR pathSegs
                   liftIO $ LBS.putStrLn $ encode ir
@@ -249,7 +265,7 @@ dispatch Args{..} rendererCfg = do
                             else do
                               -- Build params: use IR-driven parsing for inline params
                               let schemaDefaults = extractSchemaDefaults method
-                              userParams <- case argParams of
+                              userParams <- case soParams of
                                 -- -p JSON: parse as raw JSON (bypass IR parsing)
                                 Just jsonStr ->
                                   case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 jsonStr) of
@@ -276,7 +292,7 @@ dispatch Args{..} rendererCfg = do
                               -- Merge: user params override schema defaults
                               let params = mergeParams schemaDefaults userParams
 
-                              if argDryRun
+                              if soDryRun
                                 then do
                                   backend <- asks seBackend
                                   liftIO $ LBS.putStrLn $ encodeDryRun backend (init path) (last path) params
@@ -297,7 +313,7 @@ dispatch Args{..} rendererCfg = do
       let methodName' = last path
       -- Set method path hint for template resolution
       let rendererCfg' = withMethodPath rendererCfg path
-      invokeStreaming namespacePath methodName' params (printResult argJson argRaw rendererCfg')
+      invokeStreaming namespacePath methodName' params (printResult soJson soRaw rendererCfg')
 
     -- Extract default values from JSON Schema properties
     -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}
@@ -505,8 +521,8 @@ encodeDryRun backend namespacePath method params =
     ]
 
 -- | Print a stream result
--- argJson: output raw JSON stream items
--- argRaw: skip template rendering, just output content JSON
+-- soJson: output raw JSON stream items
+-- soRaw: skip template rendering, just output content JSON
 -- otherwise: try template rendering, fall back to content JSON
 printResult :: Bool -> Bool -> RendererConfig -> HubStreamItem -> IO ()
 printResult True _ _ item = LBS.putStrLn $ encode item
@@ -543,58 +559,62 @@ printResult _ _ cfg item = do
       _ -> pure ()
 
 -- ============================================================================
--- Argument Parsing
+-- Argument Parsing (Synapse Options Only)
 -- ============================================================================
 
+-- | Parser for synapse-level options only
+-- Backend and path are handled separately after arg splitting
 argsInfo :: ParserInfo Args
-argsInfo = info argsParser
+argsInfo = info (argsParser <**> helper)
   ( fullDesc
  <> header "synapse - Algebraic CLI for Hub"
- <> progDesc "Navigate and invoke methods via coalgebraic schema traversal"
- <> forwardOptions  -- Pass unrecognized --flags to positional args
+ <> progDesc "synapse [OPTIONS] <backend> <path...> [--param value ...]"
+ <> noIntersperse  -- Stop option parsing at first positional arg
   )
-  -- Note: We don't use `helper` here because we want --help to be forwarded
-  -- to argPath so subcommand help works (e.g., `synapse plexus solar --help`)
 
 argsParser :: Parser Args
-argsParser = do
-  argHost <- T.pack <$> strOption
+argsParser = Args <$> optsParser <*> backendParser <*> restParser
+  where
+    backendParser = optional $ T.pack <$> argument str
+      ( metavar "BACKEND"
+     <> help "Backend name (e.g., plexus, registry-hub)" )
+
+    restParser = many $ T.pack <$> argument str
+      ( metavar "PATH... [--param value ...]"
+     <> help "Path and method parameters (passed through)" )
+
+optsParser :: Parser SynapseOpts
+optsParser = do
+  soHost <- T.pack <$> strOption
     ( long "host" <> short 'H' <> metavar "HOST"
-   <> value (T.unpack defaultHost) <> showDefault
-   <> help "Hub server host (default: 127.0.0.1)" )
-  argPort <- option auto
+   <> value (T.unpack defaultHost)
+   <> help "Registry/discovery host (default: 127.0.0.1)" )
+  soPort <- option auto
     ( long "port" <> short 'P' <> metavar "PORT"
-   <> value defaultPort <> showDefault
-   <> help "Hub server port (default: 4444)" )
-  argJson <- switch
+   <> value defaultPort
+   <> help "Registry/discovery port (default: 4444)" )
+  soJson <- switch
     ( long "json" <> short 'j'
    <> help "Output raw JSON stream items" )
-  argRaw <- switch
+  soRaw <- switch
     ( long "raw"
    <> help "Output raw content JSON (skip templates)" )
-  argDryRun <- switch
+  soDryRun <- switch
     ( long "dry-run" <> short 'n'
    <> help "Show JSON-RPC request without sending" )
-  argSchema <- switch
+  soSchema <- switch
     ( long "schema" <> short 's'
    <> help "Fetch raw schema JSON for path" )
-  argGenerate <- switch
+  soGenerate <- switch
     ( long "generate-templates" <> short 'g'
    <> help "Generate mustache templates from IR" )
-  argEmitIR <- switch
+  soEmitIR <- switch
     ( long "emit-ir" <> short 'i'
    <> help "Emit IR for code generation (JSON)" )
-  let argForce = False  -- Not yet implemented
-  argParams <- optional $ T.pack <$> strOption
+  soParams <- optional $ T.pack <$> strOption
     ( long "params" <> short 'p' <> metavar "JSON"
    <> help "Method parameters as JSON object" )
-  argRpc <- optional $ T.pack <$> strOption
+  soRpc <- optional $ T.pack <$> strOption
     ( long "rpc" <> short 'r' <> metavar "JSON"
    <> help "Raw JSON-RPC request (bypass navigation)" )
-  argBackend <- optional $ T.pack <$> argument str
-    ( metavar "BACKEND"
-   <> help "Backend name (e.g., plexus)" )
-  argPath <- many $ T.pack <$> argument str
-    ( metavar "[PATH...] [--key value ...]"
-   <> help "Path to plugin/method, with optional --key value params" )
-  pure Args{..}
+  pure SynapseOpts{..}
