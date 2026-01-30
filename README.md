@@ -32,32 +32,91 @@ Running `synapse` without arguments shows available backends:
 ```bash
 $ synapse
 Available backends:
-  plexus - Algebraic CLI for Plexus hub
+  registry-hub   127.0.0.1:4444 ✓ - Backend discovered via _info
+  substrate      127.0.0.1:4445 ✓ - Main substrate instance
+  secrets        127.0.0.1:4446 ✓ - Secrets management
 ```
 
-Connect to a backend by name:
+Synapse connects to the **host backend** at `localhost:4444` by default. If that backend has a **registry** plugin, it's used to discover other backends.
+
+**The CLI is generated at runtime** - synapse fetches each backend's schema and derives commands, help text, and parameter validation from it. No code generation step, no static configuration. Point synapse at any hub and it adapts.
+
+### Backend Discovery
+
+Scan local ports to find running backends:
 
 ```bash
-$ synapse plexus
-plexus v0.2.6
+$ synapse _self scan
+Scanning 127.0.0.1 ports 4440-4459 for backends...
 
-Modular plugin hub with dynamic activation
+Found 3 backend(s):
 
-activations
+  4444  registry-hub
+  4445  substrate
+  4446  secrets
+```
 
-  arbor        Conversation tree storage
-  changelog    Track plexus schema changes
-  claudecode   Claude Code session manager
-  cone         LLM agent manager
-  echo         Echo messages back
-  health       Check hub health
-  mustache     Template rendering service
-  solar        Solar system model
+Register discovered backends so synapse can route to them by name:
 
-methods
+```bash
+$ synapse registry-hub registry register --name substrate --host 127.0.0.1 --port 4445
+```
 
-  call         Route a call to a registered activation
-  hash         Get plexus configuration hash
+### Meta Commands (`_self`)
+
+Synapse has local commands that don't make RPC calls:
+
+**Scan for backends** on ports 4440-4459:
+
+```bash
+$ synapse _self scan
+Found 3 backend(s):
+  4444  registry-hub
+  4445  substrate
+  4446  secrets
+```
+
+**Generate templates** from any backend's schema:
+
+```bash
+$ synapse _self template generate
+Generating templates in ~/.config/synapse/templates...
+  registry-hub.registry.list
+  registry-hub.registry.register
+  registry-hub.registry.update
+  ...
+Generated 7 template(s)
+```
+
+Templates are auto-generated from the backend's JSON Schema - synapse inspects return types, discriminated unions, and field structures to create Mustache templates for pretty output.
+
+### CLI Structure
+
+```
+synapse [OPTIONS] <backend> <path...> [--method-params...]
+```
+
+**Options** (like `-P`, `-H`, `--json`) must come **before** the backend. Everything **after** the backend is passed through as path segments and method parameters:
+
+```bash
+# -P is a synapse option, --port is a method parameter
+$ synapse -P 4444 registry-hub registry update --name foo --port 4445
+```
+
+### Connecting to Backends
+
+Connect by name (uses registry discovery):
+
+```bash
+$ synapse substrate bash execute --command "echo hello"
+line: hello
+code: 0
+```
+
+Or connect directly by port:
+
+```bash
+$ synapse -P 4445 substrate bash execute --command "echo hello"
 ```
 
 ### Navigating
@@ -508,18 +567,17 @@ it "echo once" $ ["plexus", "echo", "once"] `has` ["once", "--message", "require
 
 ### Adding Backends
 
-1. Add a `Backend` entry to `availableBackends` in `Main.hs`:
+Backends are discovered dynamically via the registry - no code changes needed:
 
-```haskell
-availableBackends =
-  [ Backend "plexus" "Algebraic CLI for Plexus hub" "127.0.0.1" 4444
-  , Backend "mybackend" "Description" "host" 5555  -- new
-  ]
+```bash
+# Register a new backend
+$ synapse registry-hub registry register --name mybackend --host 127.0.0.1 --port 5555
+
+# Now it's available
+$ synapse mybackend
 ```
 
-2. Add a command variant and parser in the argument parsing section
-
-3. The transport layer handles the connection - backends just need host/port
+The registry stores backend metadata (host, port, description) and synapse queries it at runtime to resolve backend names to connection details.
 
 ### Project Structure
 
