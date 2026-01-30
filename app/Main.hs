@@ -47,7 +47,7 @@ import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, pret
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 import System.FilePath ((</>))
 import qualified Synapse.Self.Commands as Self
-import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends)
+import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends, getBackendAt)
 
 -- ============================================================================
 -- Types
@@ -101,11 +101,16 @@ main = do
   -- Use specified host/port for registry discovery
   let discovery = registryDiscovery (soHost opts) (soPort opts)
 
+  -- Get the backend at the connection point (host:port)
+  -- If it has a registry plugin, that's used for discovering other backends
+  maybeBackend <- getBackendAt (soHost opts) (soPort opts)
+  let hostBackend = maybe "plexus" id maybeBackend
+
   case argBackend args of
     Nothing
       -- Suppress banner for data output modes
       | soEmitIR opts || soSchema opts || soJson opts || soRaw opts ->
-          runWithDiscovery discovery "plexus" args
+          runWithDiscovery discovery hostBackend args
       | otherwise -> do
           -- No backend specified, show available backends
           TIO.putStr cliHeader
@@ -118,8 +123,8 @@ main = do
     Just backend
       -- Handle --help/-h if it somehow ends up as the backend
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
-      -- Handle _self meta-commands (use plexus as backend for RPC)
-      | backend == "_self" -> runWithDiscovery discovery "plexus" args
+      -- Handle _self meta-commands (use discovered primary backend)
+      | backend == "_self" -> runWithDiscovery discovery hostBackend args
       | otherwise -> runWithDiscovery discovery backend args
 
 -- | Print a backend in the list

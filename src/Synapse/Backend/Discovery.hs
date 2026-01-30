@@ -45,6 +45,9 @@ module Synapse.Backend.Discovery
   , stubDiscovery
   , registryDiscovery
 
+    -- * Backend Discovery
+  , getBackendAt
+
     -- * Health Checks
   , pingBackend
   , pingBackends
@@ -205,6 +208,12 @@ registryDiscovery registryHost registryPort = BackendDiscovery
           discoverBackends stubDiscovery
   , getBackendInfo   = queryBackend registryHost registryPort
   }
+
+-- | Get the backend name at a given host/port via _info
+-- Returns whatever backend is running there (e.g., "registry-hub", "plexus")
+-- If that backend has a registry plugin, it can be used to discover other backends
+getBackendAt :: Text -> Int -> IO (Maybe Text)
+getBackendAt = discoverBackendName
 
 -- | Discover the backend name by calling _info
 discoverBackendName :: Text -> Int -> IO (Maybe Text)
