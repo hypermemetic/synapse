@@ -2,9 +2,9 @@
 
 -- | Core types for Synapse
 --
--- Re-exports schema types from substrate-protocol and defines local types.
+-- Re-exports schema types from plexus-protocol and defines local types.
 module Synapse.Schema.Types
-  ( -- * Schema Types (from substrate-protocol)
+  ( -- * Schema Types (from plexus-protocol)
     PluginSchema(..)
   , MethodSchema(..)
   , ChildSummary(..)
@@ -40,7 +40,7 @@ import Data.Text (Text)
 import Data.Int (Int64)
 import GHC.Generics (Generic)
 
--- Re-export from substrate-protocol
+-- Re-export from plexus-protocol
 import Plexus.Schema.Recursive
   ( PluginSchema(..)
   , MethodSchema(..)

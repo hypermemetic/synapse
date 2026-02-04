@@ -202,7 +202,7 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
           -- Parse path and inline params (--key value pairs)
           let (pathSegs, rawParams, helpRequested) = parsePathAndParams argPath
 
-          -- Normal Plexus routing
+          -- Normal Plexus RPC routing
           -- Apply parameter transformations (path expansion, env vars)
           transformEnv <- liftIO mkTransformEnv
           inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
@@ -400,7 +400,7 @@ parsePathAndParams = go [] [] False
       , not (T.null key) =
           let normalizedKey = T.replace "-" "_" key  -- Normalize kebab-case to snake_case
           in go path ((normalizedKey, "") : params) helpReq xs
-      -- Regular path segment - split on dots to support plexus.cone.chat syntax
+      -- Regular path segment - split on dots to support Plexus RPC path syntax (e.g., cone.chat)
       | otherwise =
           let segments = map (T.replace "-" "_") $ filter (not . T.null) $ T.splitOn "." x
           in go (reverse segments ++ path) params helpReq xs

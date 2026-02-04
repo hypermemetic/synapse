@@ -38,7 +38,7 @@ library
     Synapse.Self.Examples
   build-depends:
     base >= 4.17 && < 5,
-    substrate-protocol,
+    plexus-protocol,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
@@ -75,8 +75,8 @@ executable synapse
   main-is:          Main.hs
   build-depends:
     base >= 4.17 && < 5,
-    substrate-protocol,
-    hub-synapse,
+    plexus-protocol,
+    plexus-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
@@ -97,8 +97,8 @@ executable schema-discovery
   main-is:          SchemaDiscovery.hs
   build-depends:
     base >= 4.17 && < 5,
-    substrate-protocol,
-    hub-synapse,
+    plexus-protocol,
+    plexus-synapse,
     aeson >= 2.0 && < 2.3,
     text >= 2.0 && < 2.2,
     streaming >= 0.2 && < 0.3
@@ -128,7 +128,7 @@ test-suite ir-test
   main-is:          IRSpec.hs
   build-depends:
     base >= 4.17 && < 5,
-    hub-synapse,
+    plexus-synapse,
     text >= 2.0 && < 2.2,
     containers >= 0.6 && < 0.8,
     hspec >= 2.10 && < 2.12,
@@ -147,7 +147,7 @@ test-suite typeref-json
   main-is:          TypeRefJson.hs
   build-depends:
     base >= 4.17 && < 5,
-    hub-synapse,
+    plexus-synapse,
     text >= 2.0 && < 2.2,
     aeson >= 2.2 && < 2.3,
     aeson-pretty >= 0.8 && < 0.9,
@@ -163,7 +163,7 @@ test-suite parse-test
   main-is:          ParseSpec.hs
   build-depends:
     base >= 4.17 && < 5,
-    hub-synapse,
+    plexus-synapse,
     text >= 2.0 && < 2.2,
     aeson >= 2.2 && < 2.3,
     containers >= 0.6 && < 0.8,
