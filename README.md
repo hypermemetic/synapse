@@ -11,7 +11,7 @@
 
 **A CLI that writes itself from your API's structure.**
 
-Synapse is a schema-driven command-line interface that discovers and navigates API structures at runtime. Point it at a hub, and it generates commands, help text, and completions from the schema - no code generation step required.
+Synapse is a schema-driven command-line interface for Plexus RPC servers. It discovers and navigates API structures at runtime - point it at a Plexus RPC server, and it generates commands, help text, and completions from the schema with no code generation step required.
 
 ---
 
@@ -27,7 +27,7 @@ cabal install
 
 ### Basic Usage
 
-Running `synapse` without arguments shows available backends:
+Running `synapse` without arguments shows available Plexus RPC servers:
 
 ```bash
 $ synapse
@@ -37,13 +37,13 @@ Available backends:
   secrets        127.0.0.1:4446 ✓ - Secrets management
 ```
 
-Synapse connects to the **host backend** at `localhost:4444` by default. If that backend has a **registry** plugin, it's used to discover other backends.
+Synapse connects to the **host backend** (a Plexus RPC server) at `localhost:4444` by default. If that server has a **registry** plugin, it's used to discover other Plexus RPC servers.
 
-**The CLI is generated at runtime** - synapse fetches each backend's schema and derives commands, help text, and parameter validation from it. No code generation step, no static configuration. Point synapse at any hub and it adapts.
+**The CLI is generated at runtime** - synapse fetches each Plexus RPC server's schema and derives commands, help text, and parameter validation from it. No code generation step, no static configuration. Point synapse at any Plexus RPC server and it adapts.
 
 ### Backend Discovery
 
-Scan local ports to find running backends:
+Scan local ports to find running Plexus RPC servers:
 
 ```bash
 $ synapse _self scan
@@ -56,7 +56,7 @@ Found 3 backend(s):
   4446  secrets
 ```
 
-Register discovered backends so synapse can route to them by name:
+Register discovered Plexus RPC servers so synapse can route to them by name:
 
 ```bash
 $ synapse registry-hub registry register --name substrate --host 127.0.0.1 --port 4445
@@ -66,7 +66,7 @@ $ synapse registry-hub registry register --name substrate --host 127.0.0.1 --por
 
 Synapse has local commands that don't make RPC calls:
 
-**Scan for backends** on ports 4440-4459:
+**Scan for Plexus RPC servers** on ports 4440-4459:
 
 ```bash
 $ synapse _self scan
@@ -76,7 +76,7 @@ Found 3 backend(s):
   4446  secrets
 ```
 
-**Generate templates** from any backend's schema:
+**Generate templates** from any Plexus RPC server's schema:
 
 ```bash
 $ synapse _self template generate
@@ -88,7 +88,7 @@ Generating templates in ~/.config/synapse/templates...
 Generated 7 template(s)
 ```
 
-Templates are auto-generated from the backend's JSON Schema - synapse inspects return types, discriminated unions, and field structures to create Mustache templates for pretty output.
+Templates are auto-generated from the Plexus RPC server's JSON Schema - synapse inspects return types, discriminated unions, and field structures to create Mustache templates for pretty output.
 
 ### CLI Structure
 
@@ -103,7 +103,7 @@ synapse [OPTIONS] <backend> <path...> [--method-params...]
 $ synapse -P 4444 registry-hub registry update --name foo --port 4445
 ```
 
-### Connecting to Backends
+### Connecting to Plexus RPC Servers
 
 Connect by name (uses registry discovery):
 
@@ -179,14 +179,14 @@ uptime_seconds: 12345
 
 ### Schema-Driven
 
-Synapse fetches the hub's schema at runtime and derives the entire CLI from it:
+Synapse fetches the Plexus RPC server's schema at runtime and derives the entire CLI from it:
 
 - **Commands** come from plugin namespaces and method names
 - **Help text** comes from descriptions in the schema
 - **Parameters** come from JSON Schema definitions
 - **Validation** happens based on `required` fields
 
-There's no static code generation - the CLI adapts to whatever the hub exposes.
+There's no static code generation - the CLI adapts to whatever the Plexus RPC server exposes.
 
 ### Navigation
 
@@ -272,7 +272,7 @@ $ synapse plexus echo --schema
 
 ### Dry Run (`--dry-run`)
 
-Preview the JSON-RPC request without sending:
+Preview the Plexus RPC request (JSON-RPC 2.0 format) without sending:
 
 ```bash
 $ synapse plexus echo once --message "test" --dry-run
@@ -308,8 +308,8 @@ The environment tracks:
 
 ```haskell
 data SynapseEnv = SynapseEnv
-  { seHost    :: Text                              -- Hub host
-  , sePort    :: Int                               -- Hub port
+  { seHost    :: Text                              -- Plexus RPC server host
+  , sePort    :: Int                               -- Plexus RPC server port
   , seCache   :: IORef (HashMap PluginHash PluginSchema)  -- Content-addressed cache
   , seVisited :: IORef (HashSet PluginHash)        -- Cycle detection
   }
@@ -567,17 +567,17 @@ it "echo once" $ ["plexus", "echo", "once"] `has` ["once", "--message", "require
 
 ### Adding Backends
 
-Backends are discovered dynamically via the registry - no code changes needed:
+Plexus RPC servers are discovered dynamically via the registry - no code changes needed:
 
 ```bash
-# Register a new backend
+# Register a new Plexus RPC server
 $ synapse registry-hub registry register --name mybackend --host 127.0.0.1 --port 5555
 
 # Now it's available
 $ synapse mybackend
 ```
 
-The registry stores backend metadata (host, port, description) and synapse queries it at runtime to resolve backend names to connection details.
+The registry stores Plexus RPC server metadata (host, port, description) and synapse queries it at runtime to resolve backend names to connection details.
 
 ### Project Structure
 
