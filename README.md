@@ -27,17 +27,37 @@ cabal install
 
 ### Basic Usage
 
-Running `synapse` without arguments shows available Plexus RPC servers:
+Synapse connects to `127.0.0.1:4444` by default. Call methods using this pattern:
+
+```bash
+synapse <backend> <activation> <method> --<parameter> <value>
+```
+
+Examples:
+
+```bash
+# Check server health
+$ synapse substrate health check
+status: healthy
+uptime_seconds: 42
+
+# Execute bash commands
+$ synapse substrate bash execute --command "echo hello"
+line: hello
+code: 0
+
+# Echo a message
+$ synapse substrate echo once --message "Hello, world!"
+Hello, world!
+```
+
+Running `synapse` without arguments shows available backends:
 
 ```bash
 $ synapse
 Available backends:
-  registry-hub   127.0.0.1:4444 ✓ - Backend discovered via _info
-  substrate      127.0.0.1:4445 ✓ - Main substrate instance
-  secrets        127.0.0.1:4446 ✓ - Secrets management
+  substrate      127.0.0.1:4444 ✓ - Main substrate instance
 ```
-
-Synapse connects to the **host backend** (a Plexus RPC server) at `localhost:4444` by default. If that server has a **registry** plugin, it's used to discover other Plexus RPC servers.
 
 **The CLI is generated at runtime** - synapse fetches each Plexus RPC server's schema and derives commands, help text, and parameter validation from it. No code generation step, no static configuration. Point synapse at any Plexus RPC server and it adapts.
 
@@ -93,19 +113,25 @@ Templates are auto-generated from the Plexus RPC server's JSON Schema - synapse 
 ### CLI Structure
 
 ```
-synapse [OPTIONS] <backend> <path...> [--method-params...]
+synapse [OPTIONS] <backend> <activation> <method> [--param value ...]
 ```
 
-**Options** (like `-P`, `-H`, `--json`) must come **before** the backend. Everything **after** the backend is passed through as path segments and method parameters:
+**Options** (like `-P`, `-H`, `--json`) must come **before** the backend. Everything **after** the backend is the path and method parameters:
 
 ```bash
-# -P is a synapse option, --port is a method parameter
-$ synapse -P 4444 registry-hub registry update --name foo --port 4445
+# Synapse options come first, then backend/path, then method parameters
+$ synapse substrate bash execute --command "pwd"
+
+# -P is a synapse option, --name and --port are method parameters
+$ synapse -P 4444 substrate registry update --name foo --port 4445
+
+# Use --json to see raw stream output
+$ synapse --json substrate bash execute --command "echo test"
 ```
 
 ### Connecting to Plexus RPC Servers
 
-Connect by name (uses registry discovery):
+Synapse connects to `127.0.0.1:4444` by default. Just specify the backend and path:
 
 ```bash
 $ synapse substrate bash execute --command "echo hello"
@@ -113,7 +139,22 @@ line: hello
 code: 0
 ```
 
-Or connect directly by port:
+Check server health:
+
+```bash
+$ synapse substrate health check
+status: healthy
+uptime_seconds: 12345
+```
+
+Get the Plexus RPC hash:
+
+```bash
+$ synapse substrate hash
+value: 21b9b63682192f0f
+```
+
+Connect to a different port if needed:
 
 ```bash
 $ synapse -P 4445 substrate bash execute --command "echo hello"
@@ -144,31 +185,38 @@ methods
 Methods with required parameters show help:
 
 ```bash
-$ synapse plexus echo once
+$ synapse substrate echo once
 once - Echo a simple message once
 
   --message <string> (required)
       The message to echo
 ```
 
-Pass parameters inline with `--key value`:
+Pass parameters using `--parameter-name value` syntax:
 
 ```bash
-$ synapse plexus echo once --message "Hello, world!"
+$ synapse substrate echo once --message "Hello, world!"
 Hello, world!
 ```
 
-Or use JSON with `-p`:
+```bash
+$ synapse substrate bash execute --command "ls -la"
+line: total 48
+line: drwxr-xr-x  ...
+code: 0
+```
+
+Alternatively, use JSON with `-p` for complex parameters:
 
 ```bash
-$ synapse plexus echo echo -p '{"message": "hi", "count": 3}'
+$ synapse substrate echo echo -p '{"message": "hi", "count": 3}'
 hi hi hi
 ```
 
 Methods without required parameters auto-invoke:
 
 ```bash
-$ synapse plexus health check
+$ synapse substrate health check
 status: healthy
 uptime_seconds: 12345
 ```
@@ -212,21 +260,25 @@ Plugins can nest arbitrarily deep. Methods are always leaves - you can't navigat
 
 ### Parameters
 
-Parameters can be passed two ways:
-
-**Inline flags** (converted to JSON automatically):
+Pass parameters using `--parameter-name value` syntax:
 
 ```bash
-synapse plexus echo echo --message "hello" --count 3
+$ synapse substrate bash execute --command "uptime"
+line:  07:15:42 up 5 days, 3:21,  0 users,  load average: 0.52, 0.58, 0.59
+code: 0
+
+$ synapse substrate echo echo --message "hello" --count 3
+hello hello hello
 ```
 
-**JSON object** with `-p`:
+For complex nested JSON, use `-p`:
 
 ```bash
-synapse plexus echo echo -p '{"message": "hello", "count": 3}'
+$ synapse substrate echo echo -p '{"message": "hello", "count": 3}'
+hello hello hello
 ```
 
-Inline flags support type inference: `true`/`false` become booleans, numbers become numbers, everything else is a string.
+Type inference: `true`/`false` become booleans, numbers become numbers, everything else is a string.
 
 ---
 
