@@ -4,7 +4,7 @@
 
 -- | Backend Discovery Abstraction
 --
--- This module provides an abstraction layer for discovering Plexus backends.
+-- This module provides an abstraction layer for discovering Plexus RPC servers.
 -- Currently implements a stub that returns hardcoded localhost:4444, but the
 -- interface is designed to support future dynamic discovery via a directory
 -- service.

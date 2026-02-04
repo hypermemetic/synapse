@@ -40,7 +40,7 @@ main = hspec $ do
 -- ============================================================================
 
 synapse :: FilePath
-synapse = "dist-newstyle/build/aarch64-osx/ghc-9.6.7/hub-synapse-0.2.0.0/x/synapse/build/synapse/synapse"
+synapse = "dist-newstyle/build/aarch64-osx/ghc-9.6.7/plexus-synapse-0.2.0.0/x/synapse/build/synapse/synapse"
 
 -- | Assert synapse output contains all substrings
 has :: [String] -> [Text] -> Expectation
