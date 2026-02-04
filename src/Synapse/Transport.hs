@@ -23,8 +23,8 @@ import Data.Aeson (Value)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Substrate.Client (SubstrateConfig(..))
-import qualified Substrate.Transport as ST
+import Plexus.Client (SubstrateConfig(..))
+import qualified Plexus.Transport as ST
 
 import Synapse.Schema.Types
 import Synapse.Monad

@@ -65,8 +65,8 @@ import Control.Concurrent.Async (mapConcurrently, race, async, wait)
 import Control.Concurrent (threadDelay)
 import Data.IORef (newIORef, writeIORef, readIORef)
 import Control.Monad (void)
-import Substrate.Client (SubstrateConfig(..))
-import qualified Substrate.Transport as ST
+import Plexus.Client (SubstrateConfig(..))
+import qualified Plexus.Transport as ST
 import Plexus.Types (PlexusStreamItem(..))
 
 -- ============================================================================
