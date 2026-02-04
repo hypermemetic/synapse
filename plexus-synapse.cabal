@@ -1,7 +1,7 @@
 cabal-version:      3.0
-name:               hub-synapse
+name:               plexus-synapse
 version:            0.2.0.0
-synopsis:           Algebraic CLI for Plexus - coalgebraic schema navigation
+synopsis:           Schema-driven CLI for Plexus RPC servers
 license:            MIT
 author:
 maintainer:
