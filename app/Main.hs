@@ -688,9 +688,11 @@ printResult _ _ cfg item = do
   -- Template mode: try to render with template
   mRendered <- renderItem cfg item
   case mRendered of
-    Just text -> do
-      TIO.putStrLn text
-      hFlush stdout
+    Just text
+      | T.null (T.strip text) -> pure ()
+      | otherwise -> do
+          TIO.putStr text
+          hFlush stdout
     Nothing -> case item of
       -- Fallback to pretty-printed content
       HubData _ _ _ dat -> do
