@@ -260,25 +260,76 @@ Plugins can nest arbitrarily deep. Methods are always leaves - you can't navigat
 
 ### Parameters
 
-Pass parameters using `--parameter-name value` syntax:
+#### `--param value` flags → JSON
+
+Every `--param value` flag is collected and assembled into the `params` object sent over JSON-RPC. Use `--dry-run` to see exactly what gets sent:
 
 ```bash
-$ synapse substrate bash execute --command "uptime"
-line:  07:15:42 up 5 days, 3:21,  0 users,  load average: 0.52, 0.58, 0.59
-code: 0
-
-$ synapse substrate echo echo --message "hello" --count 3
-hello hello hello
+$ synapse --dry-run substrate echo echo --message "hello" --count 3
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"echo.echo","params":{"message":"hello","count":3}}}
 ```
 
-For complex nested JSON, use `-p`:
+The flags map directly:
+
+| CLI | JSON params |
+|-----|-------------|
+| `--message "hello"` | `{"message": "hello"}` |
+| `--count 3` | `{"count": 3}` |
+| `--enabled true` | `{"enabled": true}` |
+| `--message "hello" --count 3` | `{"message": "hello", "count": 3}` |
+
+#### Type inference
+
+Types are coerced using the method's schema from the server. When the schema says a param is `integer`, `"3"` becomes `3`. When it says `boolean`, `"true"` becomes `true`. For `any`-typed params (no schema constraint), synapse infers:
+
+```
+"true" / "false"   → boolean
+"42"               → integer
+"3.14"             → number
+anything else      → string
+```
+
+#### Nested objects with dotted keys
+
+For structured params (enums, discriminated unions, objects), use dotted keys:
+
+```bash
+$ synapse --dry-run substrate cone chat \
+    --identifier.type by_name \
+    --identifier.name my-assistant \
+    --prompt "hello"
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"cone.chat","params":{"identifier":{"type":"by_name","name":"my-assistant"},"prompt":"hello"}}}
+```
+
+`--identifier.type by_name --identifier.name foo` assembles into `{"identifier": {"type": "by_name", "name": "foo"}}`.
+
+#### JSON passthrough with `-p`
+
+For one-off calls or complex params, pass raw JSON directly with `-p`:
 
 ```bash
 $ synapse substrate echo echo -p '{"message": "hello", "count": 3}'
 hello hello hello
 ```
 
-Type inference: `true`/`false` become booleans, numbers become numbers, everything else is a string.
+`-p` bypasses the flag parser entirely and sends the JSON object as-is. Use `--dry-run` with `-p` to verify:
+
+```bash
+$ synapse --dry-run substrate echo echo -p '{"message": "hello", "count": 3}'
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"echo.echo","params":{"message":"hello","count":3}}}
+```
+
+Both produce identical wire payloads.
+
+#### Hyphen / underscore normalisation
+
+Parameter names are normalised — `--tree-id` and `--tree_id` are equivalent:
+
+```bash
+$ synapse substrate arbor node_get --tree-id "abc" --node-id "def"
+# same as
+$ synapse substrate arbor node_get --tree_id "abc" --node_id "def"
+```
 
 ---
 
