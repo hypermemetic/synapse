@@ -77,6 +77,8 @@ library
 
 executable synapse
   main-is:          Main.hs
+  autogen-modules:  Paths_plexus_synapse
+  other-modules:    Paths_plexus_synapse
   build-depends:
     base >= 4.17 && < 5,
     plexus-protocol,

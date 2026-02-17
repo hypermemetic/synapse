@@ -26,6 +26,8 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as TE
 import Options.Applicative
+import Data.Version (showVersion)
+import qualified Paths_plexus_synapse as Meta
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
@@ -709,12 +711,15 @@ printResult _ _ cfg item = do
 -- | Parser for synapse-level options only
 -- Backend and path are handled separately after arg splitting
 argsInfo :: ParserInfo Args
-argsInfo = info (argsParser <**> helper)
+argsInfo = info (argsParser <**> versionOption <**> helper)
   ( fullDesc
  <> header "synapse - Algebraic CLI for Hub"
  <> progDesc "synapse [OPTIONS] <backend> <path...> [--param value ...]"
  <> noIntersperse  -- Stop option parsing at first positional arg
   )
+  where
+    versionOption = infoOption (showVersion Meta.version)
+      ( long "version" <> short 'V' <> help "Show version" )
 
 argsParser :: Parser Args
 argsParser = Args <$> optsParser <*> backendParser <*> restParser
