@@ -234,6 +234,22 @@ data MethodDef = MethodDef
   , mdStreaming   :: Bool           -- ^ Does this method stream multiple events?
   , mdParams      :: [ParamDef]     -- ^ Input parameters
   , mdReturns     :: TypeRef        -- ^ Return type reference
+  , mdBidirType   :: Maybe TypeRef
+    -- ^ Bidirectional channel type parameter T, when the method uses
+    -- BidirChannel<StandardRequest<T>, StandardResponse<T>>.
+    --
+    -- Populated from the "bidirectional" / "request_type" fields in the
+    -- MethodSchema (emitted by the hub-macro when #[bidirectional] is set).
+    --
+    -- - Nothing  → method is not bidirectional, OR uses the default
+    --              T = serde_json::Value (StandardBidirChannel)
+    -- - Just RefAny → bidirectional with T=Value (explicit marker)
+    -- - Just (RefNamed ...) → bidirectional with a specific named T type
+    --
+    -- NOTE: The substrate schema currently emits 'bidirectional: true' but
+    -- does not yet include a structured 'bidir_type' field.  When that field
+    -- is added to MethodSchema, populate it here from methodRequestType.
+    -- For now this is always Nothing.
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)
