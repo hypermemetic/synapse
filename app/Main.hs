@@ -44,6 +44,7 @@ import qualified Data.Map.Strict as Map
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
 import Synapse.Bidir (BidirMode(..), parseBidirMode, detectBidirMode, handleBidirRequest)
+import Plexus.Types (Response(..))
 import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults, injectSmartDefaults)
 import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
@@ -71,6 +72,7 @@ data SynapseOpts = SynapseOpts
   , soRpc           :: Maybe Text    -- ^ Raw JSON-RPC passthrough
   , soGeneratorInfo :: [Text]        -- ^ Generator tool info (tool:version pairs)
   , soBidirMode     :: Maybe Text    -- ^ Bidirectional mode override
+  , soBidirCmd      :: Maybe Text    -- ^ Bidirectional subprocess command (--bidir-cmd)
   }
   deriving Show
 
@@ -220,6 +222,11 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
           transformEnv <- liftIO mkTransformEnv
           inlineParams <- liftIO $ transformParams transformEnv defaultTransformers rawParams
 
+          -- Mode 1.5: Respond subcommand (agent sends a response to a pending bidir request)
+          if not (null pathSegs) && head pathSegs == "respond"
+            then handleRespondCommand rawParams
+            else
+
           -- Mode 2: Schema request
           if soSchema
             then do
@@ -326,19 +333,33 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
                                         liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
                                   else invokeMethod path params
   where
+    handleRespondCommand :: [(Text, Text)] -> SynapseM ()
+    handleRespondCommand params = do
+      let mRequestId = lookup "request_id" params
+          mResponseStr = lookup "response" params
+      case (mRequestId, mResponseStr) of
+        (Nothing, _) -> throwParse "Missing --request-id for respond subcommand"
+        (_, Nothing) -> throwParse "Missing --response for respond subcommand"
+        (Just requestId, Just responseStr) ->
+          case eitherDecode (LBS.fromStrict $ TE.encodeUtf8 responseStr) of
+            Left err -> throwParse $ "Invalid --response JSON: " <> T.pack err
+            Right (resp :: Response Value) -> sendResponse requestId resp
+
     invokeMethod path params = do
       let namespacePath = init path  -- path without method name
       let methodName' = last path
       -- Set method path hint for template resolution
       let rendererCfg' = withMethodPath rendererCfg path
-      -- Determine bidirectional mode
-      bidirMode <- liftIO $ case soBidirMode of
-        Just modeStr -> case parseBidirMode modeStr of
-          Just mode -> pure mode
-          Nothing -> do
-            TIO.hPutStrLn stderr $ "[synapse] Unknown --bidir-mode: " <> modeStr <> ", using auto-detect"
-            detectBidirMode
-        Nothing -> detectBidirMode
+      -- Determine bidirectional mode (--bidir-cmd takes precedence)
+      bidirMode <- liftIO $ case soBidirCmd of
+        Just cmd -> pure $ BidirCmd cmd
+        Nothing  -> case soBidirMode of
+          Just modeStr -> case parseBidirMode modeStr of
+            Just mode -> pure mode
+            Nothing -> do
+              TIO.hPutStrLn stderr $ "[synapse] Unknown --bidir-mode: " <> modeStr <> ", using auto-detect"
+              detectBidirMode
+          Nothing -> detectBidirMode
       -- Use bidirectional streaming handler
       invokeStreamingWithBidir
         namespacePath
@@ -773,5 +794,8 @@ optsParser = do
    <> help "Generator tool version info (can be specified multiple times)" )
   soBidirMode <- optional $ T.pack <$> strOption
     ( long "bidir-mode" <> short 'b' <> metavar "MODE"
-   <> help "Bidirectional mode: interactive (TTY), json (pipe protocol), auto-cancel, defaults" )
+   <> help "Bidirectional mode: interactive (TTY), json (pipe protocol), auto-cancel, defaults, respond" )
+  soBidirCmd <- optional $ T.pack <$> strOption
+    ( long "bidir-cmd" <> metavar "CMD"
+   <> help "Shell command to handle bidir requests (stdin=JSON request, stdout=JSON response)" )
   pure SynapseOpts{..}

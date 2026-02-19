@@ -5,8 +5,7 @@
 -- | Bidirectional communication support for Synapse
 --
 -- This module handles bidirectional requests (confirm, prompt, select) from
--- the backend, supporting both interactive TTY mode and non-interactive
--- piped/scripted modes.
+-- the backend, supporting multiple modes for both human and agent users.
 --
 -- = Modes
 --
@@ -14,12 +13,16 @@
 -- - @json@: Outputs request as JSON to stdout, reads response from stdin
 -- - @auto-cancel@: Automatically cancels all requests with a warning
 -- - @defaults@: Uses default values from requests if available
+-- - @--bidir-cmd CMD@: Spawns a subprocess per request (stdin=JSON, stdout=JSON)
+-- - @--bidir-respond@: Prints request to stdout as JSON, returns Nothing so the
+--   agent can respond via a separate @synapse \<backend\> respond@ invocation
 --
 -- = Protocol
 --
 -- When a @StreamRequest@ arrives, the handler:
 -- 1. Processes it according to the current mode
--- 2. Sends the response via @{backend}.respond@ RPC method
+-- 2. If a response is produced, sends it via @{backend}.respond@ RPC method
+-- 3. If Nothing is returned (BidirRespond), the caller skips sending a response
 module Synapse.Bidir
   ( -- * Types
     BidirMode(..)
@@ -35,20 +38,19 @@ module Synapse.Bidir
   , BidirHandler
   ) where
 
-import Control.Monad.IO.Class (liftIO)
 import Data.Aeson
-import qualified Data.Aeson.Key as K
-import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as T
 import qualified Data.Text.IO as TIO
-import System.IO (hFlush, hIsTerminalDevice, stderr, stdin, stdout)
+import System.IO (hClose, hFlush, hIsTerminalDevice, stderr, stdin, stdout)
+import System.Process (createProcess, proc, std_in, std_out, StdStream(..), waitForProcess)
+import System.Exit (ExitCode(..))
 
 import Plexus.Types
-  ( StandardRequest(..)
-  , StandardResponse(..)
+  ( Request(..)
+  , Response(..)
   , SelectOption(..)
   )
 
@@ -58,6 +60,8 @@ data BidirMode
   | BidirJson          -- ^ Output request as JSON, read response from stdin
   | BidirAutoCancel    -- ^ Automatically cancel all requests
   | BidirDefaults      -- ^ Use default values from requests
+  | BidirCmd Text      -- ^ Spawn subprocess per request (stdin=JSON request, stdout=JSON response)
+  | BidirRespond       -- ^ Print request to stdout as JSON; agent responds via separate process call
   deriving (Show, Eq)
 
 -- | Parse bidirectional mode from string
@@ -67,6 +71,7 @@ parseBidirMode = \case
   "json"        -> Just BidirJson
   "auto-cancel" -> Just BidirAutoCancel
   "defaults"    -> Just BidirDefaults
+  "respond"     -> Just BidirRespond
   _             -> Nothing
 
 -- | Default mode when running in TTY
@@ -85,22 +90,24 @@ detectBidirMode = do
   pure $ if tty then BidirInteractive else BidirAutoCancel
 
 -- | Handler type for bidirectional requests
--- Takes request ID, request data, and returns a response
-type BidirHandler = Text -> StandardRequest -> IO StandardResponse
+-- Takes request ID, request data, and returns an optional response.
+-- Nothing means no immediate response (e.g., BidirRespond mode; agent responds separately).
+type BidirHandler = Text -> Request Value -> IO (Maybe (Response Value))
 
 -- | Handle a bidirectional request according to the mode
--- Returns the appropriate StandardResponse
-handleBidirRequest :: BidirMode -> Text -> StandardRequest -> IO StandardResponse
+handleBidirRequest :: BidirMode -> Text -> Request Value -> IO (Maybe (Response Value))
 handleBidirRequest mode requestId req = case mode of
-  BidirInteractive -> handleInteractive requestId req
-  BidirJson        -> handleJson requestId req
-  BidirAutoCancel  -> handleAutoCancel requestId req
-  BidirDefaults    -> handleDefaults requestId req
+  BidirInteractive -> Just <$> handleInteractive requestId req
+  BidirJson        -> Just <$> handleJson requestId req
+  BidirAutoCancel  -> Just <$> handleAutoCancel requestId req
+  BidirDefaults    -> Just <$> handleDefaults requestId req
+  BidirCmd cmd     -> Just <$> handleCmd cmd requestId req
+  BidirRespond     -> handleRespond requestId req
 
 -- | Interactive TTY handling
-handleInteractive :: Text -> StandardRequest -> IO StandardResponse
+handleInteractive :: Text -> Request Value -> IO (Response Value)
 handleInteractive _requestId req = case req of
-  ConfirmRequest{..} -> do
+  Confirm{..} -> do
     let defaultHint = case confirmDefault of
           Just True  -> " [Y/n]"
           Just False -> " [y/N]"
@@ -108,33 +115,30 @@ handleInteractive _requestId req = case req of
     TIO.putStr $ confirmMessage <> defaultHint <> ": "
     hFlush stdout
     input <- TIO.getLine
-    let response = case T.toLower (T.strip input) of
-          ""  -> case confirmDefault of
-                   Just d  -> d
-                   Nothing -> False
-          "y" -> True
+    let confirmed = case T.toLower (T.strip input) of
+          ""    -> case confirmDefault of
+                     Just d  -> d
+                     Nothing -> False
+          "y"   -> True
           "yes" -> True
-          _ -> False
-    pure $ ConfirmedResponse response
+          _     -> False
+    pure $ Confirmed confirmed
 
-  PromptRequest{..} -> do
+  Prompt{..} -> do
     let hint = case promptPlaceholder of
           Just ph -> " (" <> ph <> ")"
           Nothing -> ""
-    let defaultHint = case promptDefault of
-          Just d  -> " [" <> d <> "]"
-          Nothing -> ""
-    TIO.putStr $ promptMessage <> hint <> defaultHint <> ": "
+    TIO.putStr $ promptMessage <> hint <> ": "
     hFlush stdout
     input <- TIO.getLine
     let response = if T.null input
           then case promptDefault of
                  Just d  -> d
-                 Nothing -> input
-          else input
-    pure $ TextResponse response
+                 Nothing -> String input
+          else String input
+    pure $ Value response
 
-  SelectRequest{..} -> do
+  Select{..} -> do
     TIO.putStrLn selectMessage
     mapM_ printOption (zip [1..] selectOptions)
     TIO.putStr "Select (enter number): "
@@ -143,10 +147,12 @@ handleInteractive _requestId req = case req of
     case reads (T.unpack input) of
       [(n, "")] | n >= 1 && n <= length selectOptions ->
         let selected = optionValue (selectOptions !! (n - 1))
-        in pure $ SelectedResponse [selected]
-      _ -> pure CancelledResponse
+        in pure $ Selected [selected]
+      _ -> pure Cancelled
+
+  CustomRequest{} -> pure Cancelled
   where
-    printOption :: (Int, SelectOption) -> IO ()
+    printOption :: (Int, SelectOption Value) -> IO ()
     printOption (idx, SelectOption{..}) = do
       let desc = case optionDescription of
             Just d  -> " - " <> d
@@ -154,85 +160,109 @@ handleInteractive _requestId req = case req of
       TIO.putStrLn $ "  " <> T.pack (show idx) <> ") " <> optionLabel <> desc
 
 -- | JSON protocol handling for piped mode
--- Outputs request as JSON line, reads response from stdin
-handleJson :: Text -> StandardRequest -> IO StandardResponse
+-- Outputs request as a JSON line to stdout, reads a JSON response line from stdin
+handleJson :: Text -> Request Value -> IO (Response Value)
 handleJson requestId req = do
-  -- Output request as JSON to stdout
-  let jsonReq = object
-        [ "type" .= ("bidir_request" :: Text)
+  let jsonReq = encode $ object
+        [ "type"       .= ("bidir_request" :: Text)
         , "request_id" .= requestId
-        , "request" .= req
+        , "request"    .= req
         ]
-  LBS.putStrLn $ encode jsonReq
+  LBS.putStrLn jsonReq
   hFlush stdout
-
-  -- Read single line response from stdin
   inputLine <- TIO.getLine
   case eitherDecode (LBS.fromStrict $ T.encodeUtf8 inputLine) of
     Left err -> do
-      TIO.hPutStrLn stderr $ "Failed to parse response: " <> T.pack err
-      pure CancelledResponse
-    Right resp -> parseJsonResponse resp
-
--- | Parse JSON response from stdin
-parseJsonResponse :: Value -> IO StandardResponse
-parseJsonResponse val = case val of
-  Object o -> case KM.lookup "type" o of
-    Just (String "confirmed") -> case KM.lookup "value" o of
-      Just (Bool b) -> pure $ ConfirmedResponse b
-      _ -> pure CancelledResponse
-    Just (String "text") -> case KM.lookup "value" o of
-      Just (String t) -> pure $ TextResponse t
-      _ -> pure CancelledResponse
-    Just (String "selected") -> case KM.lookup "values" o of
-      Just (Array arr) -> do
-        let vals = [t | String t <- map id (foldr (:) [] arr)]
-        pure $ SelectedResponse vals
-      _ -> pure CancelledResponse
-    Just (String "cancelled") -> pure CancelledResponse
-    _ -> do
-      TIO.hPutStrLn stderr "Unknown response type"
-      pure CancelledResponse
-  _ -> do
-    TIO.hPutStrLn stderr "Response must be a JSON object"
-    pure CancelledResponse
+      TIO.hPutStrLn stderr $ "[synapse] Failed to parse bidir response: " <> T.pack err
+      pure Cancelled
+    Right resp -> pure resp
 
 -- | Auto-cancel mode: cancels all requests with a warning
-handleAutoCancel :: Text -> StandardRequest -> IO StandardResponse
+handleAutoCancel :: Text -> Request Value -> IO (Response Value)
 handleAutoCancel requestId req = do
-  let reqType = case req of
-        ConfirmRequest{} -> "confirm"
-        PromptRequest{}  -> "prompt"
-        SelectRequest{}  -> "select"
-  TIO.hPutStrLn stderr $ "[synapse] Auto-cancelling " <> reqType
+  TIO.hPutStrLn stderr $ "[synapse] Auto-cancelling " <> requestTypeName req
     <> " request (id: " <> requestId <> ") - not in interactive mode"
-  TIO.hPutStrLn stderr $ "[synapse] Use --bidir-mode to change behavior: json, defaults, interactive"
-  pure CancelledResponse
+  TIO.hPutStrLn stderr "[synapse] Use --bidir-mode to change: json, defaults, interactive"
+  TIO.hPutStrLn stderr "[synapse] Or use --bidir-cmd CMD / --bidir-respond for agent mode"
+  pure Cancelled
 
--- | Defaults mode: uses default values from requests
-handleDefaults :: Text -> StandardRequest -> IO StandardResponse
+-- | Defaults mode: uses default values from requests if available
+handleDefaults :: Text -> Request Value -> IO (Response Value)
 handleDefaults requestId req = case req of
-  ConfirmRequest{..} -> case confirmDefault of
+  Confirm{..} -> case confirmDefault of
     Just d -> do
       TIO.hPutStrLn stderr $ "[synapse] Using default for confirm (id: "
         <> requestId <> "): " <> if d then "yes" else "no"
-      pure $ ConfirmedResponse d
+      pure $ Confirmed d
     Nothing -> do
       TIO.hPutStrLn stderr $ "[synapse] No default for confirm (id: "
         <> requestId <> "), cancelling"
-      pure CancelledResponse
+      pure Cancelled
 
-  PromptRequest{..} -> case promptDefault of
+  Prompt{..} -> case promptDefault of
     Just d -> do
-      TIO.hPutStrLn stderr $ "[synapse] Using default for prompt (id: "
-        <> requestId <> "): " <> d
-      pure $ TextResponse d
+      TIO.hPutStrLn stderr $ "[synapse] Using default for prompt (id: " <> requestId <> ")"
+      pure $ Value d
     Nothing -> do
       TIO.hPutStrLn stderr $ "[synapse] No default for prompt (id: "
         <> requestId <> "), cancelling"
-      pure CancelledResponse
+      pure Cancelled
 
-  SelectRequest{..} -> do
+  Select{..} -> do
     TIO.hPutStrLn stderr $ "[synapse] No default for select (id: "
       <> requestId <> "), cancelling"
-    pure CancelledResponse
+    pure Cancelled
+
+  CustomRequest{} -> pure Cancelled
+
+-- | Command mode: spawn a subprocess per request
+-- The subprocess receives a JSON object on stdin:
+--   {"request_id": "...", "request": {...}}
+-- And must write a JSON Response object to stdout:
+--   {"type": "confirmed", "value": true}
+handleCmd :: Text -> Text -> Request Value -> IO (Response Value)
+handleCmd cmd requestId req = do
+  let reqJson = encode $ object
+        [ "request_id" .= requestId
+        , "request"    .= req
+        ]
+  (Just hIn, Just hOut, _, ph) <- createProcess (proc "sh" ["-c", T.unpack cmd])
+    { std_in  = CreatePipe
+    , std_out = CreatePipe
+    }
+  LBS.hPutStr hIn reqJson
+  hClose hIn
+  outputBytes <- LBS.hGetContents hOut
+  exitCode <- waitForProcess ph
+  case exitCode of
+    ExitFailure code -> do
+      TIO.hPutStrLn stderr $ "[synapse] --bidir-cmd subprocess exited with code "
+        <> T.pack (show code) <> " (id: " <> requestId <> ")"
+      pure Cancelled
+    ExitSuccess -> case eitherDecode outputBytes of
+      Left err -> do
+        TIO.hPutStrLn stderr $ "[synapse] Failed to parse --bidir-cmd response: " <> T.pack err
+        pure Cancelled
+      Right resp -> pure resp
+
+-- | Respond mode: print request to stdout as JSON, return Nothing
+-- The caller (invokeStreamingWithBidir) will skip sending a response.
+-- The agent is expected to call: synapse <backend> respond --request-id <id> --response <json>
+handleRespond :: Text -> Request Value -> IO (Maybe (Response Value))
+handleRespond requestId req = do
+  let jsonReq = encode $ object
+        [ "type"       .= ("bidir_request" :: Text)
+        , "request_id" .= requestId
+        , "request"    .= req
+        ]
+  LBS.putStrLn jsonReq
+  hFlush stdout
+  pure Nothing
+
+-- | Get a human-readable name for the request type
+requestTypeName :: Request t -> Text
+requestTypeName = \case
+  Confirm{}       -> "confirm"
+  Prompt{}        -> "prompt"
+  Select{}        -> "select"
+  CustomRequest{} -> "custom"
