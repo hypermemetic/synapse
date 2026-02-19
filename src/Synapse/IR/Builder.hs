@@ -19,6 +19,7 @@ module Synapse.IR.Builder
   ) where
 
 import Control.Monad (forM)
+import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
 import Data.Aeson (Value(..))
 import qualified Data.Aeson.Key as K
@@ -30,25 +31,65 @@ import Data.Maybe (fromMaybe, mapMaybe, catMaybes)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Vector as V
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.Format (formatTime, defaultTimeLocale)
 
 import Synapse.Schema.Types
 import Synapse.Schema.Functor (SchemaF(..))
 import Synapse.Algebra.Walk (walkSchema)
 import Synapse.Monad
 import Synapse.IR.Types hiding (QualifiedName(..), qualifiedNameFull)
-import Synapse.IR.Types (QualifiedName(..), qualifiedNameFull)
+import Synapse.IR.Types (QualifiedName(..), qualifiedNameFull, synapseVersion)
 
 -- ============================================================================
 -- Building IR
 -- ============================================================================
 
+-- | Parse a generator info string "tool:version" into GeneratorInfo
+-- Returns Nothing if the format is invalid
+parseGeneratorInfo :: Text -> Maybe GeneratorInfo
+parseGeneratorInfo s = case T.splitOn ":" s of
+  [tool, version] | not (T.null tool) && not (T.null version) ->
+    Just $ GeneratorInfo tool version
+  _ -> Nothing
+
+-- | Extract V2 hash information from a plugin schema
+-- Since Plexus currently only provides a composite 'hash' field,
+-- we use it for all three hash fields (backward compatible V1 mode)
+extractPluginHashInfo :: PluginSchema -> PluginHashInfo
+extractPluginHashInfo schema = PluginHashInfo
+  { phiHash = psHash schema
+  , phiSelfHash = psHash schema      -- V1 fallback: use composite hash
+  , phiChildrenHash = psHash schema  -- V1 fallback: use composite hash
+  }
+
 -- | Build IR by walking the schema tree from a given path
 -- After walking, deduplicate types that have identical structure
-buildIR :: Path -> SynapseM IR
-buildIR path = do
+-- Accepts generator info strings in "tool:version" format
+buildIR :: [Text] -> Path -> SynapseM IR
+buildIR generatorInfoStrs path = do
   backend <- asks seBackend
   raw <- walkSchema irAlgebra path
-  pure $ deduplicateTypes raw { irBackend = backend }
+
+  -- Parse generator info and add synapse itself
+  let parsedGens = mapMaybe parseGeneratorInfo generatorInfoStrs
+      allGens = parsedGens ++ [GeneratorInfo "synapse" synapseVersion]
+
+  -- Get current timestamp in ISO 8601 format
+  currentTime <- liftIO getCurrentTime
+  let timestamp = T.pack $ formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%SZ" currentTime
+
+  -- Create generation metadata
+  let metadata = GenerationMetadata
+        { gmGenerators = allGens
+        , gmTimestamp = timestamp
+        , gmIrVersion = irVersion emptyIR
+        }
+
+  pure $ deduplicateTypes raw
+    { irBackend = backend
+    , irMetadata = Just metadata
+    }
 
 -- | Algebra for building IR from schema tree
 --
@@ -75,13 +116,20 @@ irAlgebra (PluginF schema path childIRs) = do
                  then Just (psHash schema)
                  else irHash childIR
 
+  -- Extract V2 hash information for this plugin
+  let hashInfo = extractPluginHashInfo schema
+      childHashes = fromMaybe Map.empty (irPluginHashes childIR)
+      allHashes = Map.insert namespace hashInfo childHashes
+
   pure $ IR
     { irVersion = irVersion emptyIR  -- Use version from emptyIR
     , irBackend = irBackend emptyIR  -- Will be set by buildIR
     , irHash = thisHash
+    , irMetadata = irMetadata childIR  -- Preserve metadata from child
     , irTypes = Map.union localTypes (irTypes childIR)  -- Local wins on conflict
     , irMethods = Map.union localMethods (irMethods childIR)
     , irPlugins = Map.insert namespace pluginMethods (irPlugins childIR)
+    , irPluginHashes = Just allHashes  -- V2: Store hash info per plugin
     }
 
 irAlgebra (MethodF method namespace path) = do
@@ -92,9 +140,11 @@ irAlgebra (MethodF method namespace path) = do
     { irVersion = irVersion emptyIR  -- Use version from emptyIR
     , irBackend = irBackend emptyIR  -- Will be set by buildIR
     , irHash = Nothing  -- Methods don't carry hash
+    , irMetadata = Nothing  -- Will be set by buildIR
     , irTypes = types
     , irMethods = Map.singleton fullPath mdef
     , irPlugins = Map.singleton namespace [methodName method]
+    , irPluginHashes = Nothing  -- Methods don't have plugin-level hashes
     }
 
 -- ============================================================================
@@ -213,6 +263,7 @@ updateMethodRefs :: Map Text Text -> MethodDef -> MethodDef
 updateMethodRefs redirects md = md
   { mdParams = map (updateParamRefs redirects) (mdParams md)
   , mdReturns = updateTypeRef redirects (mdReturns md)
+  , mdBidirType = fmap (updateTypeRef redirects) (mdBidirType md)
   }
 
 -- | Update type references in a parameter
@@ -293,6 +344,24 @@ extractMethodDef namespace pathPrefix method =
       -- Combine all types
       allTypes = Map.union paramTypes returnTypes
 
+      -- Detect bidirectional type parameter T.
+      --
+      -- When the schema reports bidirectional: true we know the method uses a
+      -- BidirChannel.  The 'request_type' field (if present) holds the JSON
+      -- Schema for T.  We currently emit:
+      --   - Nothing           → not bidirectional
+      --   - Just RefAny       → bidirectional with T=Value (StandardBidirChannel,
+      --                         the default case; request_type is the StandardRequest schema)
+      --   - Just (RefNamed …) → bidirectional with a specific named T
+      --                         (future: when request_type references a named type)
+      --
+      -- NOTE: The substrate schema as of this implementation always uses
+      -- StandardBidirChannel (T=Value), so mdBidirType is always Nothing or
+      -- Just RefAny.  A future change to MethodSchema / hub-macro that emits a
+      -- structured "bidir_type" field (distinct from the full request_type schema)
+      -- should be handled here.
+      bidirTypeRef = inferBidirType method
+
       mdef = MethodDef
         { mdName = name
         , mdFullPath = fullPath
@@ -301,8 +370,33 @@ extractMethodDef namespace pathPrefix method =
         , mdStreaming = streaming
         , mdParams = params
         , mdReturns = returnRef
+        , mdBidirType = bidirTypeRef
         }
   in (allTypes, mdef)
+
+-- | Infer the bidirectional type parameter from a MethodSchema.
+--
+-- Returns:
+--   Nothing    – method is not bidirectional
+--   Just RefAny – method is bidirectional with default T=Value (StandardBidirChannel)
+--   Just tr    – method is bidirectional with specific T type (future)
+inferBidirType :: MethodSchema -> Maybe TypeRef
+inferBidirType method
+  | not (methodBidirectional method) = Nothing
+  -- Method is bidirectional.  Inspect request_type to determine T.
+  | otherwise = case methodRequestType method of
+      Nothing ->
+        -- bidirectional: true but no request_type schema → treat as T=Value
+        Just RefAny
+      Just _ ->
+        -- request_type is present.  For now we always emit RefAny (T=Value)
+        -- because the schema emits the full StandardRequest schema rather than
+        -- a dedicated "bidir_type" field identifying T.
+        --
+        -- TODO: When the hub-macro is extended to emit a structured
+        -- "bidir_type": { "$ref": "#/$defs/MyType" } field in the schema JSON,
+        -- parse it here with schemaToTypeRef and return the resulting TypeRef.
+        Just RefAny
 
 -- ============================================================================
 -- Parameter Extraction

@@ -27,6 +27,16 @@ module Synapse.IR.Types
   , emptyIR
   , mergeIR
 
+    -- * Version Information
+  , synapseVersion
+
+    -- * Generation Metadata
+  , GeneratorInfo(..)
+  , GenerationMetadata(..)
+
+    -- * Plugin Hash Information
+  , PluginHashInfo(..)
+
     -- * Type Definitions
   , TypeDef(..)
   , tdFullName
@@ -58,17 +68,65 @@ import qualified Data.Text as T
 import GHC.Generics (Generic)
 
 -- ============================================================================
+-- Version Information
+-- ============================================================================
+
+-- | Synapse version (from cabal file: plexus-synapse.cabal)
+synapseVersion :: Text
+synapseVersion = "0.2.0.0"
+
+-- ============================================================================
+-- Generation Metadata
+-- ============================================================================
+
+-- | Generator tool version information
+data GeneratorInfo = GeneratorInfo
+  { giTool    :: Text  -- ^ Tool name (e.g., "synapse", "synapse-cc")
+  , giVersion :: Text  -- ^ Version string (e.g., "0.2.0.0")
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+-- | Generation metadata tracking the full toolchain
+data GenerationMetadata = GenerationMetadata
+  { gmGenerators :: [GeneratorInfo]  -- ^ All tools in the generation chain
+  , gmTimestamp  :: Text             -- ^ ISO 8601 timestamp of generation
+  , gmIrVersion  :: Text             -- ^ IR format version
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+-- ============================================================================
+-- Plugin Hash Information
+-- ============================================================================
+
+-- | V2 hash information for a plugin
+-- Supports granular cache invalidation by tracking:
+-- - Composite hash (backward compatible with V1)
+-- - Self hash (methods-only, for detecting method changes)
+-- - Children hash (children-only, for detecting dependency changes)
+data PluginHashInfo = PluginHashInfo
+  { phiHash         :: Text   -- ^ Composite hash (backward compatible)
+  , phiSelfHash     :: Text   -- ^ V2: Methods-only hash
+  , phiChildrenHash :: Text   -- ^ V2: Children-only hash
+  }
+  deriving stock (Show, Eq, Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+-- ============================================================================
 -- Top-level IR
 -- ============================================================================
 
 -- | The complete IR for code generation
 data IR = IR
-  { irVersion   :: Text                    -- ^ IR format version
-  , irBackend   :: Text                    -- ^ Backend name (e.g., "substrate", "plexus")
-  , irHash      :: Maybe Text              -- ^ Plexus hash for versioning
-  , irTypes     :: Map Text TypeDef        -- ^ All types, deduplicated by name
-  , irMethods   :: Map Text MethodDef      -- ^ All methods, keyed by full path (e.g., "cone.chat")
-  , irPlugins   :: Map Text [Text]         -- ^ Plugin -> method names mapping
+  { irVersion      :: Text                         -- ^ IR format version
+  , irBackend      :: Text                         -- ^ Backend name (e.g., "substrate", "plexus")
+  , irHash         :: Maybe Text                   -- ^ Plexus hash for versioning
+  , irMetadata     :: Maybe GenerationMetadata     -- ^ Generation toolchain metadata
+  , irTypes        :: Map Text TypeDef             -- ^ All types, deduplicated by name
+  , irMethods      :: Map Text MethodDef           -- ^ All methods, keyed by full path (e.g., "cone.chat")
+  , irPlugins      :: Map Text [Text]              -- ^ Plugin -> method names mapping
+  , irPluginHashes :: Maybe (Map Text PluginHashInfo)  -- ^ V2: Hash information per plugin
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)
@@ -79,9 +137,11 @@ emptyIR = IR
   { irVersion = "2.0"  -- Bumped: TypeRef now uses structured QualifiedName
   , irBackend = ""  -- Will be set by buildIR
   , irHash = Nothing
+  , irMetadata = Nothing
   , irTypes = Map.empty
   , irMethods = Map.empty
   , irPlugins = Map.empty
+  , irPluginHashes = Nothing
   }
 
 -- | Merge two IRs (for combining results from tree walk)
@@ -90,9 +150,15 @@ mergeIR a b = IR
   { irVersion = irVersion a
   , irBackend = irBackend a  -- Take from left (parent)
   , irHash = irHash a <|> irHash b  -- Take first available hash
+  , irMetadata = irMetadata a <|> irMetadata b  -- Take first available metadata
   , irTypes = Map.union (irTypes a) (irTypes b)  -- Left-biased, first definition wins
   , irMethods = Map.union (irMethods a) (irMethods b)
   , irPlugins = Map.unionWith (++) (irPlugins a) (irPlugins b)
+  , irPluginHashes = case (irPluginHashes a, irPluginHashes b) of
+      (Just ha, Just hb) -> Just (Map.union ha hb)  -- Merge hash maps
+      (Just ha, Nothing) -> Just ha
+      (Nothing, Just hb) -> Just hb
+      (Nothing, Nothing) -> Nothing
   }
 
 -- ============================================================================
@@ -168,6 +234,22 @@ data MethodDef = MethodDef
   , mdStreaming   :: Bool           -- ^ Does this method stream multiple events?
   , mdParams      :: [ParamDef]     -- ^ Input parameters
   , mdReturns     :: TypeRef        -- ^ Return type reference
+  , mdBidirType   :: Maybe TypeRef
+    -- ^ Bidirectional channel type parameter T, when the method uses
+    -- BidirChannel<StandardRequest<T>, StandardResponse<T>>.
+    --
+    -- Populated from the "bidirectional" / "request_type" fields in the
+    -- MethodSchema (emitted by the hub-macro when #[bidirectional] is set).
+    --
+    -- - Nothing  → method is not bidirectional, OR uses the default
+    --              T = serde_json::Value (StandardBidirChannel)
+    -- - Just RefAny → bidirectional with T=Value (explicit marker)
+    -- - Just (RefNamed ...) → bidirectional with a specific named T type
+    --
+    -- NOTE: The substrate schema currently emits 'bidirectional: true' but
+    -- does not yet include a structured 'bidir_type' field.  When that field
+    -- is added to MethodSchema, populate it here from methodRequestType.
+    -- For now this is always Nothing.
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)

@@ -260,25 +260,76 @@ Plugins can nest arbitrarily deep. Methods are always leaves - you can't navigat
 
 ### Parameters
 
-Pass parameters using `--parameter-name value` syntax:
+#### `--param value` flags → JSON
+
+Every `--param value` flag is collected and assembled into the `params` object sent over JSON-RPC. Use `--dry-run` to see exactly what gets sent:
 
 ```bash
-$ synapse substrate bash execute --command "uptime"
-line:  07:15:42 up 5 days, 3:21,  0 users,  load average: 0.52, 0.58, 0.59
-code: 0
-
-$ synapse substrate echo echo --message "hello" --count 3
-hello hello hello
+$ synapse --dry-run substrate echo echo --message "hello" --count 3
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"echo.echo","params":{"message":"hello","count":3}}}
 ```
 
-For complex nested JSON, use `-p`:
+The flags map directly:
+
+| CLI | JSON params |
+|-----|-------------|
+| `--message "hello"` | `{"message": "hello"}` |
+| `--count 3` | `{"count": 3}` |
+| `--enabled true` | `{"enabled": true}` |
+| `--message "hello" --count 3` | `{"message": "hello", "count": 3}` |
+
+#### Type inference
+
+Types are coerced using the method's schema from the server. When the schema says a param is `integer`, `"3"` becomes `3`. When it says `boolean`, `"true"` becomes `true`. For `any`-typed params (no schema constraint), synapse infers:
+
+```
+"true" / "false"   → boolean
+"42"               → integer
+"3.14"             → number
+anything else      → string
+```
+
+#### Nested objects with dotted keys
+
+For structured params (enums, discriminated unions, objects), use dotted keys:
+
+```bash
+$ synapse --dry-run substrate cone chat \
+    --identifier.type by_name \
+    --identifier.name my-assistant \
+    --prompt "hello"
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"cone.chat","params":{"identifier":{"type":"by_name","name":"my-assistant"},"prompt":"hello"}}}
+```
+
+`--identifier.type by_name --identifier.name foo` assembles into `{"identifier": {"type": "by_name", "name": "foo"}}`.
+
+#### JSON passthrough with `-p`
+
+For one-off calls or complex params, pass raw JSON directly with `-p`:
 
 ```bash
 $ synapse substrate echo echo -p '{"message": "hello", "count": 3}'
 hello hello hello
 ```
 
-Type inference: `true`/`false` become booleans, numbers become numbers, everything else is a string.
+`-p` bypasses the flag parser entirely and sends the JSON object as-is. Use `--dry-run` with `-p` to verify:
+
+```bash
+$ synapse --dry-run substrate echo echo -p '{"message": "hello", "count": 3}'
+{"jsonrpc":"2.0","id":1,"method":"substrate.call","params":{"method":"echo.echo","params":{"message":"hello","count":3}}}
+```
+
+Both produce identical wire payloads.
+
+#### Hyphen / underscore normalisation
+
+Parameter names are normalised — `--tree-id` and `--tree_id` are equivalent:
+
+```bash
+$ synapse substrate arbor node_get --tree-id "abc" --node-id "def"
+# same as
+$ synapse substrate arbor node_get --tree_id "abc" --node_id "def"
+```
 
 ---
 
@@ -330,6 +381,88 @@ Preview the Plexus RPC request (JSON-RPC 2.0 format) without sending:
 $ synapse --dry-run plexus echo once --message "test"
 {"jsonrpc":"2.0","id":1,"method":"plexus.call","params":{"method":"plexus.echo.once","params":{"message":"test"}}}
 ```
+
+---
+
+## Error Messages
+
+Synapse provides **helpful, contextual error messages** that guide you when things go wrong.
+
+### Backend Not Found
+
+When you specify a backend that doesn't exist, synapse shows you what's available:
+
+```bash
+$ synapse invalid-backend cone list
+Backend not found: 'invalid-backend'
+
+Available backends:
+  substrate      127.0.0.1:4444 [OK] - Backend discovered via _info
+
+Usage: synapse <backend> [command...]
+```
+
+### Command Not Found
+
+When you navigate to a command that doesn't exist, synapse shows what's available at that location:
+
+```bash
+$ synapse substrate cone invalid-method
+Command not found: 'invalid-method' at substrate.cone
+
+Available at substrate.cone:
+  Methods:
+    chat                - Conversational interaction with a cone
+    create              - Create a new cone configuration
+    delete              - Delete a cone
+    get                 - Get cone configuration
+    list                - List all cones
+    ...
+
+  Child plugins:
+    (none)
+```
+
+### Connection Errors
+
+Transport errors provide connection details and troubleshooting steps:
+
+```bash
+$ synapse substrate cone list
+Connection refused to 127.0.0.1:4444
+
+Backend: substrate
+Path: substrate.cone.list
+
+Troubleshooting:
+  - Check if the backend is running
+  - Verify host (-H) and port (-P) settings
+  - Run 'synapse' (no args) to list backends
+```
+
+### Parameter Typos
+
+Parse errors suggest corrections for typos using Levenshtein distance:
+
+```bash
+$ synapse substrate cone chat --mesage "hello"
+Unknown parameter: --mesage
+
+Did you mean: --message?
+```
+
+### Strongly-Typed Transport Errors
+
+Synapse uses **strongly-typed transport errors** instead of string parsing:
+
+- **ConnectionRefused**: Backend is not running or unreachable
+- **ConnectionTimeout**: Backend didn't respond in time
+- **ProtocolError**: Invalid protocol response
+- **NetworkError**: Network-level failure
+
+These typed errors are categorized at the transport layer (plexus-protocol) and propagate through the system with structured information (host, port, error category). No more brittle string matching!
+
+**Version 0.3.0+** includes comprehensive error improvements across all error types.
 
 ---
 

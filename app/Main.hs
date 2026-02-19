@@ -26,12 +26,14 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as TE
 import Options.Applicative
+import Data.Version (showVersion)
+import qualified Paths_plexus_synapse as Meta
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 
 import Synapse.Schema.Types
-import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse)
+import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), BackendErrorType(..), TransportContext(..), TransportErrorCategory(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse, throwBackend)
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema)
 import Synapse.CLI.Help (renderMethodHelp)
@@ -41,6 +43,7 @@ import Synapse.IR.Types (IR, irMethods, MethodDef)
 import qualified Data.Map.Strict as Map
 import qualified Synapse.CLI.Template as TemplateIR
 import Synapse.Transport
+import Synapse.Bidir (BidirMode(..), parseBidirMode, detectBidirMode, handleBidirRequest)
 import Synapse.CLI.Transform (mkTransformEnv, transformParams, defaultTransformers, injectBooleanDefaults, injectSmartDefaults)
 import Synapse.IR.Builder (buildIR)
 import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, prettyValue, withMethodPath)
@@ -56,16 +59,18 @@ import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDis
 -- | Synapse-level options (must appear before backend)
 -- Controls connection settings and output format
 data SynapseOpts = SynapseOpts
-  { soHost     :: Text          -- ^ Registry host for discovery
-  , soPort     :: Int           -- ^ Registry port for discovery
-  , soJson     :: Bool          -- ^ Output raw JSON stream items
-  , soRaw      :: Bool          -- ^ Output raw content (no templates)
-  , soDryRun   :: Bool          -- ^ Show request without sending
-  , soSchema   :: Bool          -- ^ Fetch raw schema JSON
-  , soGenerate :: Bool          -- ^ Generate templates from IR
-  , soEmitIR   :: Bool          -- ^ Emit IR for code generation
-  , soParams   :: Maybe Text    -- ^ JSON params via -p
-  , soRpc      :: Maybe Text    -- ^ Raw JSON-RPC passthrough
+  { soHost          :: Text          -- ^ Registry host for discovery
+  , soPort          :: Int           -- ^ Registry port for discovery
+  , soJson          :: Bool          -- ^ Output raw JSON stream items
+  , soRaw           :: Bool          -- ^ Output raw content (no templates)
+  , soDryRun        :: Bool          -- ^ Show request without sending
+  , soSchema        :: Bool          -- ^ Fetch raw schema JSON
+  , soGenerate      :: Bool          -- ^ Generate templates from IR
+  , soEmitIR        :: Bool          -- ^ Emit IR for code generation
+  , soParams        :: Maybe Text    -- ^ JSON params via -p
+  , soRpc           :: Maybe Text    -- ^ Raw JSON-RPC passthrough
+  , soGeneratorInfo :: [Text]        -- ^ Generator tool info (tool:version pairs)
+  , soBidirMode     :: Maybe Text    -- ^ Bidirectional mode override
   }
   deriving Show
 
@@ -133,8 +138,8 @@ printBackend b = do
   let nameField = T.justifyLeft 15 ' ' (backendName b)
   let hostPort = backendHost b <> ":" <> T.pack (show (backendPort b))
   let status = case backendReachable b of
-        Just True  -> " ✓"
-        Just False -> " ✗"
+        Just True  -> " [OK]"
+        Just False -> " [UNREACHABLE]"
         Nothing    -> ""
   let desc = if T.null (backendDescription b)
              then ""
@@ -154,8 +159,16 @@ runWithDiscovery discovery backendName args = do
       -- The -H/-P flags specify where to find the registry, not the target backend
       run backendName (backendHost backend) (backendPort backend) args
     Nothing -> do
-      -- Backend not found in registry, use command-line arguments as fallback
-      run backendName (soHost opts) (soPort opts) args
+      -- Backend not found in registry - gather available backends and show error
+      backends <- discoverBackends discovery
+      backendsWithStatus <- pingBackends backends
+      env <- initEnv (soHost opts) (soPort opts) backendName
+      result <- runSynapseM env (throwBackend (BackendNotFound backendName) backendsWithStatus)
+      case result of
+        Left err -> do
+          hPutStrLn stderr $ renderError err
+          exitFailure
+        Right () -> exitSuccess
 
 -- | Run a Hub command with specified backend and connection details
 run :: Text -> Text -> Int -> Args -> IO ()
@@ -231,7 +244,7 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
               -- Mode 4: Emit IR for code generation
               else if soEmitIR
                 then do
-                  ir <- buildIR pathSegs
+                  ir <- buildIR soGeneratorInfo pathSegs
                   liftIO $ LBS.putStrLn $ encode ir
 
                 else do
@@ -256,7 +269,7 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
                         -- Landed on a method: invoke or show help
                         ViewMethod method path -> do
                           -- Build IR for this method's namespace
-                          ir <- buildIR (init path)
+                          ir <- buildIR soGeneratorInfo (init path)
                           let fullPath = T.intercalate "." path
 
                           -- If --help was explicitly requested, show help and exit
@@ -318,7 +331,21 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
       let methodName' = last path
       -- Set method path hint for template resolution
       let rendererCfg' = withMethodPath rendererCfg path
-      invokeStreaming namespacePath methodName' params (printResult soJson soRaw rendererCfg')
+      -- Determine bidirectional mode
+      bidirMode <- liftIO $ case soBidirMode of
+        Just modeStr -> case parseBidirMode modeStr of
+          Just mode -> pure mode
+          Nothing -> do
+            TIO.hPutStrLn stderr $ "[synapse] Unknown --bidir-mode: " <> modeStr <> ", using auto-detect"
+            detectBidirMode
+        Nothing -> detectBidirMode
+      -- Use bidirectional streaming handler
+      invokeStreamingWithBidir
+        namespacePath
+        methodName'
+        params
+        (printResult soJson soRaw rendererCfg')
+        (handleBidirRequest bidirMode)
 
     -- Extract default values from JSON Schema properties
     -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}
@@ -466,8 +493,19 @@ cliHeader = splash <> T.pack (fst $ renderFailure failure "synapse") <> selfHelp
 -- | Render an error for display
 renderError :: SynapseError -> String
 renderError = \case
-  NavError (NotFound seg path) ->
-    "Not found: '" <> T.unpack seg <> "' at " <> showPath path
+  NavError (NotFound seg path maybeSchema) ->
+    let baseMsg = "Command not found: '" <> T.unpack seg <> "' at " <> showPath path
+    in case maybeSchema of
+      Nothing -> baseMsg
+      Just schema ->
+        let methods = psMethods schema
+            children = pluginChildren schema
+            suggestions = if null methods && null children
+                         then ""
+                         else "\n\nAvailable commands:"
+                              <> renderMethods methods
+                              <> renderChildren children
+        in baseMsg <> suggestions
   NavError (MethodNotTerminal seg path) ->
     "Method '" <> T.unpack seg <> "' cannot have subcommands at " <> showPath path
   NavError (Cycle hash path) ->
@@ -476,10 +514,103 @@ renderError = \case
     "Fetch error at " <> showPath path <> ": " <> T.unpack msg
   TransportError msg ->
     "Transport error: " <> T.unpack msg
+  TransportErrorContext ctx ->
+    renderTransportError ctx
   ParseError msg ->
     "Parse error: " <> T.unpack msg
   ValidationError msg ->
     "Validation error: " <> T.unpack msg
+  BackendError errorType backends ->
+    case errorType of
+      BackendNotFound name ->
+        "Backend not found: '" <> T.unpack name <> "'"
+        <> renderBackendList backends
+      BackendUnreachable name ->
+        "Backend unreachable: '" <> T.unpack name <> "'"
+        <> renderBackendList backends
+      NoBackendsAvailable ->
+        "No backends available"
+        <> renderBackendList backends
+  where
+    showPath [] = "root"
+    showPath p = T.unpack $ T.intercalate "." p
+
+    renderMethods [] = ""
+    renderMethods methods =
+      let header = "\n\n  Methods:"
+          methodLines = map renderMethod methods
+      in header <> concat methodLines
+
+    renderMethod method =
+      let name = T.unpack $ methodName method
+          desc = T.unpack $ methodDescription method
+          padding = 20
+          namePadded = name <> replicate (max 1 (padding - length name)) ' '
+      in "\n    " <> namePadded <> desc
+
+    renderChildren [] = ""
+    renderChildren children =
+      let header = "\n\n  Child plugins:"
+          childLines = map renderChild children
+      in header <> concat childLines
+
+    renderChild child =
+      let name = T.unpack $ csNamespace child
+          desc = T.unpack $ csDescription child
+          padding = 20
+          namePadded = name <> replicate (max 1 (padding - length name)) ' '
+      in "\n    " <> namePadded <> desc
+
+    renderBackendList [] = "\n\nNo backends available."
+    renderBackendList backends =
+      let header = "\n\nAvailable backends:"
+          backendLines = map renderBackendLine backends
+          usageHint = "\n\nUsage: synapse <backend> [command...]"
+      in header <> concat backendLines <> usageHint
+
+    renderBackendLine backend =
+      let name = T.unpack $ backendName backend
+          nameField = name <> replicate (max 1 (15 - length name)) ' '
+          hostPort = T.unpack $ backendHost backend <> ":" <> T.pack (show (backendPort backend))
+          status = case backendReachable backend of
+                     Just True  -> " [OK]"
+                     Just False -> " [UNREACHABLE]"
+                     Nothing    -> ""
+          desc = if T.null (backendDescription backend)
+                 then ""
+                 else " - " <> T.unpack (backendDescription backend)
+      in "\n  " <> nameField <> hostPort <> status <> desc
+
+-- | Render transport error with context
+renderTransportError :: TransportContext -> String
+renderTransportError TransportContext{..} = case tcCategory of
+  ConnectionRefused ->
+    "Connection refused\n\n" <>
+    "Backend: " <> T.unpack tcBackend <> "\n" <>
+    "Address: " <> T.unpack tcHost <> ":" <> show tcPort <> "\n" <>
+    "Path: " <> showPath tcPath <> "\n\n" <>
+    "Troubleshooting:\n" <>
+    "  - Check if the backend is running\n" <>
+    "  - Verify host (-H) and port (-P) settings\n" <>
+    "  - Run 'synapse' (no args) to list backends"
+
+  ConnectionTimeout ->
+    "Connection timeout\n\n" <>
+    "Backend: " <> T.unpack tcBackend <> " @ " <>
+    T.unpack tcHost <> ":" <> show tcPort <> "\n\n" <>
+    "The server may be overloaded or network latency is high\n" <>
+    "Error: " <> T.unpack tcMessage
+
+  ProtocolError ->
+    "Protocol error\n\n" <>
+    "Backend: " <> T.unpack tcBackend <> "\n" <>
+    "This may indicate a version mismatch\n\n" <>
+    "Error: " <> T.unpack tcMessage
+
+  UnknownTransportError ->
+    "Transport error: " <> T.unpack tcMessage <> "\n\n" <>
+    "Backend: " <> T.unpack tcBackend <> " @ " <>
+    T.unpack tcHost <> ":" <> show tcPort
   where
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
@@ -487,8 +618,13 @@ renderError = \case
 -- | Render a parse error for display
 renderParseError :: Parse.ParseError -> String
 renderParseError = \case
-  Parse.UnknownParam name ->
-    "Unknown parameter: --" <> T.unpack name
+  Parse.UnknownParam name suggestions ->
+    "Unknown parameter: --" <> T.unpack name <>
+    case suggestions of
+      [] -> ""
+      [s] -> "\n\nDid you mean: --" <> T.unpack s <> "?"
+      ss -> "\n\nDid you mean one of:\n" <>
+            unlines ["  --" <> T.unpack s | s <- ss]
   Parse.MissingRequired name ->
     "Missing required parameter: --" <> T.unpack name
   Parse.InvalidValue name reason ->
@@ -497,11 +633,16 @@ renderParseError = \case
     "Ambiguous variant for --" <> T.unpack name <> ": could be one of " <> show (map T.unpack variants)
   Parse.MissingDiscriminator param field ->
     "Missing discriminator for --" <> T.unpack param <> ": need --" <> T.unpack param <> "." <> T.unpack field
-  Parse.UnknownVariant param value valid ->
-    "Unknown variant '" <> T.unpack value <> "' for --" <> T.unpack param
-    <> ". Valid variants: " <> T.unpack (T.intercalate ", " valid)
+  Parse.UnknownVariant param value valid suggestions ->
+    "Unknown variant '" <> T.unpack value <> "' for --" <> T.unpack param <>
+    "\n\nValid variants: " <> T.unpack (T.intercalate ", " valid) <>
+    case suggestions of
+      [] -> ""
+      [s] -> "\n\nDid you mean: " <> T.unpack s <> "?"
+      ss -> "\n\nDid you mean one of: " <> T.unpack (T.intercalate ", " ss) <> "?"
   Parse.TypeNotFound name ->
     "Type not found in IR: " <> T.unpack name
+
 
 -- | Write a generated template to disk (no logging)
 writeGeneratedTemplateIR :: FilePath -> TemplateIR.GeneratedTemplate -> IO ()
@@ -572,12 +713,15 @@ printResult _ _ cfg item = do
 -- | Parser for synapse-level options only
 -- Backend and path are handled separately after arg splitting
 argsInfo :: ParserInfo Args
-argsInfo = info (argsParser <**> helper)
+argsInfo = info (argsParser <**> versionOption <**> helper)
   ( fullDesc
  <> header "synapse - Algebraic CLI for Hub"
  <> progDesc "synapse [OPTIONS] <backend> <path...> [--param value ...]"
  <> noIntersperse  -- Stop option parsing at first positional arg
   )
+  where
+    versionOption = infoOption (showVersion Meta.version)
+      ( long "version" <> short 'V' <> help "Show version" )
 
 argsParser :: Parser Args
 argsParser = Args <$> optsParser <*> backendParser <*> restParser
@@ -624,4 +768,10 @@ optsParser = do
   soRpc <- optional $ T.pack <$> strOption
     ( long "rpc" <> short 'r' <> metavar "JSON"
    <> help "Raw JSON-RPC request (bypass navigation)" )
+  soGeneratorInfo <- many $ T.pack <$> strOption
+    ( long "generator-info" <> metavar "TOOL:VERSION"
+   <> help "Generator tool version info (can be specified multiple times)" )
+  soBidirMode <- optional $ T.pack <$> strOption
+    ( long "bidir-mode" <> short 'b' <> metavar "MODE"
+   <> help "Bidirectional mode: interactive (TTY), json (pipe protocol), auto-cancel, defaults" )
   pure SynapseOpts{..}
