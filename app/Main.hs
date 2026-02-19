@@ -225,10 +225,9 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
           -- Mode 1.5: Respond subcommand (agent sends a response to a pending bidir request)
           if not (null pathSegs) && head pathSegs == "respond"
             then handleRespondCommand rawParams
-            else
 
           -- Mode 2: Schema request
-          if soSchema
+          else if soSchema
             then do
               -- Try to navigate and determine if last segment is a method
               schemaResult <- fetchSchemaForPath pathSegs
