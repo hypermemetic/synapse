@@ -159,24 +159,27 @@ invokeStreaming namespacePath method params onItem = do
 
 -- | Invoke a method with streaming output and bidirectional request handling
 -- When a StreamRequest is received, the bidirectional handler is called and
--- the response is sent back via {backend}.respond
+-- the response is sent back via {backend}.respond (if the handler returns Just).
+-- If the handler returns Nothing (BidirRespond mode), no response is sent immediately.
 invokeStreamingWithBidir
   :: Path
   -> Text
   -> Value
-  -> (HubStreamItem -> IO ())           -- ^ Handler for non-request items
-  -> (Text -> StandardRequest -> IO StandardResponse)  -- ^ Handler for bidirectional requests
+  -> (HubStreamItem -> IO ())                              -- ^ Handler for non-request items
+  -> (Text -> PT.Request Value -> IO (Maybe (PT.Response Value)))  -- ^ Handler for bidirectional requests
   -> SynapseM ()
 invokeStreamingWithBidir namespacePath method params onItem onBidirRequest = do
   cfg <- getConfig
   let wrappedHandler item = case item of
         PT.StreamRequest _ _ reqId reqData _timeout -> do
           -- Handle the bidirectional request
-          response <- onBidirRequest reqId reqData
-          -- Send the response back via {backend}.respond
-          _ <- ST.sendBidirectionalResponse cfg reqId response
-          -- Don't forward StreamRequest to the regular handler
-          pure ()
+          mResponse <- onBidirRequest reqId reqData
+          -- Send the response back via {backend}.respond (if present)
+          case mResponse of
+            Just response -> do
+              _ <- ST.sendBidirectionalResponse cfg reqId response
+              pure ()
+            Nothing -> pure ()  -- agent will respond via separate call
         _ -> onItem item
   result <- liftIO $ ST.invokeMethodStreaming cfg namespacePath method params wrappedHandler
   case result of
@@ -202,7 +205,7 @@ invokeStreamingWithBidir namespacePath method params onItem onBidirRequest = do
     getPort _ c = substratePort c
 
 -- | Send a response for a bidirectional request
-sendResponse :: Text -> StandardResponse -> SynapseM ()
+sendResponse :: Text -> PT.Response Value -> SynapseM ()
 sendResponse requestId response = do
   cfg <- getConfig
   result <- liftIO $ ST.sendBidirectionalResponse cfg requestId response
