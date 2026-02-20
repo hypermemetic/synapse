@@ -149,8 +149,6 @@ handleInteractive _requestId req = case req of
         let selected = optionValue (selectOptions !! (n - 1))
         in pure $ Selected [selected]
       _ -> pure Cancelled
-
-  CustomRequest{} -> pure Cancelled
   where
     printOption :: (Int, SelectOption Value) -> IO ()
     printOption (idx, SelectOption{..}) = do
@@ -213,8 +211,6 @@ handleDefaults requestId req = case req of
       <> requestId <> "), cancelling"
     pure Cancelled
 
-  CustomRequest{} -> pure Cancelled
-
 -- | Command mode: spawn a subprocess per request
 -- The subprocess receives a JSON object on stdin:
 --   {"request_id": "...", "request": {...}}
@@ -262,7 +258,6 @@ handleRespond requestId req = do
 -- | Get a human-readable name for the request type
 requestTypeName :: Request t -> Text
 requestTypeName = \case
-  Confirm{}       -> "confirm"
-  Prompt{}        -> "prompt"
-  Select{}        -> "select"
-  CustomRequest{} -> "custom"
+  Confirm{} -> "confirm"
+  Prompt{}  -> "prompt"
+  Select{}  -> "select"
