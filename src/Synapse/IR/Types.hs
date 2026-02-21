@@ -129,7 +129,7 @@ data IR = IR
   , irPluginHashes :: Maybe (Map Text PluginHashInfo)  -- ^ V2: Hash information per plugin
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Empty IR for folding
 emptyIR :: IR
@@ -173,7 +173,7 @@ data TypeDef = TypeDef
   , tdKind        :: TypeKind       -- ^ What kind of type this is
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Compute the fully qualified type name
 tdFullName :: TypeDef -> Text
@@ -199,7 +199,7 @@ data TypeKind
       , kpFormat :: Maybe Text       -- ^ Optional format hint (e.g., "uuid", "int64")
       }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | A field in a struct
 data FieldDef = FieldDef
@@ -210,7 +210,7 @@ data FieldDef = FieldDef
   , fdDefault     :: Maybe Value    -- ^ Default value if any
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | A variant in a discriminated union
 data VariantDef = VariantDef
@@ -219,7 +219,7 @@ data VariantDef = VariantDef
   , vdFields      :: [FieldDef]     -- ^ Fields specific to this variant
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- ============================================================================
 -- Method Definitions
@@ -264,7 +264,7 @@ data MethodDef = MethodDef
     -- (e.g., first request, --bidir-schemas flag, etc.)
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | A parameter definition
 data ParamDef = ParamDef
@@ -275,7 +275,7 @@ data ParamDef = ParamDef
   , pdDefault     :: Maybe Value    -- ^ Default value if any
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- ============================================================================
 -- Type References
@@ -287,7 +287,7 @@ data QualifiedName = QualifiedName
   , qnLocalName :: Text  -- ^ Local name within namespace
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Get the full qualified name as a single Text
 -- Returns just the local name if namespace is empty, otherwise "namespace.localName"
@@ -305,7 +305,7 @@ data TypeRef
   | RefAny                          -- ^ Intentionally dynamic (serde_json::Value) - accepts any JSON
   | RefUnknown                      -- ^ Unknown type (schema gap) - should warn
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON)
+  deriving anyclass (ToJSON, FromJSON)
 
 -- | Get the name from a type reference (if it's a named ref)
 typeRefName :: TypeRef -> Maybe Text

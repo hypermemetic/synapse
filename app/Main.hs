@@ -74,6 +74,7 @@ data SynapseOpts = SynapseOpts
   , soGeneratorInfo :: [Text]        -- ^ Generator tool info (tool:version pairs)
   , soBidirMode     :: Maybe Text    -- ^ Bidirectional mode override
   , soBidirCmd      :: Maybe Text    -- ^ Bidirectional subprocess command (--bidir-cmd)
+  , soNoCache       :: Bool          -- ^ Disable IR caching
   }
   deriving Show
 
@@ -812,4 +813,7 @@ optsParser = do
   soBidirCmd <- optional $ T.pack <$> strOption
     ( long "bidir-cmd" <> metavar "CMD"
    <> help "Shell command to handle bidir requests (stdin=JSON request, stdout=JSON response)" )
+  soNoCache <- switch
+    ( long "no-cache"
+   <> help "Disable IR caching (force rebuild from schema)" )
   pure SynapseOpts{..}
