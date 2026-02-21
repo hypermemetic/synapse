@@ -92,7 +92,8 @@ executable synapse
     directory >= 1.3 && < 1.4,
     filepath >= 1.4 && < 1.6,
     optparse-applicative >= 0.18 && < 0.19,
-    prettyprinter >= 1.7 && < 1.8
+    prettyprinter >= 1.7 && < 1.8,
+    time >= 1.12 && < 1.14
   hs-source-dirs:   app
   default-language: GHC2021
   default-extensions:

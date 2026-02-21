@@ -95,14 +95,15 @@ detectBidirMode = do
 type BidirHandler = Text -> Request Value -> IO (Maybe (Response Value))
 
 -- | Handle a bidirectional request according to the mode
-handleBidirRequest :: BidirMode -> Text -> Request Value -> IO (Maybe (Response Value))
-handleBidirRequest mode requestId req = case mode of
+-- The response schema (if available) is passed for modes that output requests (e.g., BidirRespond)
+handleBidirRequest :: BidirMode -> Maybe Value -> Text -> Request Value -> IO (Maybe (Response Value))
+handleBidirRequest mode mResponseSchema requestId req = case mode of
   BidirInteractive -> Just <$> handleInteractive requestId req
   BidirJson        -> Just <$> handleJson requestId req
   BidirAutoCancel  -> Just <$> handleAutoCancel requestId req
   BidirDefaults    -> Just <$> handleDefaults requestId req
   BidirCmd cmd     -> Just <$> handleCmd cmd requestId req
-  BidirRespond     -> handleRespond requestId req
+  BidirRespond     -> handleRespond mResponseSchema requestId req
 
 -- | Interactive TTY handling
 handleInteractive :: Text -> Request Value -> IO (Response Value)
@@ -244,13 +245,18 @@ handleCmd cmd requestId req = do
 -- | Respond mode: print request to stdout as JSON, return Nothing
 -- The caller (invokeStreamingWithBidir) will skip sending a response.
 -- The agent is expected to call: synapse <backend> respond --request-id <id> --response <json>
-handleRespond :: Text -> Request Value -> IO (Maybe (Response Value))
-handleRespond requestId req = do
-  let jsonReq = encode $ object
+handleRespond :: Maybe Value -> Text -> Request Value -> IO (Maybe (Response Value))
+handleRespond mResponseSchema requestId req = do
+  let baseFields =
         [ "type"       .= ("bidir_request" :: Text)
         , "request_id" .= requestId
         , "request"    .= req
         ]
+      -- Include response_schema if available
+      allFields = case mResponseSchema of
+        Just schema -> baseFields ++ ["response_schema" .= schema]
+        Nothing     -> baseFields
+      jsonReq = encode $ object allFields
   LBS.putStrLn jsonReq
   hFlush stdout
   pure Nothing

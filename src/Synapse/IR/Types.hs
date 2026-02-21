@@ -250,6 +250,18 @@ data MethodDef = MethodDef
     -- does not yet include a structured 'bidir_type' field.  When that field
     -- is added to MethodSchema, populate it here from methodRequestType.
     -- For now this is always Nothing.
+  , mdBidirResponseType :: Maybe TypeRef
+    -- ^ Expected response type for bidirectional methods.
+    --
+    -- Populated from the "response_type" field in the MethodSchema.
+    -- This allows agents to know what response format is expected
+    -- when they receive a bidirectional request.
+  , mdBidirResponseSchema :: Maybe Value
+    -- ^ Full JSON Schema for the bidirectional response type.
+    --
+    -- Cached from MethodSchema.response_type so synapse can include it
+    -- in bidir_request output. Synapse controls whether to print this
+    -- (e.g., first request, --bidir-schemas flag, etc.)
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON)

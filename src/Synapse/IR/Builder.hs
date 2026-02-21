@@ -264,6 +264,8 @@ updateMethodRefs redirects md = md
   { mdParams = map (updateParamRefs redirects) (mdParams md)
   , mdReturns = updateTypeRef redirects (mdReturns md)
   , mdBidirType = fmap (updateTypeRef redirects) (mdBidirType md)
+  , mdBidirResponseType = mdBidirResponseType md  -- Preserve as-is
+  , mdBidirResponseSchema = mdBidirResponseSchema md  -- Preserve as-is
   }
 
 -- | Update type references in a parameter
@@ -361,6 +363,7 @@ extractMethodDef namespace pathPrefix method =
       -- structured "bidir_type" field (distinct from the full request_type schema)
       -- should be handled here.
       bidirTypeRef = inferBidirType method
+      bidirResponseSchema = methodResponseType method
 
       mdef = MethodDef
         { mdName = name
@@ -371,6 +374,8 @@ extractMethodDef namespace pathPrefix method =
         , mdParams = params
         , mdReturns = returnRef
         , mdBidirType = bidirTypeRef
+        , mdBidirResponseType = Nothing  -- TODO: could extract from response_type title
+        , mdBidirResponseSchema = bidirResponseSchema
         }
   in (allTypes, mdef)
 
