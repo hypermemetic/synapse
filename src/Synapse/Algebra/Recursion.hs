@@ -54,22 +54,27 @@ module Synapse.Algebra.Recursion
   , cataM
   , anaM
   , hyloM
+  , hyloMPar
 
     -- * Schema-specific operations
   , unfoldSchema
   , foldSchema
   , walkSchema
+  , walkSchemaPar
 
     -- * Re-exports
   , Fix(..)
   ) where
 
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM)
+import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Reader (asks)
 import Data.Text (Text)
 
 import Synapse.Schema.Types (Path, PluginSchema(..), MethodSchema(..), ChildSummary(..))
 import Synapse.Schema.Functor (SchemaF(..), Fix(..), SchemaTree)
-import Synapse.Monad
+import Synapse.Monad (SynapseM, runSynapseM)
 import Synapse.Transport (fetchSchemaAt)
 
 -- ============================================================================
@@ -157,8 +162,35 @@ hyloM alg coalg = go
   where
     go a = do
       fa <- coalg a           -- unfold one step
-      fb <- traverse go fa    -- recursively process
+      fb <- traverse go fa    -- recursively process (sequential)
       alg fb                  -- fold one step
+
+-- | Parallel monadic hylomorphism specialized for SchemaF
+--
+-- Like hyloM but processes child schemas in parallel using mapConcurrently.
+-- This provides a significant speedup when fetching multiple plugin schemas.
+hyloMPar :: (SchemaF b -> SynapseM b) -> (a -> SynapseM (SchemaF a)) -> a -> SynapseM b
+hyloMPar alg coalg = go
+  where
+    go a = do
+      fa <- coalg a  -- unfold one step
+      case fa of
+        PluginF schema path children -> do
+          -- Process children in parallel
+          -- We need to capture the environment to run each child action
+          env <- asks id  -- Get the SynapseEnv
+          childResults <- liftIO $ mapConcurrently
+            (\child -> do
+              result <- runSynapseM env (go child)  -- Fixed: env first, action second
+              case result of
+                Left err -> error $ "Schema fetch failed: " ++ show err
+                Right val -> pure val
+            )
+            children
+          alg (PluginF schema path childResults)
+        MethodF method ns path ->
+          -- Methods are leaves, just apply algebra
+          alg (MethodF method ns path)
 
 -- ============================================================================
 -- Schema-Specific Operations
@@ -195,3 +227,10 @@ foldSchema = cata
 -- Fused, so doesn't build intermediate tree in memory.
 walkSchema :: (SchemaF a -> SynapseM a) -> Path -> SynapseM a
 walkSchema alg = hyloM alg schemaCoalgebra
+
+-- | Walk the schema tree with parallel child fetching
+--
+-- Like walkSchema but fetches child plugin schemas in parallel.
+-- Provides significant speedup for backends with many plugins.
+walkSchemaPar :: (SchemaF a -> SynapseM a) -> Path -> SynapseM a
+walkSchemaPar alg = hyloMPar alg schemaCoalgebra

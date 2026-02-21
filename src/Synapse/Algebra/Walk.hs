@@ -44,6 +44,7 @@ module Synapse.Algebra.Walk
   ( -- * Recursion Schemes
     walkMethods
   , walkSchema
+  , walkSchemaPar
   , foldMethods
 
     -- * Building Trees
@@ -64,7 +65,7 @@ import Data.Text (Text)
 import Synapse.Schema.Types (Path, PluginSchema(..), MethodSchema(..), ChildSummary(..))
 import Synapse.Schema.Functor (SchemaF(..), Fix(..), SchemaTree)
 import Synapse.Monad
-import Synapse.Algebra.Recursion (hyloM, unfoldSchema, foldSchema)
+import Synapse.Algebra.Recursion (hyloM, hyloMPar, unfoldSchema, foldSchema, walkSchemaPar)
 import Synapse.Transport (fetchSchemaAt)
 
 -- | Information about a method in context

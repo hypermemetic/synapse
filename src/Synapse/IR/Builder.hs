@@ -36,7 +36,7 @@ import Data.Time.Format (formatTime, defaultTimeLocale)
 
 import Synapse.Schema.Types
 import Synapse.Schema.Functor (SchemaF(..))
-import Synapse.Algebra.Walk (walkSchema)
+import Synapse.Algebra.Walk (walkSchemaPar)
 import Synapse.Monad
 import Synapse.IR.Types hiding (QualifiedName(..), qualifiedNameFull)
 import Synapse.IR.Types (QualifiedName(..), qualifiedNameFull, synapseVersion)
@@ -66,10 +66,11 @@ extractPluginHashInfo schema = PluginHashInfo
 -- | Build IR by walking the schema tree from a given path
 -- After walking, deduplicate types that have identical structure
 -- Accepts generator info strings in "tool:version" format
+-- Uses parallel schema fetching for better performance
 buildIR :: [Text] -> Path -> SynapseM IR
 buildIR generatorInfoStrs path = do
   backend <- asks seBackend
-  raw <- walkSchema irAlgebra path
+  raw <- walkSchemaPar irAlgebra path
 
   -- Parse generator info and add synapse itself
   let parsedGens = mapMaybe parseGeneratorInfo generatorInfoStrs
