@@ -4,11 +4,13 @@
 
 -- | Integration tests for IR-based CLI
 --
--- Requires a running Hub backend on localhost:4444
+-- By default, discovers "substrate" via registry at localhost:4444.
+-- Override with: cabal test ir-test --test-options="<backend> [--port <port>]"
 --
--- Usage: cabal test ir-test --test-options="<backend> [--port <port>]"
--- Example: cabal test ir-test --test-options="plexus"
---          cabal test ir-test --test-options="plexus --port 5555"
+-- Examples:
+--   cabal test ir-test                                    -- auto-discover via registry
+--   cabal test ir-test --test-options="substrate"         -- direct connect, default port 4445
+--   cabal test ir-test --test-options="substrate --port 4445"
 --
 -- Tests that for every method in the schema:
 -- 1. IR builds successfully
@@ -35,42 +37,49 @@ import Synapse.IR.Builder (buildIR)
 import Synapse.CLI.Help (renderMethodHelp, expandType)
 import Synapse.CLI.Support (SupportLevel(..), methodSupport)
 import Synapse.Monad
+import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery)
 
 main :: IO ()
 main = do
   args <- getArgs
-  case parseArgs args of
-    Nothing -> do
-      putStrLn "Usage: ir-test <backend> [--port <port>]"
-      putStrLn "Example: cabal test ir-test --test-options=\"plexus\""
-      error "Backend argument required"
-    Just (backend, port) -> do
-      putStrLn $ "Running IR integration tests against localhost:" <> show port <> " (backend: " <> T.unpack backend <> ")"
+  (backend, host, port) <- resolveBackend args
+  putStrLn $ "Running IR integration tests against " <> T.unpack host <> ":" <> show port <> " (backend: " <> T.unpack backend <> ")"
 
-      -- Initialize environment
-      env <- initEnv "127.0.0.1" port backend
+  env <- initEnv host port backend
 
-      -- Build IR once for all tests
-      irResult <- runSynapseM env (buildIR [])
+  -- Build IR once for all tests
+  irResult <- runSynapseM env (buildIR [] [])
 
-      case irResult of
-        Left err -> do
-          putStrLn $ "Failed to build IR: " <> show err
-          putStrLn "Is the Hub backend running?"
-          -- Run minimal spec that reports the failure
-          hspec $ describe "IR Integration Tests" $
-            it "connects to Hub backend" $
-              expectationFailure $ "Could not connect: " <> show err
+  case irResult of
+    Left err -> do
+      putStrLn $ "Failed to build IR: " <> show err
+      putStrLn "Is the Hub backend running?"
+      withArgs [] $ hspec $ describe "IR Integration Tests" $
+        it "connects to Hub backend" $
+          expectationFailure $ "Could not connect: " <> show err
 
-        Right ir -> withArgs [] $ hspec $ irSpec ir
+    Right ir -> withArgs [] $ hspec $ irSpec ir
 
--- | Parse command-line arguments: <backend> [--port <port>]
-parseArgs :: [String] -> Maybe (Text, Int)
-parseArgs [] = Nothing
-parseArgs (backend:rest) = Just (T.pack backend, parsePort rest)
+-- | Resolve backend connection: explicit args or registry discovery
+resolveBackend :: [String] -> IO (Text, Text, Int)
+resolveBackend (backendStr:rest) = do
+  let backend = T.pack backendStr
+      port = parsePort rest
+  putStrLn $ "Using explicit backend: " <> backendStr <> " on port " <> show port
+  pure (backend, "127.0.0.1", port)
   where
-    parsePort ("--port":p:_) = maybe 4444 id (readMaybe p)
-    parsePort _ = 4444
+    parsePort ("--port":p:_) = maybe 4445 id (readMaybe p)
+    parsePort _ = 4445
+resolveBackend [] = do
+  putStrLn "No backend specified, discovering substrate via registry at localhost:4444..."
+  let discovery = registryDiscovery "127.0.0.1" 4444
+  result <- getBackendInfo discovery "substrate"
+  case result of
+    Just backend -> do
+      putStrLn $ "Discovered substrate at " <> T.unpack (backendHost backend) <> ":" <> show (backendPort backend)
+      pure (backendName backend, backendHost backend, backendPort backend)
+    Nothing ->
+      error "substrate not found via registry at localhost:4444. Is the registry and substrate running?"
 
 -- | Main spec using pre-built IR
 irSpec :: IR -> Spec
