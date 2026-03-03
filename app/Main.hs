@@ -159,9 +159,19 @@ runWithDiscovery discovery backendName args = do
 
   case maybeBackend of
     Just backend -> do
-      -- Always use discovered host/port from registry
-      -- The -H/-P flags specify where to find the registry, not the target backend
-      run backendName (backendHost backend) (backendPort backend) args
+      -- Verify the resolved backend actually identifies as the requested name.
+      -- This catches cases where -P points to a different backend than expected,
+      -- or the registry has stale entries.
+      actualName <- getBackendAt (backendHost backend) (backendPort backend)
+      case actualName of
+        Just name | name /= backendName -> do
+          hPutStrLn stderr $ "Backend mismatch: requested '" <> T.unpack backendName
+            <> "' but " <> T.unpack (backendHost backend) <> ":" <> show (backendPort backend)
+            <> " identifies as '" <> T.unpack name <> "'"
+          exitFailure
+        _ ->
+          -- Match confirmed (or _info unavailable — proceed optimistically)
+          run backendName (backendHost backend) (backendPort backend) args
     Nothing -> do
       -- Backend not found in registry - gather available backends and show error
       backends <- discoverBackends discovery
@@ -381,7 +391,7 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
         methodName'
         params
         (printResult soJson soRaw rendererCfg')
-        (handleBidirRequest bidirMode)
+        (handleBidirRequest bidirMode Nothing)
 
     -- Extract default values from JSON Schema properties
     -- Schema format: {"properties": {"key": {"default": value, ...}, ...}, ...}
