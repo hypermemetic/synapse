@@ -12,6 +12,33 @@ code: 0
 
 The CLI is completely schema-driven. Add a method to your server, and synapse immediately exposes it as a command. Change a parameter, and the CLI validates it automatically.
 
+## Usage
+
+```bash
+# Basic structure: synapse <backend> <namespace> <method> [flags]
+synapse substrate health check
+
+# Simple parameters
+synapse substrate bash execute --command "ls -la"
+
+# Nested parameters (use dot notation)
+synapse substrate cone chat \
+  --identifier.type by_name \
+  --identifier.name my-assistant \
+  --prompt "What's the weather?"
+
+# Streaming methods (orcha, cone.chat, etc.)
+synapse substrate orcha run_task \
+  --request.task "List all TypeScript files" \
+  --request.model sonnet
+
+# Alternative: pass JSON directly
+synapse substrate cone chat -p '{"identifier": {"type": "by_id", "id": "uuid-here"}, "prompt": "hello"}'
+
+# Get help for any command
+synapse substrate orcha run_task --help
+```
+
 ## Quick Start
 
 ```bash
