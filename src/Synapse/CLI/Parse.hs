@@ -203,8 +203,9 @@ buildParamValue ir param kvs = case pdType param of
       else buildParamValue ir param{pdType = inner} kvs
 
   RefArray innerType ->
-    -- Collect all repeated --key value entries
-    let values = [val | ("", val) <- kvs]
+    -- Collect all repeated --key value entries, splitting comma-separated values
+    let rawValues = [val | ("", val) <- kvs]
+        values = concatMap splitCommas rawValues
     in if null values
        then Left $ InvalidValue (pdName param) "array requires at least one value"
        else Right $ Array $ V.fromList $ map (buildTypedValue ir innerType) values
@@ -220,6 +221,13 @@ buildParamValue ir param kvs = case pdType param of
     case lookup "" kvs of
       Just val -> Right $ inferValue val
       Nothing -> Left $ InvalidValue (pdName param) "unknown type needs value"
+
+-- | Split a string on commas, trimming whitespace. A value with no commas
+-- returns as a singleton list, preserving backward compatibility.
+splitCommas :: Text -> [Text]
+splitCommas t =
+  let parts = T.splitOn "," t
+  in map T.strip parts
 
 -- | Build value from a TypeDef
 buildFromTypeDef :: IR -> Text -> TypeDef -> [(Text, Text)] -> Either ParseError Value

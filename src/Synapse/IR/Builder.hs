@@ -650,6 +650,12 @@ schemaToTypeRef namespace (Object o)
       let nonNull = [t | t@(String s) <- V.toList types, s /= "null"]
           hasNull = any (\case String "null" -> True; _ -> False) (V.toList types)
       in case nonNull of
+           [String "array"] ->
+             -- Nullable array: type: ["array", "null"] with items
+             let inner = case KM.lookup "items" o of
+                           Just items -> RefArray (schemaToTypeRef namespace items)
+                           Nothing -> RefArray RefAny
+             in if hasNull then RefOptional inner else inner
            [String t] ->
              let base = RefPrimitive t (extractFormat o)
              in if hasNull then RefOptional base else base
