@@ -135,17 +135,43 @@ $ synapse --schema substrate echo
 {"namespace":"echo","methods":[...]}
 ```
 
-## Progressive Discovery
+## The Registry
 
-Synapse navigates the backend like a filesystem. Each level shows what's available:
+Plexus backends register themselves with a **registry** — a central service that tracks what's running and where. Synapse talks to the registry by default (at `localhost:4444`), so you never need to know host:port pairs for individual backends. You just use the backend by name:
 
 ```bash
-# No args — list backends
+# This just works — the registry resolves "substrate" to its host:port
+synapse substrate echo once --message "hello"
+```
+
+When you run `synapse` with no arguments, it queries the registry and lists everything available:
+
+```bash
 $ synapse
 Available backends:
   substrate      127.0.0.1:4444 [OK]
+  lforge         127.0.0.1:4447 [OK]
+  secrets        127.0.0.1:4446 [OK]
+```
 
-# Backend name — list activations
+If your backend isn't showing up, it needs to register with the registry. Synapse also auto-registers backends it connects to directly — so if you point at a non-default port once, it becomes available by name for future calls:
+
+```bash
+# Direct connection (also registers with the registry at :4444)
+synapse -P 4447 lforge hyperforge repos_list --org juggernaut
+
+# Now this works without -P
+synapse lforge hyperforge repos_list --org juggernaut
+```
+
+The key mental model: **don't think in terms of hosts and ports.** Register your backends, then use them by name. The registry is the source of truth.
+
+## Progressive Discovery
+
+Once you're connected, just start typing. Synapse navigates the backend like a filesystem — each level shows what's available, so you never need external docs:
+
+```bash
+# What can substrate do?
 $ synapse substrate
   arbor               Tree-structured conversation storage
   bash                Execute bash commands
@@ -153,12 +179,12 @@ $ synapse substrate
   echo                Echo messages back
   health              Health check endpoint
 
-# Activation — list methods
+# What methods does echo have?
 $ synapse substrate echo
   echo                Echo a message back the specified number of times
   once                Echo a message once
 
-# Method with required params but no args — show help
+# What does cone chat need? (auto-help when required params are missing)
 $ synapse substrate cone chat
 chat - Conversational interaction with a cone
 
@@ -168,6 +194,9 @@ chat - Conversational interaction with a cone
   --identifier.name <string> (required if type=by_name)
   --prompt <string> (required)
       User message to send
+
+# Inspect the raw JSON Schema for an activation
+$ synapse --schema substrate cone
 ```
 
 ## Parameters
@@ -184,8 +213,9 @@ synapse substrate cone chat \
   --identifier.name my-assistant \
   --prompt "hello"
 
-# Repeated flags for arrays
+# Arrays — repeated flags or comma-separated
 synapse substrate tags set --tags backend --tags critical
+synapse substrate tags set --tags backend,critical,urgent
 
 # Boolean flags (bare flag = true)
 synapse substrate cone create --ephemeral
@@ -226,24 +256,6 @@ Generate templates from the schema:
 synapse --generate-templates substrate
 ```
 
-## Backend Discovery
-
-Synapse finds backends through a registry or direct connection:
-
-```bash
-# Specify host and port (locates the registry, not the target)
-synapse -H 192.168.1.10 -P 4444 substrate echo once --message "hi"
-
-# Scan the local port range for Plexus servers
-synapse _self scan
-Found 3 backend(s):
-  4444  substrate
-  4445  plexus-dev
-  4446  secrets
-```
-
-Backends are pinged in parallel with a 300ms timeout. The registry resolves backend names to host:port pairs, so `synapse substrate` connects to wherever substrate is running.
-
 ## Code Generation
 
 Synapse emits a structured Intermediate Representation for building typed clients:
@@ -283,6 +295,28 @@ $ synapse --emit-ir substrate > substrate.ir.json
 ```
 
 Types are deduplicated by content hash across namespaces. Streaming is inferred from return type structure (enum with >1 non-error variant = streaming).
+
+## Client Generation (synapse-cc)
+
+[**synapse-cc**](../synapse-cc/) (Synapse Compiler Collection) is a separate project that consumes Synapse's IR to produce typed client libraries. It imports plexus-synapse as a library, generates IR from a live backend, pipes it through [hub-codegen](../hub-codegen/) (a stateless Rust code generator), then handles merging, dependencies, building, and testing.
+
+```bash
+synapse-cc init                    # scaffold synapse.config.json
+synapse-cc build                   # generate typed client from config
+synapse-cc watch substrate         # rebuild on schema changes
+```
+
+The generated client gives you typed methods matching the backend 1:1:
+
+```typescript
+const client = new SubstrateClient("ws://localhost:4444");
+
+for await (const event of client.echo.echo({ message: "hello", count: 3 })) {
+  console.log(event.message, event.count);
+}
+```
+
+Three-way merge preserves user edits across regeneration. See the [synapse-cc architecture doc](docs/architecture/16673264336036332543_synapse-cc-pipeline.md) for the full pipeline, config format, and caching strategy.
 
 ## Error Messages
 
