@@ -51,6 +51,9 @@ module Synapse.Backend.Discovery
     -- * Health Checks
   , pingBackend
   , pingBackends
+
+    -- * Registry Registration
+  , registerWithRegistry
   ) where
 
 import Data.Aeson (ToJSON, FromJSON, (.:), (.:?), withObject)
@@ -348,3 +351,38 @@ pingBackend backend = do
 -- | Ping all backends in parallel
 pingBackends :: [Backend] -> IO [Backend]
 pingBackends backends = mapConcurrently pingBackend backends
+
+-- ============================================================================
+-- Registry Registration
+-- ============================================================================
+
+-- | Register a backend with the registry, if the registry is reachable.
+--
+-- Called when synapse connects to a backend at a non-default location.
+-- Silently does nothing if the registry is unreachable or the call fails.
+registerWithRegistry
+  :: Text   -- ^ Registry host
+  -> Int    -- ^ Registry port
+  -> Text   -- ^ Registry backend name (discovered via _info at registry port)
+  -> Text   -- ^ Backend name to register
+  -> Text   -- ^ Backend host
+  -> Int    -- ^ Backend port
+  -> IO ()
+registerWithRegistry registryHost registryPort registryBackend name host port = do
+  let cfg = SubstrateConfig
+        { substrateHost = T.unpack registryHost
+        , substratePort = registryPort
+        , substratePath = "/"
+        , substrateBackend = registryBackend
+        }
+      params = Aeson.object
+        [ "name"     Aeson..= name
+        , "host"     Aeson..= host
+        , "port"     Aeson..= port
+        , "protocol" Aeson..= ("ws" :: Text)
+        ]
+  -- Fire and forget — don't block the CLI on registry registration
+  void $ async $ do
+    _ <- ST.invokeMethod cfg ["registry"] "register" params
+      `catch` \(_e :: SomeException) -> pure (Left $ NetworkError "Registry unavailable")
+    pure ()

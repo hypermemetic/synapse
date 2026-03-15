@@ -70,7 +70,9 @@ import Control.Concurrent.Async (mapConcurrently)
 import Control.Monad (forM)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
+import System.IO (hPutStrLn, stderr)
 
 import Synapse.Schema.Types (Path, PluginSchema(..), MethodSchema(..), ChildSummary(..))
 import Synapse.Schema.Functor (SchemaF(..), Fix(..), SchemaTree)
@@ -181,13 +183,15 @@ hyloMPar alg coalg = go
           env <- asks id  -- Get the SynapseEnv
           childResults <- liftIO $ mapConcurrently
             (\child -> do
-              result <- runSynapseM env (go child)  -- Fixed: env first, action second
+              result <- runSynapseM env (go child)
               case result of
-                Left err -> error $ "Schema fetch failed: " ++ show err
-                Right val -> pure val
+                Left err -> do
+                  hPutStrLn stderr $ "[synapse] warning: skipping plugin (fetch failed): " ++ show err
+                  pure Nothing
+                Right val -> pure (Just val)
             )
             children
-          alg (PluginF schema path childResults)
+          alg (PluginF schema path (catMaybes childResults))
         MethodF method ns path ->
           -- Methods are leaves, just apply algebra
           alg (MethodF method ns path)

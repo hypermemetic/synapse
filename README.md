@@ -1,16 +1,24 @@
 # Synapse
 
-**A CLI that generates itself from your RPC server's schema.**
+**A CLI that writes itself from your API.**
 
-Point synapse at any Plexus RPC server and it builds commands, help text, parameter validation, and completions at runtime—no code generation step required.
+Synapse is the command-line frontend for [Plexus RPC](../plexus-protocol/) — a streaming JSON-RPC 2.0 protocol built for LLM orchestration. Define methods in Rust, and Synapse discovers them at runtime: commands, help text, parameter validation, and output rendering all come from the schema. No codegen, no static config.
 
-```bash
-$ synapse substrate bash execute --command "echo hello"
-line: hello
-code: 0
+```
+                  ┌─────────────┐
+                  │  Substrate   │  Rust backend hub
+                  │  (Plexus)    │  hosts activations
+                  └──────┬──────┘
+                         │ WebSocket JSON-RPC 2.0
+                         │ streaming responses
+                  ┌──────┴──────┐
+                  │   Synapse    │  Haskell CLI
+                  │  discovers   │  builds commands from schema
+                  │  & invokes   │  renders streaming output
+                  └─────────────┘
 ```
 
-The CLI is completely schema-driven. Add a method to your server, and synapse immediately exposes it as a command. Change a parameter, and the CLI validates it automatically.
+## The Full Picture: Define → Call
 
 ## Usage
 
@@ -45,197 +53,227 @@ synapse substrate orcha run_task --help
 # Install
 cd synapse && cabal install
 
-# Run a method
-synapse substrate health check
+# Synapse discovers the echo activation and its methods automatically
+$ synapse substrate echo once --message "hello"
+message: hello
+count: 1
 
-# Get help for any method
-synapse substrate echo once
+$ synapse substrate echo echo --message "hello" --count 3
+message: hello
+count: 1
 
-# Navigate like a filesystem
-synapse substrate arbor tree_create --owner_id "user123"
+message: hello
+count: 2
+
+message: hello
+count: 3
 ```
 
-## How It Works
+Every method you add to the Rust backend is immediately available as a CLI command. The parameter names, types, descriptions, and validation all come from the schema.
 
-Synapse fetches your RPC server's JSON Schema at runtime and builds the entire CLI from it:
-
-- **Commands** come from method names (`bash.execute` → `synapse substrate bash execute`)
-- **Parameters** come from JSON Schema definitions (`--command`, `--tree_id`)
-- **Help text** comes from schema descriptions
-- **Validation** is automatic (required fields, types, enums)
-
-No static configuration. No code generation. Pure runtime discovery.
-
-## Core Features
-
-### Schema-Driven Everything
+### 3. See what's on the wire
 
 ```bash
-# Dry-run shows exactly what gets sent
+# Dry-run: show the JSON-RPC request without sending
 $ synapse --dry-run substrate echo echo --message "hello" --count 3
 {"method":"echo.echo","params":{"message":"hello","count":3}}
 
-# Help is auto-generated from schema
+# JSON mode: see the raw stream items
+$ synapse --json substrate echo echo --message "hello" --count 3
+{"type":"data","content":{"event":"echo","message":"hello","count":1}}
+{"type":"data","content":{"event":"echo","message":"hello","count":2}}
+{"type":"data","content":{"event":"echo","message":"hello","count":3}}
+{"type":"complete"}
+
+# Fetch the JSON Schema for the activation
+$ synapse --schema substrate echo
+{"namespace":"echo","methods":[...]}
+```
+
+## The Registry
+
+Plexus backends register themselves with a **registry** — a central service that tracks what's running and where. Synapse talks to the registry by default (at `localhost:4444`), so you never need to know host:port pairs for individual backends. You just use the backend by name:
+
+```bash
+# This just works — the registry resolves "substrate" to its host:port
+synapse substrate echo once --message "hello"
+```
+
+When you run `synapse` with no arguments, it queries the registry and lists everything available:
+
+```bash
+$ synapse
+Available backends:
+  substrate      127.0.0.1:4444 [OK]
+  lforge         127.0.0.1:4447 [OK]
+  secrets        127.0.0.1:4446 [OK]
+```
+
+If your backend isn't showing up, it needs to register with the registry. Synapse also auto-registers backends it connects to directly — so if you point at a non-default port once, it becomes available by name for future calls:
+
+```bash
+# Direct connection (also registers with the registry at :4444)
+synapse -P 4447 lforge hyperforge repos_list --org juggernaut
+
+# Now this works without -P
+synapse lforge hyperforge repos_list --org juggernaut
+```
+
+The key mental model: **don't think in terms of hosts and ports.** Register your backends, then use them by name. The registry is the source of truth.
+
+## Progressive Discovery
+
+Once you're connected, just start typing. Synapse navigates the backend like a filesystem — each level shows what's available, so you never need external docs:
+
+```bash
+# What can substrate do?
+$ synapse substrate
+  arbor               Tree-structured conversation storage
+  bash                Execute bash commands
+  cone                Conversational AI sessions
+  echo                Echo messages back
+  health              Health check endpoint
+
+# What methods does echo have?
+$ synapse substrate echo
+  echo                Echo a message back the specified number of times
+  once                Echo a message once
+
+# What does cone chat need? (auto-help when required params are missing)
 $ synapse substrate cone chat
 chat - Conversational interaction with a cone
 
   --identifier.type <string> (required)
       Discriminator for cone lookup (by_id, by_name)
 
-  --identifier.id <uuid> (required if type=by_id)
   --identifier.name <string> (required if type=by_name)
-
   --prompt <string> (required)
       User message to send
+
+# Inspect the raw JSON Schema for an activation
+$ synapse --schema substrate cone
 ```
 
-### Backend Discovery
+## Parameters
+
+Synapse parses flags into typed JSON using the schema's IR:
 
 ```bash
-# List available backends
-$ synapse
-Available backends:
-  substrate      127.0.0.1:4444 [OK]
+# Simple flags
+synapse substrate echo echo --message "hello" --count 3
 
-# Scan network for RPC servers
-$ synapse _self scan
-Found 3 backend(s):
-  4444  substrate
-  4445  plexus-dev
-  4446  secrets
-```
-
-### Flexible Parameters
-
-```bash
 # Dotted keys for nested objects
 synapse substrate cone chat \
   --identifier.type by_name \
   --identifier.name my-assistant \
   --prompt "hello"
 
-# Raw JSON with -p
+# Arrays — repeated flags or comma-separated
+synapse substrate tags set --tags backend --tags critical
+synapse substrate tags set --tags backend,critical,urgent
+
+# Boolean flags (bare flag = true)
+synapse substrate cone create --ephemeral
+
+# Raw JSON override
 synapse substrate cone chat -p '{
   "identifier": {"type": "by_name", "name": "my-assistant"},
   "prompt": "hello"
 }'
-
-# Both produce identical requests
 ```
 
-### Output Modes
+Path parameters (`--path`, `--working_dir`, etc.) expand `~`, resolve relative paths, and substitute `$ENV` variables automatically.
+
+## Output Rendering
+
+Synapse renders streaming responses through a Mustache template pipeline:
 
 ```bash
-# Default: pretty-printed with Mustache templates
+# Default: schema-aware pretty output
 synapse substrate health check
 status: healthy
 uptime: 12345
 
-# JSON: raw stream items
-synapse --json substrate health check
-{"type":"data","content":{"status":"healthy","uptime":12345}}
-
-# Raw: just the content
+# --raw: content JSON only (skip template rendering)
 synapse --raw substrate health check
 {"status":"healthy","uptime":12345}
 
-# Schema: fetch the JSON Schema
-synapse --schema substrate echo
-{"namespace":"echo","methods":[...]}
+# --json: full JSON-RPC stream items
+synapse --json substrate health check
+{"type":"data","content":{"status":"healthy","uptime":12345}}
+```
+
+Templates are resolved in order: `.substrate/templates/{namespace}/{method}.mustache` (project-local) → `~/.config/synapse/templates/` (user) → YAML-like fallback.
+
+Generate templates from the schema:
+
+```bash
+synapse --generate-templates substrate
 ```
 
 ## Code Generation
 
-Synapse emits an Intermediate Representation (IR) for transpilers to consume:
+Synapse emits a structured Intermediate Representation for building typed clients:
 
 ```bash
 $ synapse --emit-ir substrate > substrate.ir.json
 ```
 
-The IR is a deduplicated, structured representation of the entire schema:
-
 ```json
 {
   "irVersion": "2.0",
   "irTypes": {
-    "cone.ChatEvent": {
+    "echo.EchoEvent": {
       "tdKind": {
         "tag": "KindEnum",
-        "keDiscriminator": "type",
+        "keDiscriminator": "event",
         "keVariants": [
-          {"vdName": "token", "vdFields": [...]},
-          {"vdName": "done", "vdFields": [...]}
+          {"vdName": "echo", "vdFields": [
+            {"fdName": "message", "fdType": {"tag": "RefPrimitive", "contents": ["string", null]}},
+            {"fdName": "count", "fdType": {"tag": "RefPrimitive", "contents": ["integer", "uint32"]}}
+          ]}
         ]
       }
     }
   },
   "irMethods": {
-    "cone.chat": {
+    "echo.echo": {
       "mdStreaming": true,
-      "mdParams": [...],
-      "mdReturns": {"tag": "RefNamed", "contents": "cone.ChatEvent"}
+      "mdParams": [
+        {"pdName": "message", "pdType": {"tag": "RefPrimitive", "contents": ["string", null]}, "pdRequired": true},
+        {"pdName": "count", "pdType": {"tag": "RefPrimitive", "contents": ["integer", "uint32"]}, "pdRequired": true}
+      ],
+      "mdReturns": {"tag": "RefNamed", "contents": ["echo", "EchoEvent"]}
     }
   }
 }
 ```
 
-This IR powers code generators that produce TypeScript, Python, Swift, and Rust clients.
+Types are deduplicated by content hash across namespaces. Streaming is inferred from return type structure (enum with >1 non-error variant = streaming).
 
-## Architecture
+## Client Generation (synapse-cc)
 
-Synapse treats the plugin system as a **category**:
+[**synapse-cc**](../synapse-cc/) (Synapse Compiler Collection) is a separate project that consumes Synapse's IR to produce typed client libraries. It imports plexus-synapse as a library, generates IR from a live backend, pipes it through [hub-codegen](../hub-codegen/) (a stateless Rust code generator), then handles merging, dependencies, building, and testing.
 
-- **Objects** are schemas (plugins and methods)
-- **Morphisms** are paths (namespace sequences)
-
-Operations are implemented as **algebras** over this category using recursion schemes:
-
-```haskell
--- Navigate to a path using a paramorphism (fold with context)
-navigate :: Path -> SynapseM SchemaView
-
--- Collect all methods using a catamorphism (bottom-up fold)
-collectMethods :: SynapseM [MethodInfo]
-
--- Build IR using a hylomorphism (fused unfold + fold)
-buildIR :: SynapseM IR
-```
-
-This gives us:
-
-- **Extensibility**: New operations are just new algebras
-- **Correctness**: Recursion schemes ensure we handle all cases
-- **Performance**: Hylomorphisms avoid building intermediate trees
-
-### The Effect Stack
-
-```haskell
-type SynapseM = ExceptT SynapseError (ReaderT SynapseEnv IO)
-```
-
-Provides:
-- **Error handling** (navigation errors, transport errors, parse errors)
-- **Environment** with content-addressed schema cache
-- **Cycle detection** for recursive plugin graphs
-- **IO** for network calls
-
-## Performance
-
-Synapse is optimized for fast iteration:
-
-- **Connection pooling**: WebSocket connections are reused across calls
-- **Schema caching**: Content-addressed cache avoids redundant fetches
-- **IR caching**: Generated IR is cached by backend hash
-
-Typical performance (with warm cache):
 ```bash
-$ time synapse --emit-ir substrate > /dev/null
-real    0m0.094s  # <100ms including startup
+synapse-cc init                    # scaffold synapse.config.json
+synapse-cc build                   # generate typed client from config
+synapse-cc watch substrate         # rebuild on schema changes
 ```
+
+The generated client gives you typed methods matching the backend 1:1:
+
+```typescript
+const client = new SubstrateClient("ws://localhost:4444");
+
+for await (const event of client.echo.echo({ message: "hello", count: 3 })) {
+  console.log(event.message, event.count);
+}
+```
+
+Three-way merge preserves user edits across regeneration. See the [synapse-cc architecture doc](docs/architecture/16673264336036332543_synapse-cc-pipeline.md) for the full pipeline, config format, and caching strategy.
 
 ## Error Messages
-
-Synapse provides contextual error messages that guide you:
 
 ```bash
 $ synapse substrate invalid-plugin
@@ -250,7 +288,6 @@ Available at substrate:
     arbor               - Tree-structured conversation storage
     bash                - Execute bash commands
     cone                - Conversational AI sessions
-    ...
 
 $ synapse substrate cone chat --mesage "hello"
 Unknown parameter: --mesage
@@ -258,40 +295,72 @@ Unknown parameter: --mesage
 Did you mean: --message?
 ```
 
-## Development
+## Architecture
 
-```bash
-# Build
-cabal build
+Synapse treats the plugin hierarchy as a **category** and implements operations as **algebras** over recursion schemes:
 
-# Test (requires running backend at localhost:4444)
-cabal test
+```haskell
+type SynapseM = ExceptT SynapseError (ReaderT SynapseEnv IO)
 
-# Install
-cabal install
+-- Navigate to a path (paramorphism — fold with access to original structure)
+navigate :: Path -> SynapseM SchemaView
+
+-- Walk the full tree (hylomorphism — fused unfold + fold, no intermediate tree)
+walkSchema :: (SchemaF a -> SynapseM a) -> Path -> SynapseM a
+
+-- Build IR (hylomorphism with parallel child fetching)
+buildIR :: Path -> SynapseM IR
 ```
 
-### Project Structure
+The base functor:
+
+```haskell
+data SchemaF a
+  = PluginF PluginSchema Path [a]   -- Interior node (namespace with children)
+  | MethodF MethodSchema Text Path  -- Leaf (invocable method)
+```
+
+Schemas are fetched lazily during navigation, cached by content hash, with cycle detection for recursive plugin graphs.
+
+## Project Structure
 
 ```
 synapse/
-  app/Main.hs              # CLI entry point
+  app/Main.hs              # CLI entry, two-phase arg parsing, dispatch
   src/Synapse/
-    Monad.hs               # Effect stack (SynapseM)
-    Transport.hs           # WebSocket JSON-RPC layer
-    Schema/Types.hs        # Core types (Path, PluginSchema, MethodSchema)
+    Monad.hs               # SynapseM effect stack, error types
+    Transport.hs           # WebSocket JSON-RPC bridge
+    Schema/
+      Types.hs             # Path, PluginSchema, MethodSchema, NavError
+      Functor.hs           # SchemaF base functor, Fix
     Algebra/
-      Navigate.hs          # Schema navigation (paramorphism)
+      Recursion.hs         # cata, ana, hylo, para, apo (pure + monadic)
+      Navigate.hs          # Path navigation (paramorphism)
       Walk.hs              # Tree walking (hylomorphism)
-      Render.hs            # Pretty-printing schemas
+      Render.hs            # Schema → text rendering
     CLI/
-      Parse.hs             # Flag parsing (--key value → JSON)
-      Help.hs              # Auto-generated help text
-      Template.hs          # Mustache template generation
+      Parse.hs             # IR-driven --flag parsing → typed JSON
+      Help.hs              # Auto-generated help from IR
+      Transform.hs         # Path expansion, env var substitution
+      Template.hs          # Mustache template generation from IR
     IR/
-      Types.hs             # IR data types
-      Builder.hs           # Schema → IR transformation
-    Backend/Discovery.hs   # Backend discovery via registry
+      Types.hs             # IR, TypeDef, MethodDef, TypeRef
+      Builder.hs           # Schema → IR (hylomorphism + type dedup)
+    Backend/
+      Discovery.hs         # Registry discovery, health checks
+    Self/
+      Commands.hs          # _self meta-commands (scan, templates)
+
+../plexus-protocol/        # Shared Plexus types (sibling package)
+```
+
+## Development
+
+```bash
+cabal build                        # Build
+cabal test                         # Run tests (needs backend on localhost:4444)
+cabal install                      # Install synapse binary
+cabal build -f build-examples      # Build optional examples
 ```
 
 ## License

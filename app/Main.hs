@@ -15,6 +15,7 @@
 -- is passed through for method invocation.
 module Main where
 
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
 import Data.Aeson
@@ -52,7 +53,7 @@ import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, pret
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 import System.FilePath ((</>))
 import qualified Synapse.Self.Commands as Self
-import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends, getBackendAt)
+import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends, getBackendAt, registerWithRegistry)
 
 -- ============================================================================
 -- Types
@@ -114,6 +115,22 @@ main = do
   -- If it has a registry plugin, that's used for discovering other backends
   maybeBackend <- getBackendAt (soHost opts) (soPort opts)
   let hostBackend = maybe "plexus" id maybeBackend
+
+  -- Auto-register: if we're connecting to a non-default port, push the
+  -- discovered backend to the registry at the default port (if reachable)
+  let targetPort = soPort opts
+      targetHost = soHost opts
+  when (targetPort /= defaultPort) $ do
+    case maybeBackend of
+      Just name -> do
+        -- Check if the registry is at the default port
+        maybeRegistry <- getBackendAt targetHost defaultPort
+        case maybeRegistry of
+          Just registryName ->
+            registerWithRegistry targetHost defaultPort registryName
+              name targetHost targetPort
+          Nothing -> pure ()
+      Nothing -> pure ()
 
   case argBackend args of
     Nothing

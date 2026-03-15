@@ -59,9 +59,13 @@ type NavResult = SynapseM SchemaView
 navigate :: Path -> SynapseM SchemaView
 navigate target = do
   root <- fetchSchemaAt []
-  -- Normalize path: strip leading root namespace if present
+  -- Normalize path: strip leading root namespace if present,
+  -- but only if it's NOT also a child name (otherwise the user
+  -- is trying to navigate to a child that shares the root namespace)
+  let hasChildWithName seg = any (\c -> csNamespace c == seg) (pluginChildren root)
   let normalizedTarget = case target of
-        (seg:rest) | seg == psNamespace root -> rest
+        (seg:rest) | seg == psNamespace root
+                   , not (hasChildWithName seg) -> rest
         _ -> target
   withFreshVisited $ navigateFrom root [] normalizedTarget
 
