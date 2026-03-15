@@ -20,34 +20,79 @@ Synapse is the command-line frontend for [Plexus RPC](../plexus-protocol/) — a
 
 ## The Full Picture: Define → Call
 
-## Usage
+### 1. Define a method in Rust
 
-```bash
-# Basic structure: synapse <backend> <namespace> <method> [flags]
-synapse substrate health check
+An **activation** is a namespace of related methods. You define one by annotating an impl block:
 
-# Simple parameters
-synapse substrate bash execute --command "ls -la"
+```rust
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
-# Nested parameters (use dot notation)
-synapse substrate cone chat \
-  --identifier.type by_name \
-  --identifier.name my-assistant \
-  --prompt "What's the weather?"
+// Event type — what the method streams back
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum EchoEvent {
+    Echo { message: String, count: u32 },
+}
 
-# Streaming methods (orcha, cone.chat, etc.)
-synapse substrate orcha run_task \
-  --request.task "List all TypeScript files" \
-  --request.model sonnet
+// The activation
+pub struct Echo;
 
-# Alternative: pass JSON directly
-synapse substrate cone chat -p '{"identifier": {"type": "by_id", "id": "uuid-here"}, "prompt": "hello"}'
+#[plexus_macros::hub_methods(
+    namespace = "echo",
+    version = "1.0.0",
+    description = "Echo messages back"
+)]
+impl Echo {
+    #[plexus_macros::hub_method(
+        description = "Echo a message back the specified number of times",
+        params(
+            message = "The message to echo",
+            count = "Number of times to repeat (default: 1)"
+        )
+    )]
+    async fn echo(
+        &self,
+        message: String,
+        count: u32,
+    ) -> impl Stream<Item = EchoEvent> + Send + 'static {
+        stream! {
+            for i in 0..count {
+                yield EchoEvent::Echo {
+                    message: message.clone(),
+                    count: i + 1,
+                };
+            }
+        }
+    }
 
-# Get help for any command
-synapse substrate orcha run_task --help
+    #[plexus_macros::hub_method(
+        description = "Echo a message once",
+        params(message = "The message to echo")
+    )]
+    async fn once(
+        &self,
+        message: String,
+    ) -> impl Stream<Item = EchoEvent> + Send + 'static {
+        stream! {
+            yield EchoEvent::Echo { message, count: 1 };
+        }
+    }
+}
 ```
 
-## Quick Start
+The macro generates the JSON-RPC server, `Activation` trait impl, method enum, and JSON Schemas — all from the function signatures and `JsonSchema` derives. Register it with the hub:
+
+```rust
+let hub = DynamicHub::new("substrate")
+    .register(Echo::new())
+    .register(Health::new())
+    .register(Cone::new());
+```
+
+That's the entire backend. No route tables, no handler boilerplate, no schema files.
+
+### 2. Call it from Synapse
 
 ```bash
 # Install
