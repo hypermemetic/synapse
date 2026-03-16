@@ -717,7 +717,7 @@ writeGeneratedTemplateIR baseDir gt = do
 -- | Encode a dry-run request
 encodeDryRun :: Text -> [Text] -> Text -> Value -> LBS.ByteString
 encodeDryRun backend namespacePath method params =
-  let fullPath = if null namespacePath then [backend] else (backend : namespacePath)
+  let fullPath = if null namespacePath then [backend] else namespacePath
       dotPath = T.intercalate "." (fullPath ++ [method])
   in encode $ object
     [ "jsonrpc" .= ("2.0" :: Text)
