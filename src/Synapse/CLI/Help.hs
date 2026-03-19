@@ -168,7 +168,17 @@ renderParamHelpWith style ir param = renderParamBlock style ir param
 --   RefNamed "ConeIdentifier" -> "ConeIdentifier"
 renderTypeRef :: IR -> TypeRef -> Text
 renderTypeRef ir = \case
-  RefNamed qn -> qualifiedNameFull qn
+  RefNamed qn ->
+    -- If the named type is just a primitive or alias, unwrap it
+    -- so newtypes like PaneRef(String) display as <string> not <panes.PaneRef>
+    let name = qualifiedNameFull qn
+    in case Map.lookup name (irTypes ir) of
+      Just TypeDef{tdKind = KindPrimitive t mf}
+        | Just fmt <- mf -> fmt
+        | otherwise -> t
+      Just TypeDef{tdKind = KindAlias target} ->
+        renderTypeRef ir target
+      _ -> name
 
   RefPrimitive typ mFormat
     | Just fmt <- mFormat -> fmt  -- Use format as type (uuid, int64, etc.)
