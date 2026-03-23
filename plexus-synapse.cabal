@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               plexus-synapse
-version:            3.5.2
+version:            3.6.0
 synopsis:           Schema-driven CLI for Plexus RPC servers
 license:            MIT
 author:
@@ -41,6 +41,10 @@ library
     Synapse.Self.Pattern
     Synapse.Self.Examples
     Synapse.Self.Debugger
+    Synapse.Self.Protocol.Validator
+    Synapse.Self.Protocol.StreamTracker
+    Synapse.Self.Protocol.Reporter
+    Synapse.Self.Protocol.TestRunner
   build-depends:
     base >= 4.17 && < 5,
     plexus-protocol,
@@ -115,6 +119,46 @@ executable schema-discovery
     text >= 2.0 && < 2.2,
     streaming >= 0.2 && < 0.3
   hs-source-dirs:   examples
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  if !flag(build-examples)
+    buildable: False
+
+executable reporter-demo
+  main-is:          ReporterDemo.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-synapse,
+    text >= 2.0 && < 2.2
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  if !flag(build-examples)
+    buildable: False
+
+executable validation-report-test
+  main-is:          ValidationReportTest.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-synapse,
+    text >= 2.0 && < 2.2,
+    aeson >= 2.0 && < 2.3
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  if !flag(build-examples)
+    buildable: False
+
+executable protocol-test-demo
+  main-is:          ProtocolTestDemo.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-synapse,
+    text >= 2.0 && < 2.2
+  hs-source-dirs:   test
   default-language: GHC2021
   default-extensions:
     OverloadedStrings
@@ -232,4 +276,20 @@ test-suite bidir-integration-test
   default-extensions:
     OverloadedStrings
     RecordWildCards
+  ghc-options:      -threaded
+
+test-suite stream-tracker-test
+  type:             exitcode-stdio-1.0
+  main-is:          StreamTrackerSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-synapse,
+    text >= 2.0 && < 2.2,
+    aeson >= 2.2 && < 2.3,
+    bytestring >= 0.11 && < 0.13,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
   ghc-options:      -threaded

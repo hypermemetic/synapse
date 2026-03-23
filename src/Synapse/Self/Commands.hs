@@ -32,6 +32,12 @@ dispatch "debug" (hostText:portText:backendText:_) _ = do
   liftIO $ Debugger.debugConnection host port backendText
 dispatch "debug" _ _ =
   throwParse "Usage: synapse _self debug <host> <port> <backend>"
+dispatch "validate" (hostText:portText:backendText:_) _ = do
+  let host = T.unpack hostText
+  let port = read (T.unpack portText) :: Int
+  liftIO $ Debugger.validateProtocol host port backendText
+dispatch "validate" _ _ =
+  throwParse "Usage: synapse _self validate <host> <port> <backend>"
 dispatch "--help" _ _ = showHelp
 dispatch "-h" _ _ = showHelp
 dispatch cmd _ _ =
@@ -83,6 +89,11 @@ helpText = T.unlines
   , "      Debug WebSocket connection and protocol issues"
   , "      Tests: TCP, HTTP, WebSocket handshake, Plexus RPC"
   , ""
+  , "  synapse _self validate <host> <port> <backend>"
+  , "      Run protocol compliance validation tests"
+  , "      Tests: protocol_test, stream_test, error_test, metadata_test"
+  , "      Exits with code 0 on success, 1 on failures"
+  , ""
   , "  synapse _self template"
   , "      Manage Mustache templates (CRUD operations)"
   , ""
@@ -99,6 +110,7 @@ helpText = T.unlines
   , "Examples:"
   , "  synapse _self scan"
   , "  synapse _self debug 127.0.0.1 4444 substrate"
+  , "  synapse _self validate localhost 5001 substrate"
   , "  synapse _self template list"
   , "  synapse _self template show cone.chat"
   , "  synapse _self template generate 'plexus.cone.*'"

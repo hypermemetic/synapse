@@ -8,6 +8,7 @@
 -- protocol mismatches, and transport-level problems.
 module Synapse.Self.Debugger
   ( debugConnection
+  , validateProtocol
   ) where
 
 import Control.Exception (SomeException, catch, try)
@@ -19,8 +20,11 @@ import qualified Data.Text.IO as TIO
 import qualified Network.Socket as NS
 import qualified Network.Socket.ByteString as NSB
 import qualified Network.WebSockets as WS
+import System.Exit (exitFailure, exitSuccess)
 import System.IO (hFlush, stdout)
 import System.Timeout (timeout)
+
+import qualified Synapse.Self.Protocol.TestRunner as TestRunner
 
 -- | Debug connection to a Plexus backend
 --
@@ -147,3 +151,40 @@ testPlexusRPC host port backend = try $
     -- Wait for response (simplified - real implementation would parse)
     _response <- WS.receiveData conn :: IO Text
     return ()
+
+-- | Validate protocol compliance of a backend
+--
+-- Runs the full protocol validation test suite against the specified backend
+-- and reports any violations found.
+--
+-- Use: synapse _self validate <host> <port> <backend>
+--
+-- This connects to the backend and runs various protocol validation tests:
+-- - Basic protocol compliance (_debug.protocol_test)
+-- - Stream handling with slow data (_debug.stream_test)
+-- - Progress reporting (_debug.stream_test with progress)
+-- - Error handling (_debug.error_test)
+-- - Metadata edge cases (_debug.metadata_test)
+--
+-- Exits with code 0 on success, 1 on protocol violations or errors.
+validateProtocol :: String -> Int -> Text -> IO ()
+validateProtocol host port backend = do
+  TIO.putStrLn $ "Running protocol validation tests against " <> T.pack host <> ":" <> T.pack (show port) <> "..."
+  TIO.putStrLn $ "Backend: " <> backend
+  TIO.putStrLn ""
+
+  -- Run the protocol test suite
+  result <- TestRunner.runProtocolTests (T.pack host) port backend
+
+  case result of
+    Left errorReport -> do
+      -- Protocol violations detected or test errors
+      TIO.putStrLn errorReport
+      TIO.putStrLn ""
+      exitFailure
+
+    Right successReport -> do
+      -- All tests passed
+      TIO.putStrLn successReport
+      TIO.putStrLn ""
+      exitSuccess
