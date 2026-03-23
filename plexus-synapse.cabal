@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               plexus-synapse
-version:            3.7.0
+version:            3.8.0
 synopsis:           Schema-driven CLI for Plexus RPC servers
 license:            MIT
 author:
@@ -49,6 +49,7 @@ library
     base >= 4.17 && < 5,
     plexus-protocol,
     aeson >= 2.0 && < 2.3,
+    aeson-pretty >= 0.8 && < 0.9,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
     websockets >= 0.13 && < 0.14,

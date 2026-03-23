@@ -13,10 +13,11 @@ module Synapse.Self.Debugger
   ) where
 
 import Control.Exception (SomeException, catch, try)
-import Control.Monad (unless)
+import Control.Monad (unless, forM_)
 import Control.Monad.IO.Class (liftIO)
 import qualified Data.Aeson as Aeson
 import Data.Aeson (Value(..), object, eitherDecode)
+import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Char8 as BS
@@ -307,21 +308,28 @@ runTest config method params = do
 
   case result of
     Left err -> do
-      TIO.putStrLn "❌ Test FAILED"
+      TIO.putStrLn "[FAIL] Test FAILED"
       TIO.putStrLn err
       exitFailure
 
-    Right (violations, msgCount) -> do
+    Right (violations, msgCount, rawMessages) -> do
       if null violations
         then do
-          TIO.putStrLn $ "✅ Protocol VALID (" <> T.pack (show msgCount) <> " messages)"
+          TIO.putStrLn $ "[PASS] Protocol VALID (" <> T.pack (show msgCount) <> " messages)"
           TIO.putStrLn "   - StreamDone sent"
           TIO.putStrLn "   - Metadata structure correct"
           TIO.putStrLn "   - Field naming valid"
           exitSuccess
         else do
-          TIO.putStrLn $ "⚠️  Protocol violations (" <> T.pack (show (length violations)) <> ")"
-          mapM_ (TIO.putStrLn . T.pack . show) violations
+          TIO.putStrLn $ "[FAIL] Protocol violations (" <> T.pack (show (length violations)) <> ")"
+          TIO.putStrLn ""
+          TIO.putStrLn "Raw messages received:"
+          forM_ (zip [1..] rawMessages) $ \(idx, msg) -> do
+            TIO.putStrLn $ "  Message " <> T.pack (show idx) <> ":"
+            TIO.putStrLn $ "    " <> (TE.decodeUtf8 $ LBS.toStrict $ encodePretty msg)
+          TIO.putStrLn ""
+          TIO.putStrLn "Violations detected:"
+          mapM_ (TIO.putStrLn . ("  " <>) . T.pack . show) violations
           exitFailure
 
 -- | Partition params into known (in method def) and unknown

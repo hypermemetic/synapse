@@ -163,7 +163,7 @@ testEndpointWithName config testName method params = do
         , trMessageCount = 0
         , trError = Just err
         }
-    Right (violations, msgCount) ->
+    Right (violations, msgCount, _rawMessages) ->
       pure $ TestResult
         { trTestName = testName
         , trViolations = violations
@@ -180,9 +180,11 @@ testEndpointWithName config testName method params = do
 -- Connects to the endpoint, subscribes to the stream, collects all messages,
 -- validates each message, and returns all violations found.
 --
--- Returns either an error message (connection/timeout issues) or the list
--- of protocol violations and message count.
-testEndpoint :: SubstrateConfig -> Text -> Value -> IO (Either Text ([ProtocolViolation], Int))
+-- Returns either an error message (connection/timeout issues) or a tuple of:
+-- - List of protocol violations
+-- - Message count
+-- - Raw messages (for debugging failures)
+testEndpoint :: SubstrateConfig -> Text -> Value -> IO (Either Text ([ProtocolViolation], Int, [Value]))
 testEndpoint config method params = do
   -- Create tracker for this test
   tracker <- newTracker
@@ -192,6 +194,9 @@ testEndpoint config method params = do
 
   -- Collect all violations
   violationsRef <- newIORef []
+
+  -- Collect raw messages for debugging
+  messagesRef <- newIORef []
 
   -- Result MVar
   resultMVar <- newEmptyMVar
@@ -209,6 +214,9 @@ testEndpoint config method params = do
     result <- PT.rpcCallStreaming config callMethod callParams $ \item -> do
       -- Convert PlexusStreamItem to Value for validation
       let itemValue = plexusItemToValue item
+
+      -- Store raw message for debugging
+      modifyIORef' messagesRef (++ [itemValue])
 
       -- Track the message
       trackViolations <- trackMessage tracker itemValue
@@ -251,7 +259,10 @@ testEndpoint config method params = do
       -- Get message count
       msgCount <- readIORef msgCountRef
 
-      pure $ Right (finalViolations, msgCount)
+      -- Get raw messages
+      rawMessages <- readIORef messagesRef
+
+      pure $ Right (finalViolations, msgCount, rawMessages)
 
 -- ============================================================================
 -- Helpers
