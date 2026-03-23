@@ -1,0 +1,78 @@
+cabal-version:      3.0
+name:               synapse-types
+version:            0.1.0.0
+synopsis:           Refined types for Plexus RPC protocol
+description:
+    Type-safe representations of Plexus RPC protocol primitives using
+    refinement types. Provides compile-time guarantees for protocol invariants:
+    .
+    * PlexusHash: exactly 16 hex characters
+    * Timestamp: positive Int64 (prevents float timestamp bug)
+    * SnakeCaseField: enforces snake_case wire format
+    * Provenance: non-empty chain
+    * Port numbers: 1-65535 range
+    .
+    Makes invalid protocol states unrepresentable.
+
+license:            MIT
+author:             Plexus Team
+maintainer:         dev@plexus.example
+category:           Network, Protocol
+build-type:         Simple
+extra-doc-files:    README.md
+tested-with:        GHC == 9.6.7
+
+common warnings
+    ghc-options: -Wall
+                 -Wcompat
+                 -Widentities
+                 -Wincomplete-record-updates
+                 -Wincomplete-uni-patterns
+                 -Wmissing-export-lists
+                 -Wmissing-home-modules
+                 -Wpartial-fields
+                 -Wredundant-constraints
+
+library
+    import:           warnings
+    exposed-modules:  Synapse.Types.Refined
+                    , Synapse.Types.Protocol
+                    , Synapse.Types.WireFormat
+                    , Synapse.Types.Network
+    build-depends:    base >= 4.17 && < 5
+                    , text >= 2.0
+                    , aeson >= 2.1
+                    , refined >= 0.8
+                    , bytestring >= 0.11
+                    , time >= 1.12
+    hs-source-dirs:   src
+    default-language: GHC2021
+    default-extensions: DataKinds
+                      , DerivingStrategies
+                      , GeneralizedNewtypeDeriving
+                      , LambdaCase
+                      , OverloadedStrings
+                      , ScopedTypeVariables
+                      , TypeApplications
+                      , TypeFamilies
+
+test-suite synapse-types-test
+    import:           warnings
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:    Synapse.Types.RefinedSpec
+                    , Synapse.Types.ProtocolSpec
+                    , Synapse.Types.RegressionSpec
+    build-depends:    base >= 4.17
+                    , synapse-types
+                    , hspec >= 2.10
+                    , QuickCheck >= 2.14
+                    , refined
+                    , text
+                    , aeson
+    default-language: GHC2021
+    default-extensions: DataKinds
+                      , OverloadedStrings
+                      , ScopedTypeVariables
+                      , TypeApplications

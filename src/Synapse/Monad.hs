@@ -41,6 +41,9 @@ module Synapse.Monad
     -- * Cache Operations
   , lookupCache
   , insertCache
+
+    -- * Logging
+  , getLogger
   ) where
 
 import Control.Monad (when)
@@ -58,6 +61,7 @@ import qualified Data.Text as T
 
 import Synapse.Schema.Types
 import Synapse.Backend.Discovery (Backend(..))
+import qualified Synapse.Log as Log
 
 -- | Environment for Synapse operations
 data SynapseEnv = SynapseEnv
@@ -66,6 +70,7 @@ data SynapseEnv = SynapseEnv
   , seBackend :: !Text                        -- ^ Backend name (first CLI argument)
   , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
+  , seLogger  :: !Log.Logger                  -- ^ Structured logger
   }
 
 -- | Errors that can occur during Synapse operations
@@ -83,6 +88,7 @@ data BackendErrorType
   = BackendNotFound Text
   | BackendUnreachable Text
   | NoBackendsAvailable
+  | ProtocolHandshakeFailed Text Int  -- host, port - _info request failed/timed out
   deriving stock (Show, Eq)
 
 -- | Transport error with connection details and categorization
@@ -122,15 +128,15 @@ newtype SynapseM a = SynapseM
 runSynapseM :: SynapseEnv -> SynapseM a -> IO (Either SynapseError a)
 runSynapseM env action = runReaderT (runExceptT (unSynapseM action)) env
 
--- | Run a SynapseM action with default host/port and specified backend
+-- | Run a SynapseM action with default host/port and specified backend (with null logger)
 runSynapseM' :: Text -> SynapseM a -> IO (Either SynapseError a)
 runSynapseM' backend action = do
-  env <- defaultEnv backend
+  env <- defaultEnv backend Log.nullLogger
   runSynapseM env action
 
--- | Initialize environment with given host/port/backend
-initEnv :: Text -> Int -> Text -> IO SynapseEnv
-initEnv host port backend = do
+-- | Initialize environment with given host/port/backend/logger
+initEnv :: Text -> Int -> Text -> Log.Logger -> IO SynapseEnv
+initEnv host port backend logger = do
   cache <- newIORef HM.empty
   visited <- newIORef HS.empty
   pure SynapseEnv
@@ -139,11 +145,12 @@ initEnv host port backend = do
     , seBackend = backend
     , seCache = cache
     , seVisited = visited
+    , seLogger = logger
     }
 
--- | Default environment (localhost:4444, requires backend)
-defaultEnv :: Text -> IO SynapseEnv
-defaultEnv = initEnv "127.0.0.1" 4444
+-- | Default environment (localhost:4444, requires backend and logger)
+defaultEnv :: Text -> Log.Logger -> IO SynapseEnv
+defaultEnv backend logger = initEnv "127.0.0.1" 4444 backend logger
 
 -- | Throw a navigation error
 throwNav :: NavError -> SynapseM a
@@ -206,3 +213,11 @@ insertCache :: PluginHash -> PluginSchema -> SynapseM ()
 insertCache hash schema = do
   cacheRef <- asks seCache
   liftIO $ modifyIORef' cacheRef (HM.insert hash schema)
+
+-- ============================================================================
+-- Logging and Config
+-- ============================================================================
+
+-- | Get the logger from the environment
+getLogger :: SynapseM Log.Logger
+getLogger = asks seLogger

@@ -17,6 +17,7 @@ library
     Synapse.Schema.Types
     Synapse.Schema.Functor
     Synapse.Monad
+    Synapse.Log
     Synapse.Algebra.Navigate
     Synapse.Algebra.Render
     Synapse.Algebra.Walk
@@ -39,6 +40,7 @@ library
     Synapse.Self.Template
     Synapse.Self.Pattern
     Synapse.Self.Examples
+    Synapse.Self.Debugger
   build-depends:
     base >= 4.17 && < 5,
     plexus-protocol,
@@ -65,7 +67,8 @@ library
     regex-tdfa >= 1.3 && < 1.4,
     time >= 1.12 && < 1.15,
     array >= 0.5 && < 0.6,
-    process >= 1.6 && < 1.7
+    process >= 1.6 && < 1.7,
+    fast-logger >= 3.0 && < 3.3
   hs-source-dirs:   src
   default-language: GHC2021
   default-extensions:

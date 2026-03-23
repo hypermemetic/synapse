@@ -33,10 +33,14 @@ import qualified Plexus.Types as PT
 
 import Synapse.Schema.Types
 import Synapse.Monad
+import qualified Synapse.Log as Log
 
 -- | Fetch the root schema
 fetchSchema :: SynapseM PluginSchema
-fetchSchema = fetchSchemaAt []
+fetchSchema = do
+  logger <- getLogger
+  Log.logInfo logger Log.SubsystemSchema "Fetching root schema"
+  fetchSchemaAt []
 
 -- | Convert plexus-protocol TransportError to error message
 transportErrorToText :: PT.TransportError -> Text
@@ -57,11 +61,20 @@ transportErrorToCategory (PT.NetworkError _) = UnknownTransportError
 -- | Fetch schema at a specific path
 fetchSchemaAt :: Path -> SynapseM PluginSchema
 fetchSchemaAt path = do
+  logger <- getLogger
   cfg <- getConfig
+  Log.logWith logger Log.Debug Log.SubsystemSchema "Fetching schema at path"
+    [("path", T.pack $ show path), ("host", T.pack $ substrateHost cfg), ("port", T.pack $ show $ substratePort cfg)]
   result <- liftIO $ ST.fetchSchemaAt cfg path
   case result of
-    Left err -> throwNav $ FetchError (transportErrorToText err) path
-    Right schema -> pure schema
+    Left err -> do
+      Log.logWith logger Log.Info Log.SubsystemSchema "Schema fetch failed"
+        [("path", T.pack $ show path), ("error", transportErrorToText err)]
+      throwNav $ FetchError (transportErrorToText err) path
+    Right schema -> do
+      Log.logWith logger Log.Debug Log.SubsystemSchema "Schema fetch succeeded"
+        [("path", T.pack $ show path), ("namespace", psNamespace schema)]
+      pure schema
 
 -- | Fetch a specific method's schema (more efficient than full plugin schema)
 -- Uses the parameter-based query: plugin.schema with {"method": "name"}
@@ -76,12 +89,22 @@ fetchMethodSchema path methodName = do
 -- | Invoke a method and return stream items
 invoke :: Path -> Text -> Value -> SynapseM [HubStreamItem]
 invoke namespacePath method params = do
+  logger <- getLogger
   cfg <- getConfig
+  backend <- asks seBackend
+  let fullPath = namespacePath ++ [method]
+  Log.logWith logger Log.Info Log.SubsystemRPC "Invoking RPC method"
+    [ ("method", T.intercalate "." fullPath)
+    , ("backend", backend)
+    , ("host", T.pack $ substrateHost cfg)
+    , ("port", T.pack $ show $ substratePort cfg)
+    ]
+  Log.logWith logger Log.Trace Log.SubsystemRPC "RPC request params"
+    [("params", T.pack $ show params)]
   result <- liftIO $ ST.invokeMethod cfg namespacePath method params
   case result of
     Left transportErr -> do
       -- Build context from typed transport error and environment
-      backend <- asks seBackend
       let path = namespacePath ++ [method]
       let ctx = TransportContext
             { tcMessage  = transportErrorToText transportErr
@@ -91,8 +114,18 @@ invoke namespacePath method params = do
             , tcPath     = path
             , tcCategory = transportErrorToCategory transportErr
             }
+      Log.logWith logger Log.Info Log.SubsystemRPC "RPC invocation failed"
+        [ ("method", T.intercalate "." fullPath)
+        , ("error", transportErrorToText transportErr)
+        , ("category", T.pack $ show $ transportErrorToCategory transportErr)
+        ]
       throwTransportWith ctx
-    Right items -> pure items
+    Right items -> do
+      Log.logWith logger Log.Debug Log.SubsystemRPC "RPC invocation succeeded"
+        [ ("method", T.intercalate "." fullPath)
+        , ("items_count", T.pack $ show $ length items)
+        ]
+      pure items
   where
     getHost (PT.ConnectionRefused h _) _ = h
     getHost (PT.ConnectionTimeout h _) _ = h

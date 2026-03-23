@@ -36,6 +36,7 @@ import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 import Synapse.Schema.Types
 import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), BackendErrorType(..), TransportContext(..), TransportErrorCategory(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse, throwBackend)
+import qualified Synapse.Log as Log
 import Synapse.Algebra.Navigate
 import Synapse.Algebra.Render (renderSchema)
 import Synapse.CLI.Help (renderMethodHelp)
@@ -76,6 +77,8 @@ data SynapseOpts = SynapseOpts
   , soBidirMode     :: Maybe Text    -- ^ Bidirectional mode override
   , soBidirCmd      :: Maybe Text    -- ^ Bidirectional subprocess command (--bidir-cmd)
   , soNoCache       :: Bool          -- ^ Disable IR caching
+  , soLogLevel      :: Maybe Text    -- ^ Log level: info, debug, trace
+  , soLogSubsystems :: [Text]        -- ^ Filter logs by subsystems (empty = all)
   }
   deriving Show
 
@@ -99,6 +102,39 @@ defaultPort :: Int
 defaultPort = 4444
 
 -- ============================================================================
+-- Logging Helper
+-- ============================================================================
+
+-- | Create a logger from command-line options
+makeLoggerFromOpts :: SynapseOpts -> IO Log.Logger
+makeLoggerFromOpts opts =
+  case soLogLevel opts of
+    Nothing -> pure Log.nullLogger  -- Logging disabled by default
+    Just levelStr ->
+      let level = parseLogLevel levelStr
+          subsystems = parseSubsystems (soLogSubsystems opts)
+      in Log.makeLogger level subsystems
+  where
+    parseLogLevel "info" = Log.Info
+    parseLogLevel "debug" = Log.Debug
+    parseLogLevel "trace" = Log.Trace
+    parseLogLevel _ = Log.Info  -- Default to info
+
+    parseSubsystems [] = Nothing  -- No filter, log all subsystems
+    parseSubsystems subs = Just (map parseSubsystem subs)
+
+    parseSubsystem "discovery" = Log.SubsystemDiscovery
+    parseSubsystem "transport" = Log.SubsystemTransport
+    parseSubsystem "rpc" = Log.SubsystemRPC
+    parseSubsystem "schema" = Log.SubsystemSchema
+    parseSubsystem "cache" = Log.SubsystemCache
+    parseSubsystem "navigation" = Log.SubsystemNavigation
+    parseSubsystem "rendering" = Log.SubsystemRendering
+    parseSubsystem "cli" = Log.SubsystemCLI
+    parseSubsystem "bidir" = Log.SubsystemBidir
+    parseSubsystem _ = Log.SubsystemCLI  -- Default
+
+-- ============================================================================
 -- Argument Splitting
 -- ============================================================================
 -- Main
@@ -108,12 +144,18 @@ main :: IO ()
 main = do
   args <- execParser argsInfo
   let opts = argOpts args
+  hPutStrLn stderr "[DEBUG] synapse starting..."
+  hFlush stderr
   -- Use specified host/port for registry discovery
   let discovery = registryDiscovery (soHost opts) (soPort opts)
 
   -- Get the backend at the connection point (host:port)
   -- If it has a registry plugin, that's used for discovering other backends
+  hPutStrLn stderr $ "[DEBUG] Checking backend at " <> T.unpack (soHost opts) <> ":" <> show (soPort opts)
+  hFlush stderr
   maybeBackend <- getBackendAt (soHost opts) (soPort opts)
+  hPutStrLn stderr $ "[DEBUG] Backend check complete: " <> show maybeBackend
+  hFlush stderr
   let hostBackend = maybe "plexus" id maybeBackend
 
   -- Auto-register: if we're connecting to a non-default port, push the
@@ -186,26 +228,56 @@ runWithDiscovery discovery backendName args = do
             <> "' but " <> T.unpack (backendHost backend) <> ":" <> show (backendPort backend)
             <> " identifies as '" <> T.unpack name <> "'"
           exitFailure
-        _ ->
-          -- Match confirmed (or _info unavailable — proceed optimistically)
+        Nothing -> do
+          -- Protocol handshake failed when verifying backend
+          logger <- makeLoggerFromOpts opts
+          env <- initEnv (soHost opts) (soPort opts) backendName logger
+          result <- runSynapseM env (throwBackend (ProtocolHandshakeFailed (backendHost backend) (backendPort backend)) [])
+          case result of
+            Left err -> do
+              hPutStrLn stderr $ renderError err
+              exitFailure
+            Right () -> exitSuccess
+        Just _ ->
+          -- Match confirmed
           run backendName (backendHost backend) (backendPort backend) args
     Nothing -> do
-      -- Backend not found in registry - gather available backends and show error
-      backends <- discoverBackends discovery
-      backendsWithStatus <- pingBackends backends
-      env <- initEnv (soHost opts) (soPort opts) backendName
-      result <- runSynapseM env (throwBackend (BackendNotFound backendName) backendsWithStatus)
-      case result of
-        Left err -> do
-          hPutStrLn stderr $ renderError err
-          exitFailure
-        Right () -> exitSuccess
+      -- Backend not found in registry - check if this was a direct connection attempt
+      -- where the protocol handshake failed
+      maybeDirectBackend <- getBackendAt (soHost opts) (soPort opts)
+      logger <- makeLoggerFromOpts opts
+      env <- initEnv (soHost opts) (soPort opts) backendName logger
+      case maybeDirectBackend of
+        Nothing -> do
+          -- Protocol handshake failed at the specified host:port
+          result <- runSynapseM env (throwBackend (ProtocolHandshakeFailed (soHost opts) (soPort opts)) [])
+          case result of
+            Left err -> do
+              hPutStrLn stderr $ renderError err
+              exitFailure
+            Right () -> exitSuccess
+        Just discoveredName | discoveredName /= backendName -> do
+          -- Backend exists but has a different name
+          backends <- discoverBackends discovery
+          backendsWithStatus <- pingBackends backends
+          result <- runSynapseM env (throwBackend (BackendNotFound backendName) backendsWithStatus)
+          case result of
+            Left err -> do
+              hPutStrLn stderr $ renderError err
+              exitFailure
+            Right () -> exitSuccess
+        Just _ -> do
+          -- Backend discovered successfully - should not reach here, but proceed
+          run backendName (soHost opts) (soPort opts) args
 
 -- | Run a Hub command with specified backend and connection details
 run :: Text -> Text -> Int -> Args -> IO ()
 run backend host port args = do
-  env <- initEnv host port backend
+  logger <- makeLoggerFromOpts (argOpts args)
+  Log.logInfo logger Log.SubsystemCLI $ "Synapse starting: backend=" <> backend <> ", host=" <> host <> ", port=" <> T.pack (show port)
+  env <- initEnv host port backend logger
   rendererCfg <- defaultRendererConfig
+  Log.logDebug logger Log.SubsystemCLI "Running dispatch..."
   result <- runSynapseM env (dispatch args rendererCfg)
   case result of
     Left err -> do
@@ -594,6 +666,13 @@ renderError = \case
       NoBackendsAvailable ->
         "No backends available"
         <> renderBackendList backends
+      ProtocolHandshakeFailed host port ->
+        "Protocol handshake failed at " <> T.unpack host <> ":" <> show port <> "\n"
+        <> "The _info request did not complete successfully within 2 seconds.\n"
+        <> "This typically means:\n"
+        <> "  - The server is not responding to Plexus RPC protocol messages\n"
+        <> "  - The server is not sending required StreamDone messages\n"
+        <> "  - The connection is timing out"
   where
     showPath [] = "root"
     showPath p = T.unpack $ T.intercalate "." p
@@ -843,4 +922,10 @@ optsParser = do
   soNoCache <- switch
     ( long "no-cache"
    <> help "Disable IR caching (force rebuild from schema)" )
+  soLogLevel <- optional $ T.pack <$> strOption
+    ( long "log-level" <> metavar "LEVEL"
+   <> help "Log level: info, debug, trace (default: disabled)" )
+  soLogSubsystems <- many $ T.pack <$> strOption
+    ( long "log-subsystem" <> metavar "SUBSYSTEM"
+   <> help "Filter logs by subsystem: discovery, transport, rpc, schema, cache, navigation (can specify multiple, default: all)" )
   pure SynapseOpts{..}

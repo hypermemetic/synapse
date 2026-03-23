@@ -20,11 +20,18 @@ import qualified Data.Text.IO as TIO
 import Synapse.Monad
 import Synapse.Backend.Discovery (getBackendAt)
 import qualified Synapse.Self.Template as Template
+import qualified Synapse.Self.Debugger as Debugger
 
 -- | Dispatch to a specific _self subcommand
 dispatch :: Text -> [Text] -> [(Text, Text)] -> SynapseM ()
 dispatch "template" rest params = Template.handleTemplate rest params
 dispatch "scan" rest _ = scanPorts rest
+dispatch "debug" (hostText:portText:backendText:_) _ = do
+  let host = T.unpack hostText
+  let port = read (T.unpack portText) :: Int
+  liftIO $ Debugger.debugConnection host port backendText
+dispatch "debug" _ _ =
+  throwParse "Usage: synapse _self debug <host> <port> <backend>"
 dispatch "--help" _ _ = showHelp
 dispatch "-h" _ _ = showHelp
 dispatch cmd _ _ =
@@ -72,6 +79,10 @@ helpText = T.unlines
   , "  synapse _self scan"
   , "      Scan ports 4440-4459 for backends (calls _info on each)"
   , ""
+  , "  synapse _self debug <host> <port> <backend>"
+  , "      Debug WebSocket connection and protocol issues"
+  , "      Tests: TCP, HTTP, WebSocket handshake, Plexus RPC"
+  , ""
   , "  synapse _self template"
   , "      Manage Mustache templates (CRUD operations)"
   , ""
@@ -87,6 +98,7 @@ helpText = T.unlines
   , ""
   , "Examples:"
   , "  synapse _self scan"
+  , "  synapse _self debug 127.0.0.1 4444 substrate"
   , "  synapse _self template list"
   , "  synapse _self template show cone.chat"
   , "  synapse _self template generate 'plexus.cone.*'"
