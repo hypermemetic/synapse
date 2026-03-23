@@ -38,6 +38,22 @@ dispatch "validate" (hostText:portText:backendText:_) _ = do
   liftIO $ Debugger.validateProtocol host port backendText
 dispatch "validate" _ _ =
   throwParse "Usage: synapse _self validate <host> <port> <backend>"
+dispatch "test" rest params = do
+  -- Extract flags from params
+  let allowUnknown = lookup "allow_unknown" params == Just ""
+  let rawJson = lookup "raw" params
+
+  -- Remove flags from params (keep only method params)
+  let methodParams = filter (\(k, _) -> k /= "allow_unknown" && k /= "raw") params
+
+  case rest of
+    (hostText:portText:backendText:methodParts) -> do
+      let host = T.unpack hostText
+      let port = read (T.unpack portText) :: Int
+      let method = T.intercalate "." methodParts
+      liftIO $ Debugger.testMethod host port backendText method methodParams allowUnknown rawJson
+    _ ->
+      throwParse "Usage: synapse _self test [--allow-unknown] [--raw <json>] <host> <port> <backend> <method> [--param value ...]"
 dispatch "--help" _ _ = showHelp
 dispatch "-h" _ _ = showHelp
 dispatch cmd _ _ =
@@ -94,6 +110,14 @@ helpText = T.unlines
   , "      Tests: protocol_test, stream_test, error_test, metadata_test"
   , "      Exits with code 0 on success, 1 on failures"
   , ""
+  , "  synapse _self test [--allow-unknown] [--raw <json>] <host> <port> <backend> <method> [--param value ...]"
+  , "      Test arbitrary method with protocol validation"
+  , "      Modes:"
+  , "        (default)       - Validate params against schema, reject unknown"
+  , "        --allow-unknown - Warn about unknown params but pass through"
+  , "        --raw <json>    - Use raw JSON params, skip schema validation"
+  , "      Validates: StreamDone sent, metadata structure, field naming"
+  , ""
   , "  synapse _self template"
   , "      Manage Mustache templates (CRUD operations)"
   , ""
@@ -111,6 +135,8 @@ helpText = T.unlines
   , "  synapse _self scan"
   , "  synapse _self debug 127.0.0.1 4444 substrate"
   , "  synapse _self validate localhost 5001 substrate"
+  , "  synapse _self test localhost 5001 substrate echo.echo --message \"hello\""
+  , "  synapse _self test --allow-unknown localhost 5001 substrate echo.echo --fake \"test\""
   , "  synapse _self template list"
   , "  synapse _self template show cone.chat"
   , "  synapse _self template generate 'plexus.cone.*'"
