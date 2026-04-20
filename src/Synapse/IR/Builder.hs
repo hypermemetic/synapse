@@ -267,6 +267,7 @@ updateMethodRefs redirects md = md
   , mdBidirType = fmap (updateTypeRef redirects) (mdBidirType md)
   , mdBidirResponseType = mdBidirResponseType md  -- Preserve as-is
   , mdBidirResponseSchema = mdBidirResponseSchema md  -- Preserve as-is
+  -- mdRole: left unchanged via record-update syntax
   }
 
 -- | Update type references in a parameter
@@ -377,6 +378,12 @@ extractMethodDef namespace pathPrefix method =
         , mdBidirType = bidirTypeRef
         , mdBidirResponseType = Nothing  -- TODO: could extract from response_type title
         , mdBidirResponseSchema = bidirResponseSchema
+        , mdRole = methodRole method
+          -- IR-12: lift MethodSchema.role onto the IR so hub-codegen's
+          -- typed-handle codegen (IR-9) sees DynamicChild/StaticChild
+          -- tags. plexus-protocol defaults this to MethodRoleRpc when
+          -- the upstream schema omits the field, so pre-IR servers
+          -- continue to work with no change in behaviour.
         }
   in (allTypes, mdef)
 

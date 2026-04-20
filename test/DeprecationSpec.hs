@@ -11,6 +11,7 @@ import Test.Hspec
 
 import Plexus.Schema.Recursive
   ( DeprecationInfo(..)
+  , MethodRole(..)
   , MethodSchema(..)
   , PluginSchema(..)
   )
@@ -36,7 +37,7 @@ baseMethod = MethodSchema
   , methodResponseType   = Nothing
   , methodDeprecation    = Nothing
   , methodParamSchemas   = Nothing
-  , methodRole           = Nothing
+  , methodRole           = MethodRoleRpc
   }
 
 deprecatedMethod :: MethodSchema

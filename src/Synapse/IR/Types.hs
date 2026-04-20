@@ -46,6 +46,7 @@ module Synapse.IR.Types
 
     -- * Method Definitions
   , MethodDef(..)
+  , MethodRole(..)
   , ParamDef(..)
 
     -- * Type References
@@ -66,6 +67,8 @@ import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
+
+import Plexus.Schema.Recursive (MethodRole(..))
 
 -- ============================================================================
 -- Version Information
@@ -262,9 +265,52 @@ data MethodDef = MethodDef
     -- Cached from MethodSchema.response_type so synapse can include it
     -- in bidir_request output. Synapse controls whether to print this
     -- (e.g., first request, --bidir-schemas flag, etc.)
+  , mdRole        :: MethodRole
+    -- ^ Structural role of this method in the activation graph
+    -- (IR-12). Mirrors 'Plexus.Schema.Recursive.MethodRole' /
+    -- 'plexus_core::MethodRole'. Defaults to 'MethodRoleRpc' when the
+    -- upstream schema omits @role@ (pre-IR servers).
+    --
+    -- Consumed by hub-codegen (Rust field @md_role@, JSON key @mdRole@)
+    -- to emit typed-handle clients for @DynamicChild@ methods.
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON, FromJSON)
+
+-- | Manual JSON instances so @mdRole@ defaults to 'MethodRoleRpc' when
+--   deserializing pre-IR-12 IR JSON (same back-compat posture as the
+--   Rust @#[serde(default)]@ on @MethodDef.md_role@ in hub-codegen).
+--
+--   All other fields preserve the generic derivation defaults (field
+--   names used verbatim as JSON keys; @Maybe@ fields omitted when
+--   @Nothing@ to match aeson's legacy behaviour).
+instance ToJSON MethodDef where
+  toJSON MethodDef{..} = object
+    [ "mdName"                .= mdName
+    , "mdFullPath"            .= mdFullPath
+    , "mdNamespace"           .= mdNamespace
+    , "mdDescription"         .= mdDescription
+    , "mdStreaming"           .= mdStreaming
+    , "mdParams"              .= mdParams
+    , "mdReturns"             .= mdReturns
+    , "mdBidirType"           .= mdBidirType
+    , "mdBidirResponseType"   .= mdBidirResponseType
+    , "mdBidirResponseSchema" .= mdBidirResponseSchema
+    , "mdRole"                .= mdRole
+    ]
+
+instance FromJSON MethodDef where
+  parseJSON = withObject "MethodDef" $ \o -> MethodDef
+    <$> o .:  "mdName"
+    <*> o .:  "mdFullPath"
+    <*> o .:  "mdNamespace"
+    <*> o .:? "mdDescription"
+    <*> o .:  "mdStreaming"
+    <*> o .:  "mdParams"
+    <*> o .:  "mdReturns"
+    <*> o .:? "mdBidirType"
+    <*> o .:? "mdBidirResponseType"
+    <*> o .:? "mdBidirResponseSchema"
+    <*> o .:? "mdRole" .!= MethodRoleRpc
 
 -- | A parameter definition
 data ParamDef = ParamDef
