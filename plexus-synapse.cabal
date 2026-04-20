@@ -311,3 +311,18 @@ test-suite stream-tracker-test
   default-extensions:
     OverloadedStrings
   ghc-options:      -threaded
+
+test-suite deprecation-test
+  type:             exitcode-stdio-1.0
+  main-is:          DeprecationSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-protocol,
+    plexus-synapse,
+    text >= 2.0 && < 2.2,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded

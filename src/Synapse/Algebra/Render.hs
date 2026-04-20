@@ -59,16 +59,39 @@ renderSchema = renderSchemaWith defaultStyle
 -- | Render with custom style
 renderSchemaWith :: RenderStyle -> PluginSchema -> Text
 renderSchemaWith _style PluginSchema{..}
-  | null psMethods && maybe True null psChildren = headerText
+  | null psMethods && maybe True null psChildren = deprecationBanner <> headerText
   | otherwise = renderStrict $ layoutPretty layoutOpts doc
   where
     layoutOpts = LayoutOptions (AvailablePerLine 80 1.0)
 
+    -- Activation-level deprecation banner (plain-text, rendered ahead
+    -- of the compact header variant used for trivial schemas).
+    deprecationBanner = case psDeprecation of
+      Just di -> deprecationMarker <> " " <> formatDeprecationLine di <> "\n"
+      Nothing -> ""
+
     headerText = psNamespace <> " v" <> psVersion <> "\n" <> psDescription <> "\n"
+
+    -- Name line; decorated with the warning marker when the activation
+    -- carries Just DeprecationInfo.
+    namespaceHeading = case psDeprecation of
+      Just _  -> pretty (deprecationMarker <> " " <> psNamespace)
+                   <+> pretty ("v" <> psVersion)
+      Nothing -> pretty psNamespace <+> pretty ("v" <> psVersion)
+
+    -- Full deprecation notice rendered immediately below the heading
+    -- when relevant, before the description block.
+    deprecationNoticeDoc = case psDeprecation of
+      Just di -> vsep
+        [ emptyDoc
+        , indent 2 $ pretty (formatDeprecationLine di)
+        ]
+      Nothing -> emptyDoc
 
     doc :: Doc ann
     doc = vsep
-      [ pretty psNamespace <+> pretty ("v" <> psVersion)
+      [ namespaceHeading
+      , deprecationNoticeDoc
       , emptyDoc
       , indent 2 $ align $ fillSep $ map pretty $ T.words psDescription
       , emptyDoc
