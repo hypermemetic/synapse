@@ -12,6 +12,10 @@ module Synapse.Algebra.Render
   , RenderStyle(..)
   , defaultStyle
   , compactStyle
+
+    -- * Deprecation Rendering (IR-6)
+  , deprecationMarker
+  , formatDeprecationLine
   ) where
 
 import Data.Text (Text)
@@ -24,6 +28,7 @@ import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
 
 import Synapse.Schema.Types
+import Plexus.Schema.Recursive (DeprecationInfo(..))
 
 -- | Rendering style configuration
 data RenderStyle = RenderStyle
@@ -92,10 +97,16 @@ renderSchemaWith _style PluginSchema{..}
     renderChildDoc child = fillBreak 12 (pretty $ csNamespace child)
       <+> align (fillSep $ map pretty $ T.words $ csDescription child)
 
-    renderMethodDoc method = vsep $
-      [ fillBreak 12 (pretty $ methodName method)
-          <+> align (fillSep $ map pretty $ T.words $ methodDescription method)
-      ] ++ paramsDocs (methodParams method)
+    renderMethodDoc method =
+      let nameText = case methodDeprecation method of
+            Just _  -> deprecationMarker <> " " <> methodName method
+            Nothing -> methodName method
+          nameLine = fillBreak 12 (pretty nameText)
+                       <+> align (fillSep $ map pretty $ T.words $ methodDescription method)
+          depLines = case methodDeprecation method of
+            Just di -> [indent 12 $ pretty (formatDeprecationLine di)]
+            Nothing -> []
+      in vsep $ [nameLine] ++ depLines ++ paramsDocs (methodParams method)
 
     paramsDocs Nothing = []
     paramsDocs (Just (Object o)) = case KM.lookup "properties" o of
@@ -205,3 +216,23 @@ padRight :: Int -> Text -> Text
 padRight n t
   | T.length t >= n = t <> " "
   | otherwise = t <> T.replicate (n - T.length t) " "
+
+-- ============================================================================
+-- Deprecation Rendering (IR-6)
+-- ============================================================================
+
+-- | Visible marker for deprecated surfaces.
+--
+--   Plain UTF-8 — a TTY/color-aware renderer lives at the CLI boundary;
+--   this module only emits text markers.
+deprecationMarker :: Text
+deprecationMarker = "\x26A0"  -- ⚠
+
+-- | Format the one-line deprecation detail, e.g.
+--   @DEPRECATED since 0.5, removed in 0.7 — use move_doc@.
+formatDeprecationLine :: DeprecationInfo -> Text
+formatDeprecationLine di =
+  "DEPRECATED since " <> depSince di
+    <> ", removed in " <> depRemovedIn di
+    <> " \x2014 " <> depMessage di   -- em-dash
+
