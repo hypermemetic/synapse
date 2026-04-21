@@ -46,6 +46,7 @@ import qualified Synapse.CLI.Parse as Parse
 import Synapse.IR.Types (IR, irMethods, MethodDef)
 import qualified Data.Map.Strict as Map
 import qualified Synapse.CLI.Template as TemplateIR
+import Synapse.Deprecation (emitActivationWarning, emitMethodWarning)
 import Synapse.Transport
 import Synapse.Bidir (BidirMode(..), parseBidirMode, detectBidirMode, handleBidirRequest)
 import Plexus.Types (Response(..))
@@ -80,6 +81,7 @@ data SynapseOpts = SynapseOpts
   , soNoCache       :: Bool          -- ^ Disable IR caching
   , soLogLevel      :: Maybe Text    -- ^ Log level: info, debug, trace
   , soLogSubsystems :: [Text]        -- ^ Filter logs by subsystems (empty = all)
+  , soNoDeprecationWarnings :: Bool  -- ^ Suppress invocation-time deprecation warnings (IR-15)
   }
   deriving Show
 
@@ -370,6 +372,28 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
                         ViewMethod method path -> do
                           let fullPath = T.intercalate "." path
 
+                          -- IR-15: emit stderr deprecation warnings right before any
+                          -- real invocation. Dedupe is per-process-lifetime, so this
+                          -- action is idempotent on repeat calls. We bind it as a
+                          -- local SynapseM action and invoke it at both invocation
+                          -- sites below (fast path and slow path). --help, --dry-run,
+                          -- --schema, and --emit-ir do not invoke, and intentionally
+                          -- do not fire these warnings.
+                          let fireDeprecationWarnings :: SynapseM ()
+                              fireDeprecationWarnings = do
+                                liftIO $ emitMethodWarning
+                                  soNoDeprecationWarnings
+                                  fullPath
+                                  (methodDeprecation method)
+                                let namespacePath = init path
+                                when (not (null namespacePath)) $ do
+                                  let activationNs = T.intercalate "." namespacePath
+                                  parentPlugin <- fetchSchemaAt namespacePath
+                                  liftIO $ emitActivationWarning
+                                    soNoDeprecationWarnings
+                                    activationNs
+                                    (psDeprecation parentPlugin)
+
                           -- Optimization: Skip IR construction for parameter-less methods
                           -- IR is only needed for:
                           -- 1. Help rendering (--help flag)
@@ -381,7 +405,7 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
 
                           -- Fast path: parameter-less method with no help requested
                           if not needsIR
-                            then invokeMethod path (object [])
+                            then fireDeprecationWarnings >> invokeMethod path (object [])
                             else do
                               -- Build IR for this method's namespace
                               ir <- buildIR soGeneratorInfo (init path)
@@ -438,7 +462,8 @@ dispatch Args{argOpts = SynapseOpts{..}, argBackend, argPath} rendererCfg = do
                                           Nothing ->
                                             -- Fallback: method not in IR, use basic info
                                             liftIO $ TIO.putStrLn $ T.intercalate "." path <> " - " <> methodDescription method
-                                      else invokeMethod path params
+                                      -- IR-15: fire stderr deprecation warnings before real invocation.
+                                      else fireDeprecationWarnings >> invokeMethod path params
   where
     handleRespondCommand :: [(Text, Text)] -> SynapseM ()
     handleRespondCommand params = do
@@ -921,4 +946,7 @@ optsParser = do
   soLogSubsystems <- many $ T.pack <$> strOption
     ( long "log-subsystem" <> metavar "SUBSYSTEM"
    <> help "Filter logs by subsystem: discovery, transport, rpc, schema, cache, navigation (can specify multiple, default: all)" )
+  soNoDeprecationWarnings <- switch
+    ( long "no-deprecation-warnings"
+   <> help "Suppress invocation-time deprecation warnings on stderr (IR-15)" )
   pure SynapseOpts{..}
