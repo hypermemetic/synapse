@@ -68,7 +68,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
 
-import Plexus.Schema.Recursive (MethodRole(..))
+import Plexus.Schema.Recursive (DeprecationInfo(..), MethodRole(..))
 
 -- ============================================================================
 -- Version Information
@@ -314,14 +314,42 @@ instance FromJSON MethodDef where
 
 -- | A parameter definition
 data ParamDef = ParamDef
-  { pdName        :: Text           -- ^ Parameter name
-  , pdType        :: TypeRef        -- ^ Parameter type
-  , pdDescription :: Maybe Text     -- ^ Documentation
-  , pdRequired    :: Bool           -- ^ Is this required?
-  , pdDefault     :: Maybe Value    -- ^ Default value if any
+  { pdName        :: Text                    -- ^ Parameter name
+  , pdType        :: TypeRef                 -- ^ Parameter type
+  , pdDescription :: Maybe Text              -- ^ Documentation
+  , pdRequired    :: Bool                    -- ^ Is this required?
+  , pdDefault     :: Maybe Value             -- ^ Default value if any
+  , pdDeprecation :: Maybe DeprecationInfo
+    -- ^ Per-parameter deprecation info (IR-14).
+    --   Populated from 'Plexus.Schema.Recursive.ParamSchema.paramDeprecation'
+    --   when the upstream schema advertises it (via @param_schemas@).
+    --   Defaults to 'Nothing' when the schema lacks @param_schemas@, so
+    --   pre-IR-5 producers and non-deprecated parameters are indistinguishable
+    --   at the rendering layer.
   }
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (ToJSON, FromJSON)
+
+-- | Manual JSON instances so @pdDeprecation@ defaults to 'Nothing' when
+--   deserializing IR JSON that predates IR-14.
+--   All other fields preserve the derivation defaults.
+instance ToJSON ParamDef where
+  toJSON ParamDef{..} = object
+    [ "pdName"        .= pdName
+    , "pdType"        .= pdType
+    , "pdDescription" .= pdDescription
+    , "pdRequired"    .= pdRequired
+    , "pdDefault"     .= pdDefault
+    , "pdDeprecation" .= pdDeprecation
+    ]
+
+instance FromJSON ParamDef where
+  parseJSON = withObject "ParamDef" $ \o -> ParamDef
+    <$> o .:  "pdName"
+    <*> o .:  "pdType"
+    <*> o .:? "pdDescription"
+    <*> o .:  "pdRequired"
+    <*> o .:? "pdDefault"
+    <*> o .:? "pdDeprecation"
 
 -- ============================================================================
 -- Type References

@@ -242,7 +242,7 @@ buildFromTypeDef ir paramName TypeDef{..} kvs = case tdKind of
 
   KindAlias target ->
     -- Follow the alias
-    buildParamValue ir ParamDef{pdName = paramName, pdType = target, pdDescription = Nothing, pdRequired = True, pdDefault = Nothing} kvs
+    buildParamValue ir ParamDef{pdName = paramName, pdType = target, pdDescription = Nothing, pdRequired = True, pdDefault = Nothing, pdDeprecation = Nothing} kvs
 
   KindStringEnum allowedValues ->
     -- Expect single string value from allowed set

@@ -320,6 +320,8 @@ test-suite deprecation-test
     plexus-protocol,
     plexus-synapse,
     text >= 2.0 && < 2.2,
+    aeson >= 2.0 && < 2.3,
+    containers >= 0.6 && < 0.8,
     hspec >= 2.10 && < 2.12
   hs-source-dirs:   test
   default-language: GHC2021

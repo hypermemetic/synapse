@@ -1,11 +1,18 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Unit tests for IR-6 deprecation rendering.
+-- | Unit tests for IR-6 and IR-14 deprecation rendering.
 --
---   Covers the rendering side only. Invocation-time stderr notices
---   are deferred to a follow-up ticket per the IR-6 retry scope.
+--   IR-6: per-method and per-activation decoration in 'renderSchema'.
+--   IR-14: per-parameter decoration in both 'renderMethodFull' (reads
+--          'methodParamSchemas' directly) and 'renderMethodHelpWith'
+--          (reads 'ParamDef.pdDeprecation' after the IR builder has
+--          lifted the info across).
+--
+--   Invocation-time stderr notices are deferred to a follow-up ticket.
 module Main where
 
+import Data.Aeson (object, (.=), Value)
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import Test.Hspec
 
@@ -13,12 +20,17 @@ import Plexus.Schema.Recursive
   ( DeprecationInfo(..)
   , MethodRole(..)
   , MethodSchema(..)
+  , ParamSchema(..)
   , PluginSchema(..)
   )
 import Synapse.Algebra.Render
   ( deprecationMarker
+  , renderMethodFull
   , renderSchema
   )
+import Synapse.CLI.Help (renderMethodHelp)
+import Synapse.IR.Builder (extractMethodDef)
+import Synapse.IR.Types (IR(..), emptyIR)
 
 -- ---------------------------------------------------------------------------
 -- Fixtures
@@ -73,6 +85,74 @@ deprecatedPlugin = basePlugin
       }
   }
 
+-- ---------------------------------------------------------------------------
+-- IR-14 Fixtures: param-level deprecation
+-- ---------------------------------------------------------------------------
+
+-- | JSON Schema for a method with two parameters: 'path' (deprecated, the
+--   one IR-14 decorates) and 'target' (not deprecated, the control).
+--
+--   This matches the minimum shape 'renderParamsFull' / 'extractParams'
+--   actually inspect: an object with @properties@ and @required@.
+paramsSchemaJSON :: Value
+paramsSchemaJSON = object
+  [ "type" .= ("object" :: T.Text)
+  , "properties" .= object
+      [ "path"   .= object
+          [ "type"        .= ("string" :: T.Text)
+          , "description" .= ("Old document path (deprecated)." :: T.Text)
+          ]
+      , "target" .= object
+          [ "type"        .= ("string" :: T.Text)
+          , "description" .= ("Destination identifier." :: T.Text)
+          ]
+      ]
+  , "required" .= (["path", "target"] :: [T.Text])
+  ]
+
+-- | ParamSchema list carrying the per-param deprecation info for 'path'
+--   and leaving 'target' clean. This is the IR-5 wire-level payload.
+paramSchemas :: [ParamSchema]
+paramSchemas =
+  [ ParamSchema
+      { paramName        = "path"
+      , paramDescription = Just "Old document path (deprecated)."
+      , paramRequired    = True
+      , paramDeprecation = Just DeprecationInfo
+          { depSince     = "0.5"
+          , depRemovedIn = "0.7"
+          , depMessage   = "use target"
+          }
+      }
+  , ParamSchema
+      { paramName        = "target"
+      , paramDescription = Just "Destination identifier."
+      , paramRequired    = True
+      , paramDeprecation = Nothing
+      }
+  ]
+
+-- | Method with a deprecated parameter. Used to drive both
+--   'renderMethodFull' (Render.hs) and 'renderMethodHelp' (Help.hs).
+methodWithDeprecatedParam :: MethodSchema
+methodWithDeprecatedParam = baseMethod
+  { methodName         = "relocate"
+  , methodDescription  = "Relocate a document."
+  , methodHash         = "hash-relocate"
+  , methodParams       = Just paramsSchemaJSON
+  , methodParamSchemas = Just paramSchemas
+  }
+
+-- | Build a minimal IR containing just this method, so we can exercise
+--   'renderMethodHelp' which consumes the IR 'MethodDef' (where
+--   'pdDeprecation' lives, lifted there by 'extractMethodDef').
+helpFixture :: (IR, T.Text)
+helpFixture =
+  let (_types, mdef) = extractMethodDef "docs" "docs" methodWithDeprecatedParam
+      fullPath       = "docs.relocate"
+      ir = emptyIR { irMethods = Map.singleton fullPath mdef }
+  in (ir, renderMethodHelp ir mdef)
+
 main :: IO ()
 main = hspec $ do
   describe "renderSchema (IR-6 method-level deprecation)" $ do
@@ -119,3 +199,58 @@ main = hspec $ do
     it "keeps activation rendering unchanged when psDeprecation is Nothing" $ do
       let rendered = renderSchema (basePlugin { psMethods = [plainMethod] })
       rendered `shouldSatisfy` (not . T.isInfixOf "use docs_v2")
+
+  describe "renderMethodFull (IR-14 per-parameter deprecation in Render.hs)" $ do
+    it "prepends the warning marker on the deprecated parameter's flag line" $ do
+      let rendered = renderMethodFull methodWithDeprecatedParam
+          ls       = T.lines rendered
+          -- Line that mentions --path must carry the marker.
+          pathLines = filter (T.isInfixOf "--path") ls
+      pathLines `shouldSatisfy` (not . null)
+      all (T.isInfixOf deprecationMarker) pathLines `shouldBe` True
+
+    it "emits the DEPRECATED detail line for the deprecated parameter" $ do
+      let rendered = renderMethodFull methodWithDeprecatedParam
+      rendered `shouldSatisfy` T.isInfixOf "DEPRECATED since 0.5"
+      rendered `shouldSatisfy` T.isInfixOf "removed in 0.7"
+      rendered `shouldSatisfy` T.isInfixOf "use target"
+
+    it "leaves non-deprecated sibling parameter undecorated" $ do
+      let rendered = renderMethodFull methodWithDeprecatedParam
+          ls       = T.lines rendered
+          -- Lines mentioning --target must NOT carry the marker.  We also
+          -- filter out lines that happen to contain 'use target' (the
+          -- deprecation detail line for --path), since that substring
+          -- would false-match.
+          targetLines =
+            [ l | l <- ls
+                , T.isInfixOf "--target" l
+                , not (T.isInfixOf "use target" l)
+            ]
+      targetLines `shouldSatisfy` (not . null)
+      all (not . T.isInfixOf deprecationMarker) targetLines `shouldBe` True
+
+  describe "renderMethodHelp (IR-14 per-parameter deprecation in Help.hs)" $ do
+    it "prepends the warning marker on the deprecated parameter's flag line" $ do
+      let (_, rendered) = helpFixture
+          ls            = T.lines rendered
+          pathLines     = filter (T.isInfixOf "--path") ls
+      pathLines `shouldSatisfy` (not . null)
+      all (T.isInfixOf deprecationMarker) pathLines `shouldBe` True
+
+    it "emits the DEPRECATED detail line for the deprecated parameter" $ do
+      let (_, rendered) = helpFixture
+      rendered `shouldSatisfy` T.isInfixOf "DEPRECATED since 0.5"
+      rendered `shouldSatisfy` T.isInfixOf "removed in 0.7"
+      rendered `shouldSatisfy` T.isInfixOf "use target"
+
+    it "leaves non-deprecated sibling parameter undecorated" $ do
+      let (_, rendered) = helpFixture
+          ls            = T.lines rendered
+          targetLines =
+            [ l | l <- ls
+                , T.isInfixOf "--target" l
+                , not (T.isInfixOf "use target" l)
+            ]
+      targetLines `shouldSatisfy` (not . null)
+      all (not . T.isInfixOf deprecationMarker) targetLines `shouldBe` True

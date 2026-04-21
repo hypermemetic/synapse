@@ -48,6 +48,7 @@ main = hspec $ do
             , pdDescription = Nothing
             , pdRequired = True
             , pdDefault = Nothing
+            , pdDeprecation = Nothing
             }
       let kvs = [("", "backend"), ("", "critical"), ("", "urgent")]
       let expected = Right $ Array $ V.fromList [String "backend", String "critical", String "urgent"]
@@ -60,6 +61,7 @@ main = hspec $ do
             , pdDescription = Nothing
             , pdRequired = True
             , pdDefault = Nothing
+            , pdDeprecation = Nothing
             }
       let kvs = [("", "1"), ("", "2"), ("", "3")]
       let expected = Right $ Array $ V.fromList [Number 1, Number 2, Number 3]
@@ -72,6 +74,7 @@ main = hspec $ do
             , pdDescription = Nothing
             , pdRequired = True
             , pdDefault = Nothing
+            , pdDeprecation = Nothing
             }
       let kvs = []
       buildParamValue emptyIR param kvs `shouldSatisfy` isLeft

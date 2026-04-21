@@ -64,6 +64,7 @@ import Data.Text (Text)
 import qualified Data.Text as T
 
 import Synapse.IR.Types
+import Synapse.Algebra.Render (deprecationMarker, formatDeprecationLine)
 
 -- ============================================================================
 -- Configuration
@@ -118,14 +119,25 @@ renderMethodHelpWith style ir method = T.unlines $
           ["Parameters:"] ++
           concatMap (renderParamBlock style ir) (mdParams method)
 
--- | Render a parameter as a block (may be multi-line for complex types)
+-- | Render a parameter as a block (may be multi-line for complex types).
+--
+-- IR-14: when @pdDeprecation param@ is @Just DeprecationInfo@ the
+-- warning marker (⚠) is prepended to the parameter's flag name and the
+-- formatted @DEPRECATED since … removed in … — …@ line is appended
+-- (indented one level below the header). Non-deprecated parameters are
+-- rendered exactly as before.
 renderParamBlock :: HelpStyle -> IR -> ParamDef -> [Text]
 renderParamBlock style ir param =
   let indent' = T.replicate (hsIndent style) " "
       indent2 = T.replicate (hsIndent style * 2) " "
 
-      -- Parameter header line
-      flagName = "--" <> T.replace "_" "-" (pdName param)  -- Display as kebab-case
+      -- Parameter header line (optionally prefixed with the deprecation
+      -- marker; see IR-14). The marker sits before the flag so callers
+      -- who grep for '--name' still match a deprecated flag line.
+      rawFlag = "--" <> T.replace "_" "-" (pdName param)  -- Display as kebab-case
+      flagName = case pdDeprecation param of
+        Just _  -> deprecationMarker <> " " <> rawFlag
+        Nothing -> rawFlag
       typeStr = renderTypeRef ir (pdType param)
       reqText = if pdRequired param then "(required)" else "(optional)"
       headerLine = indent' <> flagName <> " <" <> typeStr <> ">  " <> reqText
@@ -135,12 +147,18 @@ renderParamBlock style ir param =
         Just desc -> [indent2 <> desc]
         Nothing -> []
 
+      -- Deprecation detail line (IR-14).  Indented one level beyond the
+      -- header to match the description block's indentation.
+      deprecationLines = case pdDeprecation param of
+        Just di -> [indent2 <> formatDeprecationLine di]
+        Nothing -> []
+
       -- Type expansion (for enums/unions)
       expansionLines = if hsExpandEnums style
         then map (indent2 <>) (expandType ir (pdName param) (pdType param))
         else []
 
-  in [""] ++ [headerLine] ++ descLines ++ expansionLines
+  in [""] ++ [headerLine] ++ descLines ++ deprecationLines ++ expansionLines
 
 -- ============================================================================
 -- Parameter Help

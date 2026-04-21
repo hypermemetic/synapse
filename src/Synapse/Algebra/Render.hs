@@ -28,7 +28,7 @@ import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
 
 import Synapse.Schema.Types
-import Plexus.Schema.Recursive (DeprecationInfo(..))
+import Plexus.Schema.Recursive (DeprecationInfo(..), ParamSchema(..))
 
 -- | Rendering style configuration
 data RenderStyle = RenderStyle
@@ -164,7 +164,12 @@ renderMethodWith RenderStyle{..} m =
   "  " <> padRight 16 (methodName m) <> methodDescription m
     <> if rsShowTypes then renderParams (methodParams m) else ""
 
--- | Render a method (full form with all params)
+-- | Render a method (full form with all params).
+--
+-- IR-14: per-parameter deprecation info carried on @methodParamSchemas@
+-- is threaded into the param rendering so each deprecated parameter
+-- receives the ⚠ marker and the formatted @DEPRECATED since …@ line.
+-- Non-deprecated parameters render exactly as before.
 renderMethodFull :: MethodSchema -> Text
 renderMethodFull m = T.unlines $
   [ methodName m <> " - " <> methodDescription m
@@ -173,7 +178,7 @@ renderMethodFull m = T.unlines $
   where
     paramLines = case methodParams m of
       Nothing -> ["  (no parameters)"]
-      Just schema -> renderParamsFull schema
+      Just schema -> renderParamsFull (methodParamSchemas m) schema
 
 -- | Render a child summary
 renderChild :: ChildSummary -> Text
@@ -205,26 +210,53 @@ renderParam required (name, propSchema) =
       reqMarker = if isReq then "" else "?"
   in "      --" <> flagName <> " <" <> typ <> ">" <> reqMarker <> "  " <> desc
 
--- | Render parameters in full (for method help)
-renderParamsFull :: Value -> [Text]
-renderParamsFull (Object o) = case KM.lookup "properties" o of
+-- | Render parameters in full (for method help).
+--
+-- IR-14: the first argument carries optional per-parameter metadata
+-- ('ParamSchema') advertised by IR-5 producers. Any parameter whose
+-- 'paramDeprecation' is @Just@ is decorated with the ⚠ marker and a
+-- trailing @DEPRECATED since … removed in … — …@ line. Parameters
+-- without a matching entry render identically to pre-ticket output.
+renderParamsFull :: Maybe [ParamSchema] -> Value -> [Text]
+renderParamsFull paramSchemas (Object o) = case KM.lookup "properties" o of
   Just (Object props) ->
     let reqList = case KM.lookup "required" o of
           Just (Array arr) -> [t | String t <- foldr (:) [] arr]
           _ -> []
         propList = KM.toList props
         sorted = sortOn (\(k, _) -> (K.toText k `notElem` reqList, K.toText k)) propList
-    in map (renderParamFull reqList) sorted
+    in map (renderParamFull paramSchemas reqList) sorted
   _ -> []
-renderParamsFull _ = []
+renderParamsFull _ _ = []
 
-renderParamFull :: [Text] -> (K.Key, Value) -> Text
-renderParamFull required (name, propSchema) =
+-- | Look up per-parameter deprecation info by name, scanning the
+--   optional ParamSchema list attached to the method.
+lookupParamDeprecation :: Maybe [ParamSchema] -> Text -> Maybe DeprecationInfo
+lookupParamDeprecation Nothing     _     = Nothing
+lookupParamDeprecation (Just pss) pname =
+  case filter ((== pname) . paramName) pss of
+    (ps:_) -> paramDeprecation ps
+    []     -> Nothing
+
+renderParamFull :: Maybe [ParamSchema] -> [Text] -> (K.Key, Value) -> Text
+renderParamFull paramSchemas required (name, propSchema) =
   let nameText = K.toText name
       isReq = nameText `elem` required
       (typ, desc) = extractTypeDesc propSchema
       reqText = if isReq then " (required)" else " (optional)"
-  in "  --" <> nameText <> " <" <> typ <> ">" <> reqText <> "\n      " <> desc
+      -- IR-14: deprecation decoration.  Marker prepended to the flag
+      -- name, detail line appended after the description.  Pre-ticket
+      -- non-deprecated output is preserved exactly when depInfo is
+      -- Nothing.
+      depInfo = lookupParamDeprecation paramSchemas nameText
+      decoratedName = case depInfo of
+        Just _  -> deprecationMarker <> " --" <> nameText
+        Nothing -> "--" <> nameText
+      depLine = case depInfo of
+        Just di -> "\n      " <> formatDeprecationLine di
+        Nothing -> ""
+  in "  " <> decoratedName <> " <" <> typ <> ">" <> reqText
+     <> "\n      " <> desc <> depLine
 
 -- | Extract type and description from property schema
 extractTypeDesc :: Value -> (Text, Text)

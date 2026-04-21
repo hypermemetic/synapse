@@ -40,6 +40,7 @@ import Synapse.Algebra.Walk (walkSchemaPar)
 import Synapse.Monad
 import Synapse.IR.Types hiding (QualifiedName(..), qualifiedNameFull)
 import Synapse.IR.Types (QualifiedName(..), qualifiedNameFull, synapseVersion)
+import Plexus.Schema.Recursive (DeprecationInfo, ParamSchema(..))
 
 -- ============================================================================
 -- Building IR
@@ -339,8 +340,12 @@ extractMethodDef namespace pathPrefix method =
                  then namespace <> "." <> name
                  else pathPrefix <> "." <> name
 
-      -- Extract types from params (namespace-qualified)
-      (paramTypes, params) = extractParams namespace (methodParams method)
+      -- Extract types from params (namespace-qualified).
+      -- Also pass methodParamSchemas so per-param deprecation info
+      -- (IR-14) flows from ParamSchema.paramDeprecation onto the IR
+      -- ParamDef.pdDeprecation.
+      (paramTypes, params) =
+        extractParams namespace (methodParams method) (methodParamSchemas method)
 
       -- Extract types from returns (namespace-qualified)
       (returnTypes, returnRef, streaming) = extractReturns namespace name (methodReturns method)
@@ -415,16 +420,30 @@ inferBidirType method
 -- Parameter Extraction
 -- ============================================================================
 
--- | Extract types and param defs from method params schema
--- Types are namespace-qualified to avoid collisions
-extractParams :: Text -> Maybe Value -> (Map Text TypeDef, [ParamDef])
-extractParams _ Nothing = (Map.empty, [])
-extractParams namespace (Just val) = case val of
-  Object o -> extractParamsFromObject namespace o
+-- | Extract types and param defs from method params schema.
+--
+-- The third argument carries optional per-parameter metadata
+-- ('ParamSchema') emitted by IR-5 producers. When present, each entry's
+-- 'paramDeprecation' is lifted onto the resulting 'ParamDef.pdDeprecation'
+-- by matching parameter name. Absent entries (pre-IR-5 producers, or
+-- non-deprecated params) leave 'pdDeprecation' as 'Nothing'.
+-- Types are namespace-qualified to avoid collisions.
+extractParams
+  :: Text
+  -> Maybe Value
+  -> Maybe [ParamSchema]
+  -> (Map Text TypeDef, [ParamDef])
+extractParams _ Nothing _ = (Map.empty, [])
+extractParams namespace (Just val) paramSchemas = case val of
+  Object o -> extractParamsFromObject namespace o paramSchemas
   _ -> (Map.empty, [])
 
-extractParamsFromObject :: Text -> KM.KeyMap Value -> (Map Text TypeDef, [ParamDef])
-extractParamsFromObject namespace o =
+extractParamsFromObject
+  :: Text
+  -> KM.KeyMap Value
+  -> Maybe [ParamSchema]
+  -> (Map Text TypeDef, [ParamDef])
+extractParamsFromObject namespace o paramSchemas =
   let -- Extract $defs (namespace-qualified)
       defs = extractDefs namespace o
 
@@ -438,6 +457,16 @@ extractParamsFromObject namespace o =
         Just (Array arr) -> [t | String t <- V.toList arr]
         _ -> []
 
+      -- Look up per-parameter deprecation by name from the structured
+      -- ParamSchema list (IR-5). 'Nothing' when either the list is absent
+      -- or the named parameter isn't in it.
+      lookupDeprecation :: Text -> Maybe DeprecationInfo
+      lookupDeprecation pname = case paramSchemas of
+        Nothing -> Nothing
+        Just xs -> case filter ((== pname) . paramName) xs of
+          (ps:_) -> paramDeprecation ps
+          []     -> Nothing
+
       -- Build param defs
       params =
         [ ParamDef
@@ -446,6 +475,7 @@ extractParamsFromObject namespace o =
             , pdDescription = extractDescription v
             , pdRequired = K.toText k `elem` required
             , pdDefault = extractDefault v
+            , pdDeprecation = lookupDeprecation (K.toText k)
             }
         | (k, v) <- props
         ]
