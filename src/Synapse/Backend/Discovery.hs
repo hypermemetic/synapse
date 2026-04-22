@@ -224,10 +224,11 @@ getBackendAt = discoverBackendName
 discoverBackendName :: Text -> Int -> IO (Maybe Text)
 discoverBackendName host port = do
   let cfg = SubstrateConfig
-        { substrateHost = T.unpack host
-        , substratePort = port
-        , substratePath = "/"
+        { substrateHost    = T.unpack host
+        , substratePort    = port
+        , substratePath    = "/"
         , substrateBackend = "" -- Not used for _info
+        , substrateHeaders = []
         }
       timeout = do
         threadDelay 2000000  -- 2 second timeout
@@ -265,10 +266,11 @@ queryRegistry host port backendName = do
 queryRegistryImpl :: Text -> Int -> Text -> IO [Backend]
 queryRegistryImpl host port backendName = do
   let cfg = SubstrateConfig
-        { substrateHost = T.unpack host
-        , substratePort = port
-        , substratePath = "/"
+        { substrateHost    = T.unpack host
+        , substratePort    = port
+        , substratePath    = "/"
         , substrateBackend = backendName
+        , substrateHeaders = []
         }
   -- Call registry.list through the backend
   result <- ST.invokeMethod cfg ["registry"] "list" (Aeson.object [])
@@ -310,10 +312,11 @@ queryBackend host port name = do
 queryBackendImpl :: Text -> Int -> Text -> Text -> IO (Maybe Backend)
 queryBackendImpl host port backendName name = do
   let cfg = SubstrateConfig
-        { substrateHost = T.unpack host
-        , substratePort = port
-        , substratePath = "/"
+        { substrateHost    = T.unpack host
+        , substratePort    = port
+        , substratePath    = "/"
         , substrateBackend = backendName
+        , substrateHeaders = []
         }
       params = Aeson.object ["name" Aeson..= name]
   result <- ST.invokeMethod cfg ["registry"] "get" params
@@ -344,10 +347,11 @@ convertBackend info = Backend
 pingBackend :: Backend -> IO Backend
 pingBackend backend = do
   let cfg = SubstrateConfig
-        { substrateHost = T.unpack (backendHost backend)
-        , substratePort = backendPort backend
-        , substratePath = "/"
+        { substrateHost    = T.unpack (backendHost backend)
+        , substratePort    = backendPort backend
+        , substratePath    = "/"
         , substrateBackend = ""  -- _info has no namespace prefix
+        , substrateHeaders = []
         }
       timeout = threadDelay 300000 >> pure (Left $ ConnectionTimeout (backendHost backend) (backendPort backend))
       rpcCall = ST.rpcCallWith cfg "_info" Aeson.Null
@@ -384,10 +388,11 @@ registerWithRegistry
   -> IO ()
 registerWithRegistry registryHost registryPort registryBackend name host port = do
   let cfg = SubstrateConfig
-        { substrateHost = T.unpack registryHost
-        , substratePort = registryPort
-        , substratePath = "/"
+        { substrateHost    = T.unpack registryHost
+        , substratePort    = registryPort
+        , substratePath    = "/"
         , substrateBackend = registryBackend
+        , substrateHeaders = []
         }
       params = Aeson.object
         [ "name"     Aeson..= name

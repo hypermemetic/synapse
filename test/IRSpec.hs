@@ -38,6 +38,8 @@ import Synapse.CLI.Help (renderMethodHelp, expandType)
 import Synapse.CLI.Support (SupportLevel(..), methodSupport)
 import Synapse.Monad
 import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery)
+import qualified Synapse.Log as Log
+import qualified Katip
 
 main :: IO ()
 main = do
@@ -45,7 +47,8 @@ main = do
   (backend, host, port) <- resolveBackend args
   putStrLn $ "Running IR integration tests against " <> T.unpack host <> ":" <> show port <> " (backend: " <> T.unpack backend <> ")"
 
-  env <- initEnv host port backend
+  logger <- Log.makeLogger Katip.ErrorS
+  env <- initEnv host port backend logger Nothing
 
   -- Build IR once for all tests
   irResult <- runSynapseM env (buildIR [] [])

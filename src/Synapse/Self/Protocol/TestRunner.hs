@@ -68,10 +68,11 @@ data TestResult = TestResult
 runProtocolTests :: Text -> Int -> Text -> IO (Either Text Text)
 runProtocolTests host port backend = do
   let config = SubstrateConfig
-        { substrateHost = T.unpack host
-        , substratePort = port
-        , substratePath = "/"
+        { substrateHost    = T.unpack host
+        , substratePort    = port
+        , substratePath    = "/"
         , substrateBackend = backend
+        , substrateHeaders = []
         }
 
   -- Run all test suites

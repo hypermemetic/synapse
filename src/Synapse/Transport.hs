@@ -27,7 +27,7 @@ import Data.Aeson (Value)
 import Data.Text (Text)
 import qualified Data.Text as T
 
-import Plexus.Client (SubstrateConfig(..))
+import Plexus.Client (SubstrateConfig(..), cookieHeader)
 import qualified Plexus.Transport as ST
 import qualified Plexus.Types as PT
 
@@ -250,12 +250,14 @@ sendResponse requestId response = do
 -- | Get SubstrateConfig from environment
 getConfig :: SynapseM SubstrateConfig
 getConfig = do
-  host <- asks seHost
-  port <- asks sePort
+  host    <- asks seHost
+  port    <- asks sePort
   backend <- asks seBackend
+  mToken  <- asks seToken
   pure $ SubstrateConfig
-    { substrateHost = T.unpack host
-    , substratePort = port
-    , substratePath = "/"
+    { substrateHost    = T.unpack host
+    , substratePort    = port
+    , substratePath    = "/"
     , substrateBackend = backend
+    , substrateHeaders = maybe [] cookieHeader mToken
     }

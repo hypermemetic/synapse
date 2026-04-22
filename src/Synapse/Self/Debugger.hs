@@ -247,7 +247,7 @@ testMethod config method cliParams allowUnknown rawJson = do
 
       -- Create a SynapseM environment for buildIR
       logger <- makeLogger Katip.ErrorS  -- Use error-level logger for test command
-      env <- initEnv (T.pack host) port backend logger
+      env <- initEnv (T.pack host) port backend logger Nothing
 
       -- Run buildIR within SynapseM
       buildResult <- runSynapseM env (buildIR [] namespacePath)

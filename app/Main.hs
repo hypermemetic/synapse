@@ -30,7 +30,9 @@ import qualified Data.Text.Encoding as TE
 import Options.Applicative
 import Data.Version (showVersion)
 import qualified Paths_plexus_synapse as Meta
+import System.Directory (doesFileExist, getHomeDirectory)
 import System.Exit (exitFailure, exitSuccess)
+import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 
@@ -81,6 +83,8 @@ data SynapseOpts = SynapseOpts
   , soNoCache       :: Bool          -- ^ Disable IR caching
   , soLogLevel      :: Maybe Text    -- ^ Log level: info, debug, trace
   , soLogSubsystems :: [Text]        -- ^ Filter logs by subsystems (empty = all)
+  , soToken         :: Maybe Text    -- ^ JWT sent as Cookie: access_token=<jwt>
+  , soTokenFile     :: Maybe Text    -- ^ Path to token file (overridden by --token)
   , soNoDeprecationWarnings :: Bool  -- ^ Suppress invocation-time deprecation warnings (IR-15)
   }
   deriving Show
@@ -122,6 +126,37 @@ makeLoggerFromOpts opts = do
     parseLogLevel "info" = Katip.InfoS
     parseLogLevel "debug" = Katip.DebugS
     parseLogLevel _ = Katip.ErrorS  -- Default to error
+
+-- ============================================================================
+-- Token Resolution
+-- ============================================================================
+
+-- | Resolve the auth token to use for this invocation.
+--
+-- Priority:
+--   1. --token <jwt>           (explicit, highest priority)
+--   2. --token-file <path>     (explicit file)
+--   3. ~/.plexus/tokens/<backend>  (per-backend default)
+--
+-- Token files contain just the raw JWT, optionally with a trailing newline.
+resolveToken :: SynapseOpts -> Text -> IO (Maybe Text)
+resolveToken opts backend =
+  case soToken opts of
+    Just tok -> pure (Just tok)
+    Nothing  -> do
+      mPath <- case soTokenFile opts of
+        Just path -> pure (Just (T.unpack path))
+        Nothing   -> do
+          home <- getHomeDirectory
+          let defaultPath = home </> ".plexus" </> "tokens" </> T.unpack backend
+          exists <- doesFileExist defaultPath
+          pure $ if exists then Just defaultPath else Nothing
+      case mPath of
+        Nothing   -> pure Nothing
+        Just path -> do
+          contents <- TIO.readFile path
+          let tok = T.strip contents
+          pure $ if T.null tok then Nothing else Just tok
 
 -- ============================================================================
 -- Argument Splitting
@@ -226,7 +261,8 @@ runWithDiscovery discovery backendName args = do
         Nothing -> do
           -- Protocol handshake failed when verifying backend
           logger <- makeLoggerFromOpts opts
-          env <- initEnv (soHost opts) (soPort opts) backendName logger
+          token <- resolveToken opts backendName
+          env <- initEnv (soHost opts) (soPort opts) backendName logger token
           result <- runSynapseM env (throwBackend (ProtocolHandshakeFailed (backendHost backend) (backendPort backend)) [])
           case result of
             Left err -> do
@@ -241,7 +277,8 @@ runWithDiscovery discovery backendName args = do
       -- where the protocol handshake failed
       maybeDirectBackend <- getBackendAt (soHost opts) (soPort opts)
       logger <- makeLoggerFromOpts opts
-      env <- initEnv (soHost opts) (soPort opts) backendName logger
+      token <- resolveToken opts backendName
+      env <- initEnv (soHost opts) (soPort opts) backendName logger token
       case maybeDirectBackend of
         Nothing -> do
           -- Protocol handshake failed at the specified host:port
@@ -268,9 +305,11 @@ runWithDiscovery discovery backendName args = do
 -- | Run a Hub command with specified backend and connection details
 run :: Text -> Text -> Int -> Args -> IO ()
 run backend host port args = do
-  logger <- makeLoggerFromOpts (argOpts args)
+  let opts = argOpts args
+  logger <- makeLoggerFromOpts opts
   Log.logInfo logger Log.SubsystemCLI $ "Synapse starting: backend=" <> backend <> ", host=" <> host <> ", port=" <> T.pack (show port)
-  env <- initEnv host port backend logger
+  token <- resolveToken opts backend
+  env <- initEnv host port backend logger token
   rendererCfg <- defaultRendererConfig
   Log.logDebug logger Log.SubsystemCLI "Running dispatch..."
   result <- runSynapseM env (dispatch args rendererCfg)
@@ -946,6 +985,12 @@ optsParser = do
   soLogSubsystems <- many $ T.pack <$> strOption
     ( long "log-subsystem" <> metavar "SUBSYSTEM"
    <> help "Filter logs by subsystem: discovery, transport, rpc, schema, cache, navigation (can specify multiple, default: all)" )
+  soToken <- optional $ T.pack <$> strOption
+    ( long "token" <> short 't' <> metavar "JWT"
+   <> help "JWT sent as Cookie: access_token=<jwt> on WebSocket upgrade" )
+  soTokenFile <- optional $ T.pack <$> strOption
+    ( long "token-file" <> metavar "PATH"
+   <> help "Path to token file (default lookup: ~/.plexus/tokens/<backend>)" )
   soNoDeprecationWarnings <- switch
     ( long "no-deprecation-warnings"
    <> help "Suppress invocation-time deprecation warnings on stderr (IR-15)" )

@@ -72,6 +72,7 @@ data SynapseEnv = SynapseEnv
   , seCache   :: !(IORef (HashMap PluginHash PluginSchema))  -- ^ Schema cache
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
   , seLogger  :: !Log.Logger                  -- ^ Structured logger
+  , seToken   :: !(Maybe Text)                -- ^ JWT sent as Cookie: access_token=<jwt>
   }
 
 -- | Errors that can occur during Synapse operations
@@ -136,23 +137,24 @@ runSynapseM' backend action = do
   env <- defaultEnv backend logger
   runSynapseM env action
 
--- | Initialize environment with given host/port/backend/logger
-initEnv :: Text -> Int -> Text -> Log.Logger -> IO SynapseEnv
-initEnv host port backend logger = do
+-- | Initialize environment with given host/port/backend/logger/token
+initEnv :: Text -> Int -> Text -> Log.Logger -> Maybe Text -> IO SynapseEnv
+initEnv host port backend logger token = do
   cache <- newIORef HM.empty
   visited <- newIORef HS.empty
   pure SynapseEnv
-    { seHost = host
-    , sePort = port
+    { seHost    = host
+    , sePort    = port
     , seBackend = backend
-    , seCache = cache
+    , seCache   = cache
     , seVisited = visited
-    , seLogger = logger
+    , seLogger  = logger
+    , seToken   = token
     }
 
 -- | Default environment (localhost:4444, requires backend and logger)
 defaultEnv :: Text -> Log.Logger -> IO SynapseEnv
-defaultEnv backend logger = initEnv "127.0.0.1" 4444 backend logger
+defaultEnv backend logger = initEnv "127.0.0.1" 4444 backend logger Nothing
 
 -- | Throw a navigation error
 throwNav :: NavError -> SynapseM a

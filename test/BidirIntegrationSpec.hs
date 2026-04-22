@@ -25,6 +25,8 @@ import Text.Read (readMaybe)
 import Synapse.IR.Types
 import Synapse.IR.Builder (buildIR)
 import Synapse.Monad
+import qualified Synapse.Log as Log
+import qualified Katip
 
 main :: IO ()
 main = do
@@ -42,7 +44,8 @@ main = do
       putStrLn $ "(backend: " <> T.unpack backend <> ")"
 
       -- Initialize environment
-      env <- initEnv "127.0.0.1" port backend
+      logger <- Log.makeLogger Katip.ErrorS
+      env <- initEnv "127.0.0.1" port backend logger Nothing
 
       -- Build IR once for all tests
       irResult <- runSynapseM env (buildIR [] [])

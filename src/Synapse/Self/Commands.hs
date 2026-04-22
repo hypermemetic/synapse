@@ -56,10 +56,11 @@ dispatch "test" rest params = do
     methodParts | not (null methodParts) -> do
       let method = T.intercalate "." methodParts
       let config = SubstrateConfig
-            { substrateHost = T.unpack host
-            , substratePort = port
-            , substratePath = "/"
+            { substrateHost    = T.unpack host
+            , substratePort    = port
+            , substratePath    = "/"
             , substrateBackend = backend
+            , substrateHeaders = []
             }
       liftIO $ Debugger.testMethod config method methodParams allowUnknown rawJson
     _ ->
