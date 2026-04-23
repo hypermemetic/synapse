@@ -235,11 +235,42 @@ renderSchemaWith _style PluginSchema{..}
       let nameText = K.toText name
           isReq = nameText `elem` required
           (typ, desc) = extractTypeDesc propSchema
-          flag = "--" <> T.replace "_" "-" nameText
-          typStr = " <" <> typ <> ">" <> if isReq then "" else "?"
-          descWords = if T.null desc then [] else map pretty (T.words desc)
-      in fillBreak 20 (pretty flag <> pretty typStr)
-         <+> align (fillSep descWords)
+          srcAnnot = extractParamSourceAnnot propSchema
+          -- REQ-8: when a param has x-plexus-source, it's server-extracted —
+          -- don't emit a --flag form (clients can't supply it). Show its name
+          -- + source annotation inline instead.
+      in case srcAnnot of
+           Just annotation ->
+             fillBreak 20 (pretty nameText)
+               <+> align (pretty ("← " :: Text) <> pretty annotation)
+           Nothing ->
+             let flag = "--" <> T.replace "_" "-" nameText
+                 typStr = " <" <> typ <> ">" <> if isReq then "" else "?"
+                 descWords = if T.null desc then [] else map pretty (T.words desc)
+             in fillBreak 20 (pretty flag <> pretty typStr)
+                <+> align (fillSep descWords)
+
+    -- REQ-8: format an x-plexus-source annotation as a short inline label.
+    -- Returns 'Nothing' when the property has no annotation (i.e. it's an
+    -- ordinary RPC param). Shape recognition matches REQ-6's wire vocabulary.
+    extractParamSourceAnnot :: Value -> Maybe Text
+    extractParamSourceAnnot propSchema = do
+      Object po <- Just propSchema
+      Object src <- KM.lookup "x-plexus-source" po
+      let lookupStr k = case KM.lookup k src of
+            Just (String t) -> Just t
+            _               -> Nothing
+      from <- lookupStr "from"
+      case from of
+        "auth" -> case lookupStr "resolver" of
+          Just r  -> Just ("auth: " <> r)
+          Nothing -> Just "auth"
+        "cookie"  -> Just ("cookie" <> maybe "" (" " <>) (lookupStr "key"))
+        "header"  -> Just ("header" <> maybe "" (" " <>) (lookupStr "key"))
+        "query"   -> Just ("query" <> maybe "" (" " <>) (lookupStr "key"))
+        "derived" -> Just "server-derived"
+        "rpc"     -> Nothing
+        other     -> Just other
 
 -- | Render a method (short form)
 renderMethod :: MethodSchema -> Text
