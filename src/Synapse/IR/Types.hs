@@ -62,6 +62,7 @@ module Synapse.IR.Types
 
 import Control.Applicative ((<|>))
 import Data.Aeson
+import qualified Data.Aeson as Aeson
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -130,6 +131,7 @@ data IR = IR
   , irMethods      :: Map Text MethodDef           -- ^ All methods, keyed by full path (e.g., "cone.chat")
   , irPlugins      :: Map Text [Text]              -- ^ Plugin -> method names mapping
   , irPluginHashes :: Maybe (Map Text PluginHashInfo)  -- ^ V2: Hash information per plugin
+  , irPluginRequests :: Maybe (Map Text Aeson.Value)   -- ^ REQ-5: per-plugin PlexusRequest JSON Schema (Nothing = no request struct)
   }
   deriving stock (Show, Eq, Generic)
   deriving anyclass (ToJSON, FromJSON)
@@ -145,6 +147,7 @@ emptyIR = IR
   , irMethods = Map.empty
   , irPlugins = Map.empty
   , irPluginHashes = Nothing
+  , irPluginRequests = Nothing
   }
 
 -- | Merge two IRs (for combining results from tree walk)
@@ -161,6 +164,11 @@ mergeIR a b = IR
       (Just ha, Just hb) -> Just (Map.union ha hb)  -- Merge hash maps
       (Just ha, Nothing) -> Just ha
       (Nothing, Just hb) -> Just hb
+      (Nothing, Nothing) -> Nothing
+  , irPluginRequests = case (irPluginRequests a, irPluginRequests b) of
+      (Just ra, Just rb) -> Just (Map.union ra rb)
+      (Just ra, Nothing) -> Just ra
+      (Nothing, Just rb) -> Just rb
       (Nothing, Nothing) -> Nothing
   }
 

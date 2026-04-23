@@ -123,6 +123,12 @@ irAlgebra (PluginF schema path childIRs) = do
       childHashes = fromMaybe Map.empty (irPluginHashes childIR)
       allHashes = Map.insert namespace hashInfo childHashes
 
+  -- REQ-5: capture per-plugin PlexusRequest schema (psRequest from wire schema)
+  let childRequests = fromMaybe Map.empty (irPluginRequests childIR)
+      allRequests = case psRequest schema of
+        Just reqV -> Map.insert namespace reqV childRequests
+        Nothing   -> childRequests
+
   pure $ IR
     { irVersion = irVersion emptyIR  -- Use version from emptyIR
     , irBackend = irBackend emptyIR  -- Will be set by buildIR
@@ -132,6 +138,7 @@ irAlgebra (PluginF schema path childIRs) = do
     , irMethods = Map.union localMethods (irMethods childIR)
     , irPlugins = Map.insert namespace pluginMethods (irPlugins childIR)
     , irPluginHashes = Just allHashes  -- V2: Store hash info per plugin
+    , irPluginRequests = if Map.null allRequests then Nothing else Just allRequests
     }
 
 irAlgebra (MethodF method namespace path) = do
@@ -147,6 +154,7 @@ irAlgebra (MethodF method namespace path) = do
     , irMethods = Map.singleton fullPath mdef
     , irPlugins = Map.singleton namespace [methodName method]
     , irPluginHashes = Nothing  -- Methods don't have plugin-level hashes
+    , irPluginRequests = Nothing  -- Methods don't carry request schemas
     }
 
 -- ============================================================================

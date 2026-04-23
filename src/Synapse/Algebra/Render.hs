@@ -21,8 +21,10 @@ module Synapse.Algebra.Render
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Aeson (Value(..))
+import qualified Data.Aeson as Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
+import qualified Data.Vector as V
 import Data.List (intersperse, sortOn)
 import Prettyprinter
 import Prettyprinter.Render.Text (renderStrict)
@@ -95,9 +97,94 @@ renderSchemaWith _style PluginSchema{..}
       , emptyDoc
       , indent 2 $ align $ fillSep $ map pretty $ T.words psDescription
       , emptyDoc
+      , requestDoc      -- REQ-5: render psRequest schema (auth requirements + request fields)
       , childrenDoc
       , methodsDoc
       ]
+
+    -- REQ-5: render the activation's PlexusRequest schema.
+    -- Walks the JSON Schema's properties and emits a "Request requirements:"
+    -- block describing where each field comes from (cookie/header/query/derived).
+    requestDoc = case psRequest of
+      Nothing  -> emptyDoc
+      Just req -> renderRequestSchemaDoc req
+
+    renderRequestSchemaDoc :: Aeson.Value -> Doc ann
+    renderRequestSchemaDoc schemaVal =
+      let mProps = case schemaVal of
+            Aeson.Object o -> KM.lookup "properties" o
+            _              -> Nothing
+          mReq = case schemaVal of
+            Aeson.Object o -> KM.lookup "required" o
+            _              -> Nothing
+          requiredNames = case mReq of
+            Just (Aeson.Array v) -> [n | Aeson.String n <- V.toList v]
+            _                    -> []
+          propPairs = case mProps of
+            Just (Aeson.Object o) -> KM.toList o
+            _                     -> []
+          hasCookieAuth = any
+            (\(k, v) -> case v of
+              Aeson.Object pv ->
+                let from = KM.lookup "x-plexus-source" pv >>= \src -> case src of
+                      Aeson.Object sv -> KM.lookup "from" sv
+                      _               -> Nothing
+                    key = KM.lookup "x-plexus-source" pv >>= \src -> case src of
+                      Aeson.Object sv -> KM.lookup "key" sv
+                      _               -> Nothing
+                in from == Just (Aeson.String "cookie")
+                   && key == Just (Aeson.String "access_token")
+                   && K.toText k `elem` requiredNames
+              _ -> False)
+            propPairs
+          authNotice =
+            if hasCookieAuth
+              then [ pretty ("Authentication required" :: Text)
+                       <+> pretty ("(use --token <jwt>, --cookie access_token=<jwt>, or SYNAPSE_TOKEN)" :: Text)
+                   , emptyDoc ]
+              else []
+          fieldDocs = if null propPairs
+                        then []
+                        else [ pretty ("Request requirements:" :: Text)
+                             , emptyDoc
+                             , indent 2 $ vsep $ map (renderRequestFieldDoc requiredNames) propPairs
+                             , emptyDoc ]
+      in vsep (authNotice ++ fieldDocs)
+
+    renderRequestFieldDoc :: [Text] -> (K.Key, Aeson.Value) -> Doc ann
+    renderRequestFieldDoc requiredNames (k, v) =
+      let name = K.toText k
+          isReq = name `elem` requiredNames
+          (label, keyText, isDerived) = case v of
+            Aeson.Object pv ->
+              let src = KM.lookup "x-plexus-source" pv
+                  fromVal = src >>= \s -> case s of
+                    Aeson.Object so -> KM.lookup "from" so
+                    _               -> Nothing
+                  keyVal = src >>= \s -> case s of
+                    Aeson.Object so -> KM.lookup "key" so
+                    _               -> Nothing
+                  fromTxt = case fromVal of
+                    Just (Aeson.String t) -> t
+                    _                     -> "unknown"
+                  keyTxt = case keyVal of
+                    Just (Aeson.String t) -> " " <> t
+                    _                     -> ""
+                  lbl = case fromTxt of
+                    "cookie"  -> "Cookie"
+                    "header"  -> "Header"
+                    "query"   -> "QueryParam"
+                    "derived" -> "Server-derived"
+                    _         -> "Unknown"
+              in (lbl, keyTxt, fromTxt == "derived")
+            _ -> ("Unknown", "", False)
+          desc = case v of
+            Aeson.Object pv -> case KM.lookup "description" pv of
+              Just (Aeson.String t) -> ": " <> t
+              _                     -> ""
+            _ -> ""
+          reqMark = if isReq && not isDerived then " (required)" else " (optional)"
+      in pretty (label <> keyText <> reqMark <> desc)
 
     childrenDoc = case psChildren of
       Nothing -> emptyDoc

@@ -42,14 +42,62 @@ fetchSchema = do
   Log.logInfo logger Log.SubsystemSchema "Fetching root schema"
   fetchSchemaAt []
 
--- | Convert plexus-protocol TransportError to error message
+-- | Convert plexus-protocol TransportError to error message.
+--
+-- SAFE-5 + REQ-5: detect embedded JSON-RPC semantic error codes in the
+-- protocol-error message and rewrite them with meaningful prefixes.
+-- The wire format wraps RpcError as @"Subscription error: RpcErrorObj
+-- {errCode = N, errMessage = \\"...\\", errData = ...}"@; we parse N
+-- to render semantic prefixes for the four documented codes:
+--
+-- * @-32001@ Authentication required (REQ-5 hint added downstream)
+-- * @-32602@ Invalid parameters
+-- * @-32601@ Method not found
+-- * @-32000@ Execution error
 transportErrorToText :: PT.TransportError -> Text
 transportErrorToText (PT.ConnectionRefused host port) =
   "Connection refused to " <> host <> ":" <> T.pack (show port)
 transportErrorToText (PT.ConnectionTimeout host port) =
   "Connection timeout to " <> host <> ":" <> T.pack (show port)
-transportErrorToText (PT.ProtocolError msg) = "Protocol error: " <> msg
+transportErrorToText (PT.ProtocolError msg) = renderProtocolError msg
 transportErrorToText (PT.NetworkError msg) = "Network error: " <> msg
+
+-- | Inspect a protocol-error message for an embedded JSON-RPC error code
+-- and rewrite with a semantic prefix. Falls back to the original message
+-- when no recognized code is found.
+renderProtocolError :: Text -> Text
+renderProtocolError msg =
+  case extractErrCode msg of
+    Just (-32001) -> "Authentication required: " <> extractErrMessage msg
+                  <> "\nHint: pass --token <jwt>, set SYNAPSE_TOKEN, or place the JWT at ~/.plexus/tokens/<backend>"
+    Just (-32602) -> "Invalid parameters: " <> extractErrMessage msg
+                  <> "\nHint: run with --help for the method to see expected params"
+    Just (-32601) -> "Method not found: " <> extractErrMessage msg
+                  <> "\nHint: run 'synapse <backend>' to list available methods"
+    Just (-32000) -> "Execution error: " <> extractErrMessage msg
+    _             -> "Protocol error: " <> msg
+
+-- | Pull the @errCode = N@ integer out of a 'show'-ed RpcErrorObj.
+extractErrCode :: Text -> Maybe Int
+extractErrCode msg =
+  case T.breakOn "errCode = " msg of
+    (_, rest) | not (T.null rest) ->
+      let after = T.drop (T.length "errCode = ") rest
+          digits = T.takeWhile (\c -> c == '-' || (c >= '0' && c <= '9')) after
+      in case T.unpack digits of
+           "" -> Nothing
+           d  -> Just (read d)
+    _ -> Nothing
+
+-- | Pull the @errMessage = "..."@ string out of a 'show'-ed RpcErrorObj.
+-- Returns the empty string if no message can be parsed.
+extractErrMessage :: Text -> Text
+extractErrMessage msg =
+  case T.breakOn "errMessage = \"" msg of
+    (_, rest) | not (T.null rest) ->
+      let after = T.drop (T.length "errMessage = \"") rest
+      in T.takeWhile (/= '"') after
+    _ -> ""
 
 -- | Convert plexus-protocol TransportError to TransportCategory
 transportErrorToCategory :: PT.TransportError -> TransportErrorCategory

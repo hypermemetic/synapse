@@ -203,6 +203,22 @@ test-suite ir-test
     RecordWildCards
   ghc-options:      -threaded
 
+test-suite schema-decode-test
+  type:             exitcode-stdio-1.0
+  main-is:          SchemaDecodeSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-protocol,
+    aeson >= 2.2 && < 2.3,
+    aeson-qq >= 0.8 && < 0.9,
+    bytestring >= 0.11 && < 0.13,
+    vector >= 0.13 && < 0.14
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded
+
 test-suite typeref-json
   type:             exitcode-stdio-1.0
   main-is:          TypeRefJson.hs
