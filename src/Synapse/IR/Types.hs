@@ -334,6 +334,14 @@ data ParamDef = ParamDef
     --   Defaults to 'Nothing' when the schema lacks @param_schemas@, so
     --   pre-IR-5 producers and non-deprecated parameters are indistinguishable
     --   at the rendering layer.
+  , pdSource      :: Maybe Value
+    -- ^ REQ-6/REQ-9: @x-plexus-source@ extension annotation, when the wire
+    --   schema declared one on this parameter. The value is the raw JSON
+    --   object (e.g. @{ "from": "auth", "resolver": "self.db.validate_user" }@
+    --   or @{ "from": "cookie", "key": "access_token" }@). Consumers (synapse
+    --   renderer, hub-codegen JSDoc) read this to identify where each param
+    --   is sourced from. @Nothing@ means the schema lacked the extension —
+    --   treat as RPC-sourced.
   }
   deriving stock (Show, Eq, Generic)
 
@@ -348,6 +356,7 @@ instance ToJSON ParamDef where
     , "pdRequired"    .= pdRequired
     , "pdDefault"     .= pdDefault
     , "pdDeprecation" .= pdDeprecation
+    , "pdSource"      .= pdSource
     ]
 
 instance FromJSON ParamDef where
@@ -358,6 +367,7 @@ instance FromJSON ParamDef where
     <*> o .:  "pdRequired"
     <*> o .:? "pdDefault"
     <*> o .:? "pdDeprecation"
+    <*> o .:? "pdSource"
 
 -- ============================================================================
 -- Type References

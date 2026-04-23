@@ -475,6 +475,16 @@ extractParamsFromObject namespace o paramSchemas =
           (ps:_) -> paramDeprecation ps
           []     -> Nothing
 
+      -- REQ-6/REQ-9: extract @x-plexus-source@ from each property's schema.
+      -- Carries where the param value comes from (auth, cookie, header,
+      -- query, derived, rpc) so downstream renderers and codegen can
+      -- emit per-param annotations. Nothing means the schema had no
+      -- extension — treated as RPC.
+      extractSource :: Value -> Maybe Value
+      extractSource propSchema = case propSchema of
+        Object po -> KM.lookup "x-plexus-source" po
+        _         -> Nothing
+
       -- Build param defs
       params =
         [ ParamDef
@@ -484,6 +494,7 @@ extractParamsFromObject namespace o paramSchemas =
             , pdRequired = K.toText k `elem` required
             , pdDefault = extractDefault v
             , pdDeprecation = lookupDeprecation (K.toText k)
+            , pdSource = extractSource v
             }
         | (k, v) <- props
         ]
