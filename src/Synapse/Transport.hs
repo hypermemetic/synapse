@@ -24,8 +24,12 @@ module Synapse.Transport
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.Reader (asks)
 import Data.Aeson (Value)
+import qualified Data.ByteString.Char8 as BS8
+import qualified Data.CaseInsensitive as CI
+import qualified Data.List as List
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Network.WebSockets as WS
 
 import Plexus.Client (SubstrateConfig(..), cookieHeader)
 import qualified Plexus.Transport as ST
@@ -302,10 +306,32 @@ getConfig = do
   port    <- asks sePort
   backend <- asks seBackend
   mToken  <- asks seToken
+  cks     <- asks seCookies
+  hdrs    <- asks seHeaders
   pure $ SubstrateConfig
     { substrateHost    = T.unpack host
     , substratePort    = port
     , substratePath    = "/"
     , substrateBackend = backend
-    , substrateHeaders = maybe [] cookieHeader mToken
+    -- SAFE-S04: merge token Cookie + arbitrary --cookie/--header upgrade context.
+    , substrateHeaders = mergeUpgradeHeaders mToken cks hdrs
     }
+
+-- | Build the WS upgrade Headers list from optional token + extra cookies + extra headers.
+-- Cookies are concatenated into a single Cookie header as @key=value; key=value@.
+-- Token (when present) becomes a @access_token=...@ cookie entry merged with the rest.
+mergeUpgradeHeaders :: Maybe Text -> [(Text, Text)] -> [(Text, Text)] -> WS.Headers
+mergeUpgradeHeaders mToken extraCookies extraHeaders =
+  let allCookies = case mToken of
+        Just tok -> ("access_token", tok) : extraCookies
+        Nothing  -> extraCookies
+      cookieHdr = if null allCookies
+        then []
+        else
+          let kv (k, v) = T.unpack k <> "=" <> T.unpack v
+              joined = BS8.pack $ List.intercalate "; " (map kv allCookies)
+          in [(CI.mk "Cookie", joined)]
+      otherHdrs = [ (CI.mk (BS8.pack (T.unpack k)), BS8.pack (T.unpack v))
+                  | (k, v) <- extraHeaders
+                  ]
+  in cookieHdr ++ otherHdrs

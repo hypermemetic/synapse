@@ -22,12 +22,14 @@ import Data.Aeson
 import qualified Data.Aeson.Key as K
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as LBS
+import Data.List (stripPrefix)
 import Data.Maybe (isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.IO as TIO
 import qualified Data.Text.Encoding as TE
 import Options.Applicative
+import System.Environment (getEnvironment)
 import Data.Version (showVersion)
 import qualified Paths_plexus_synapse as Meta
 import System.Directory (doesFileExist, getHomeDirectory)
@@ -37,7 +39,7 @@ import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 
 import Synapse.Schema.Types
-import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), BackendErrorType(..), TransportContext(..), TransportErrorCategory(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse, throwBackend)
+import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), BackendErrorType(..), TransportContext(..), TransportErrorCategory(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse, throwBackend, withRequestContext)
 import qualified Synapse.Log as Log
 import qualified Katip
 import Synapse.Algebra.Navigate
@@ -85,6 +87,8 @@ data SynapseOpts = SynapseOpts
   , soLogSubsystems :: [Text]        -- ^ Filter logs by subsystems (empty = all)
   , soToken         :: Maybe Text    -- ^ JWT sent as Cookie: access_token=<jwt>
   , soTokenFile     :: Maybe Text    -- ^ Path to token file (overridden by --token)
+  , soCookies       :: [(Text, Text)]  -- ^ SAFE-S04/REQ-5: extra --cookie KEY=VALUE entries
+  , soHeaders       :: [(Text, Text)]  -- ^ SAFE-S04/REQ-5: extra --header KEY=VALUE entries
   , soNoDeprecationWarnings :: Bool  -- ^ Suppress invocation-time deprecation warnings (IR-15)
   }
   deriving Show
@@ -130,6 +134,22 @@ makeLoggerFromOpts opts = do
 -- ============================================================================
 -- Token Resolution
 -- ============================================================================
+
+-- | Build the request-context (extra cookies/headers) for the WS upgrade,
+-- combining --cookie/--header flags with SYNAPSE_COOKIE_*/SYNAPSE_HEADER_*
+-- env vars. Env keys are lowercased.
+collectRequestContext :: SynapseOpts -> IO ([(Text, Text)], [(Text, Text)])
+collectRequestContext opts = do
+  envVars <- getEnvironment
+  let envCookies = [ (T.toLower (T.pack k), T.pack v)
+                   | (k0, v) <- envVars
+                   , Just k <- [stripPrefix "SYNAPSE_COOKIE_" k0]
+                   ]
+      envHeaders = [ (T.toLower (T.pack k), T.pack v)
+                   | (k0, v) <- envVars
+                   , Just k <- [stripPrefix "SYNAPSE_HEADER_" k0]
+                   ]
+  pure (soCookies opts ++ envCookies, soHeaders opts ++ envHeaders)
 
 -- | Resolve the auth token to use for this invocation.
 --
@@ -262,7 +282,9 @@ runWithDiscovery discovery backendName args = do
           -- Protocol handshake failed when verifying backend
           logger <- makeLoggerFromOpts opts
           token <- resolveToken opts backendName
-          env <- initEnv (soHost opts) (soPort opts) backendName logger token
+          (cks, hdrs) <- collectRequestContext opts
+          env0 <- initEnv (soHost opts) (soPort opts) backendName logger token
+          let env = withRequestContext cks hdrs env0
           result <- runSynapseM env (throwBackend (ProtocolHandshakeFailed (backendHost backend) (backendPort backend)) [])
           case result of
             Left err -> do
@@ -278,7 +300,9 @@ runWithDiscovery discovery backendName args = do
       maybeDirectBackend <- getBackendAt (soHost opts) (soPort opts)
       logger <- makeLoggerFromOpts opts
       token <- resolveToken opts backendName
-      env <- initEnv (soHost opts) (soPort opts) backendName logger token
+      (cks, hdrs) <- collectRequestContext opts
+      env0 <- initEnv (soHost opts) (soPort opts) backendName logger token
+      let env = withRequestContext cks hdrs env0
       case maybeDirectBackend of
         Nothing -> do
           -- Protocol handshake failed at the specified host:port
@@ -309,7 +333,9 @@ run backend host port args = do
   logger <- makeLoggerFromOpts opts
   Log.logInfo logger Log.SubsystemCLI $ "Synapse starting: backend=" <> backend <> ", host=" <> host <> ", port=" <> T.pack (show port)
   token <- resolveToken opts backend
-  env <- initEnv host port backend logger token
+  (cks, hdrs) <- collectRequestContext opts
+  env0 <- initEnv host port backend logger token
+  let env = withRequestContext cks hdrs env0
   rendererCfg <- defaultRendererConfig
   Log.logDebug logger Log.SubsystemCLI "Running dispatch..."
   result <- runSynapseM env (dispatch args rendererCfg)
@@ -991,7 +1017,23 @@ optsParser = do
   soTokenFile <- optional $ T.pack <$> strOption
     ( long "token-file" <> metavar "PATH"
    <> help "Path to token file (default lookup: ~/.plexus/tokens/<backend>)" )
+  soCookies <- many (parseKv <$> strOption
+    ( long "cookie" <> metavar "KEY=VALUE"
+   <> help "Extra cookie attached to WS upgrade (repeatable; SAFE-S04/REQ-5)" ))
+  soHeaders <- many (parseKv <$> strOption
+    ( long "header" <> metavar "KEY=VALUE"
+   <> help "Extra HTTP header attached to WS upgrade (repeatable; SAFE-S04/REQ-5)" ))
   soNoDeprecationWarnings <- switch
     ( long "no-deprecation-warnings"
    <> help "Suppress invocation-time deprecation warnings on stderr (IR-15)" )
   pure SynapseOpts{..}
+
+-- | Parse a KEY=VALUE pair (used by --cookie/--header). Treats the first '='
+-- as the separator; everything before is the key, everything after is the value.
+parseKv :: String -> (Text, Text)
+parseKv s =
+  let (k, rest) = break (== '=') s
+      v = case rest of
+            '=':vv -> vv
+            _      -> ""
+  in (T.pack k, T.pack v)

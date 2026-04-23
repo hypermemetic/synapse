@@ -22,6 +22,7 @@ module Synapse.Monad
   , SynapseEnv(..)
   , initEnv
   , defaultEnv
+  , withRequestContext
 
     -- * Errors
   , SynapseError(..)
@@ -73,6 +74,8 @@ data SynapseEnv = SynapseEnv
   , seVisited :: !(IORef (HashSet PluginHash))               -- ^ Cycle detection
   , seLogger  :: !Log.Logger                  -- ^ Structured logger
   , seToken   :: !(Maybe Text)                -- ^ JWT sent as Cookie: access_token=<jwt>
+  , seCookies :: ![(Text, Text)]              -- ^ SAFE-S04/REQ-5: extra cookies for WS upgrade
+  , seHeaders :: ![(Text, Text)]              -- ^ SAFE-S04/REQ-5: extra headers for WS upgrade
   }
 
 -- | Errors that can occur during Synapse operations
@@ -137,7 +140,9 @@ runSynapseM' backend action = do
   env <- defaultEnv backend logger
   runSynapseM env action
 
--- | Initialize environment with given host/port/backend/logger/token
+-- | Initialize environment with given host/port/backend/logger/token.
+-- Extra cookies/headers default to empty; use 'withRequestContext' to add
+-- them after construction (SAFE-S04/REQ-5).
 initEnv :: Text -> Int -> Text -> Log.Logger -> Maybe Text -> IO SynapseEnv
 initEnv host port backend logger token = do
   cache <- newIORef HM.empty
@@ -150,7 +155,17 @@ initEnv host port backend logger token = do
     , seVisited = visited
     , seLogger  = logger
     , seToken   = token
+    , seCookies = []
+    , seHeaders = []
     }
+
+-- | Augment a SynapseEnv with extra cookies and headers for the WS upgrade.
+-- (SAFE-S04/REQ-5: --cookie/--header CLI flags and SYNAPSE_COOKIE_*/SYNAPSE_HEADER_* env)
+withRequestContext :: [(Text, Text)] -> [(Text, Text)] -> SynapseEnv -> SynapseEnv
+withRequestContext cookies headers env = env
+  { seCookies = seCookies env ++ cookies
+  , seHeaders = seHeaders env ++ headers
+  }
 
 -- | Default environment (localhost:4444, requires backend and logger)
 defaultEnv :: Text -> Log.Logger -> IO SynapseEnv

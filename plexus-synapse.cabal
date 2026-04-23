@@ -53,6 +53,7 @@ library
     aeson-pretty >= 0.8 && < 0.9,
     text >= 2.0 && < 2.2,
     bytestring >= 0.11 && < 0.13,
+    case-insensitive >= 1.2 && < 1.3,
     websockets >= 0.13 && < 0.14,
     network >= 3.1 && < 3.3,
     async >= 2.2 && < 2.3,
