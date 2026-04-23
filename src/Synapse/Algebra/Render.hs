@@ -155,7 +155,7 @@ renderSchemaWith _style PluginSchema{..}
     renderRequestFieldDoc requiredNames (k, v) =
       let name = K.toText k
           isReq = name `elem` requiredNames
-          (label, keyText, isDerived) = case v of
+          (label, sourceKeyText, isDerived) = case v of
             Aeson.Object pv ->
               let src = KM.lookup "x-plexus-source" pv
                   fromVal = src >>= \s -> case s of
@@ -168,7 +168,7 @@ renderSchemaWith _style PluginSchema{..}
                     Just (Aeson.String t) -> t
                     _                     -> "unknown"
                   keyTxt = case keyVal of
-                    Just (Aeson.String t) -> " " <> t
+                    Just (Aeson.String t) -> " (" <> t <> ")"
                     _                     -> ""
                   lbl = case fromTxt of
                     "cookie"  -> "Cookie"
@@ -180,11 +180,11 @@ renderSchemaWith _style PluginSchema{..}
             _ -> ("Unknown", "", False)
           desc = case v of
             Aeson.Object pv -> case KM.lookup "description" pv of
-              Just (Aeson.String t) -> ": " <> t
+              Just (Aeson.String t) -> " — " <> t
               _                     -> ""
             _ -> ""
-          reqMark = if isReq && not isDerived then " (required)" else " (optional)"
-      in pretty (label <> keyText <> reqMark <> desc)
+          reqMark = if isReq && not isDerived then " required" else " optional"
+      in pretty (label <> " " <> name <> sourceKeyText <> reqMark <> desc)
 
     childrenDoc = case psChildren of
       Nothing -> emptyDoc
