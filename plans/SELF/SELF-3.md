@@ -1,7 +1,7 @@
 ---
 id: SELF-3
 title: "Remove ~/.plexus/tokens/<backend>; migrate to literal: ref on first read"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-2]
 unlocks: [SELF-6]
@@ -50,3 +50,22 @@ After this ticket, the string `~/.plexus/tokens/<backend>` appears nowhere in sy
 Migration to `literal:` is a conservative choice. The user can immediately run `synapse _self <bk> upgrade-to-keychain` (which pushes the resolved value into the OS keychain and rewrites the ref). That's an opt-in posture upgrade, not a surprise.
 
 If a user's legacy token is expired (plausible — see the April InvalidSignature incident), they get the expired token migrated verbatim. `_self show` (SELF-4) then surfaces the expiry clearly, and they can refresh. Better than silently preserving bad state without visibility.
+
+## Verdict (2026-04-24)
+
+Complete. `Synapse.Self.IO.loadDefaults` now calls a `migrateIfNeeded` helper at the top of every invocation:
+
+1. Legacy present, no new file → read the legacy bytes, trim whitespace, construct `StoredDefaults { sdCookies = Map.singleton "access_token" (CredentialRef "literal:<jwt>") }`, write via `writeDefaults` (SELF-5 atomic rename + 0600 chmod because `literal:` is in the encoded bytes), delete the legacy file, and log `[INFO] migrated legacy token file … to … (stored as literal:). Consider: synapse _self <backend> upgrade-to-keychain`. On the same invocation the existing body then reads the freshly-written file naturally — no double-work for the caller.
+2. Legacy + new both present → legacy deleted unread; new file untouched; `[INFO] removed stale legacy token file … (superseded by defaults.json)`.
+3. Empty / whitespace-only legacy → deleted silently; no new file created.
+4. Neither file → no-op.
+
+Migration target is deliberately `literal:<jwt>`, not `keychain://`, per the Notes section: silent permission escalation (and any OS keychain prompt) is an opt-in `synapse _self <backend> upgrade-to-keychain` verb (SELF-8 scope), not a side effect of first-boot.
+
+Direct reads of `~/.plexus/tokens/<backend>` are removed from both repos. In synapse, `resolveToken` in `app/Main.hs` now only consults `--token` / `--token-file`; the persistent per-backend fallback flows through the SELF-2 pipeline inside `buildEnv`. In synapse-cc, `SynapseCC.Auth.resolveToken` delegates its final step to `Synapse.Self.loadDefaults` + `defaultRegistry` — full dedup lands with SELF-6. Help text for `--token` / `--token-file` (both repos) and the `-32001` hint in `Synapse.Transport` now reference `~/.plexus/<backend>/defaults.json` as the persistent store.
+
+`git grep -n 'plexus/tokens'` after the change: zero hits in synapse source outside the migration function's doc/code; zero hits in synapse-cc source. All references outside that function live in `plans/` ticket files.
+
+Tests: new `test/SelfMigrationSpec.hs` covers the full migration matrix (legacy-only → literal: migration + 0600 chmod + INFO line wording; legacy + new → stale-legacy drop with unchanged new file; neither file → empty defaults + no files created; empty / whitespace-only legacy → silent drop; idempotency across two consecutive `loadDefaults` calls). `cabal test plexus-synapse:self-test` runs 111 examples (102 pre-existing + 9 new), 0 failures.
+
+Smoke-tested against the built `synapse` executable under `HOME=/tmp/self3smoke`: migration INFO emitted on stderr, `_self show` surfaces the migrated `literal:` ref (and decodes the embedded JWT), legacy file is gone, new `defaults.json` lands at mode `0600` with the `literal:<jwt>` body under `cookies.access_token`.
