@@ -1,7 +1,7 @@
 ---
 id: SELF-1
 title: "Synapse.Self: shared defaults store module (types, file format, resolver registry)"
-status: Ready
+status: Complete
 type: task
 blocked_by: []
 unlocks: [SELF-2, SELF-4, SELF-7]
@@ -135,3 +135,20 @@ Separating types from resolvers (two modules) lets the registry accept resolvers
 Opaque `literal:` prefers simplicity (no escaping) over URI purity. Users setting arbitrary string values don't fight URL encoding.
 
 The `ResolveError` constructors are the operator-facing error messages that `_self resolve` (SELF-4) surfaces when a reference can't be dereferenced — "keychain item 'uscis/access_token' not found" is more actionable than "error 127."
+
+## Verdict (2026-04-24)
+
+Landed in commit `f06563e7`.
+
+**Modules**
+- `src/Synapse/Self/Types.hs` — `StoredDefaults`, `CredentialRef`, `ScopedDefaults`, `encodeDefaults`, `decodeDefaults`, `currentVersion`, `emptyStoredDefaults`.
+- `src/Synapse/Self/Resolve.hs` — `ParsedUri` / `ParsedUriBody` / `parseUri`, `Resolver` typeclass, `ResolveFn` alias, `NamedResolver`, `ResolverRegistry` (Semigroup/Monoid), `registerResolver`, `registerNamedResolver`, `lookupResolver`, `resolveRef`, `ResolveError`.
+- `src/Synapse/Self.hs` — public re-export surface, `defaultsPath :: Text -> FilePath`.
+
+**Tests**: `test/SelfSpec.hs`, new test-suite `plexus-synapse:test:self-test`. 25 examples, 0 failures. Covers mixed-scheme roundtrip, deterministic key order, two-space indent, unknown-version rejection (exact message), forward-compat tolerance for unknown top-level + nested keys, missing-`defaults`-as-empty, `parseUri` cases (literal, env, keychain, file, query string, bare reject, empty-scheme reject), `mempty` registry returns `ResolveUnknownScheme`, parse-error surfacing via `ResolveParseError`, registered-resolver dispatch, later-registration overrides.
+
+**Decision notes**
+- `defaultsPath` returns a string literally starting with `~/` rather than expanding `$HOME`, per "no IO wiring" in ticket scope. Expansion lives in SELF-2 / SELF-5 callers.
+- `ResolverRegistry` is a `newtype` over `Map Text ResolveFn` with a right-biased `Semigroup` instance so later registrations override earlier ones. Matches the open-registry pattern the ticket described.
+- `Resolver` typeclass retained for consumers that want instance-based declaration, but the registry stores bare `ResolveFn`s — external packages (e.g. a future `plexus-vault`) can register without importing the typeclass.
+- `parseUri` query parser is deliberately minimal (split on `&` then `=`, no URL-decoding) — adequate for v1; if RFC 3986 semantics become load-bearing we can swap in `network-uri` without breaking the `ParsedUri` shape.
