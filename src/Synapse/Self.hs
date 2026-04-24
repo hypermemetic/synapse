@@ -43,12 +43,32 @@ module Synapse.Self
   , envResolver
   , fileResolver
   , defaultRegistry
+
+    -- * Read path (SELF-2): load, resolve, merge
+  , ResolvedDefaults(..)
+  , emptyResolvedDefaults
+  , MethodPath
+  , Cookies
+  , Headers
+  , loadDefaults
+  , resolveAll
+  , merge
   ) where
 
 import Data.Text (Text)
 import qualified Data.Text as T
 import System.FilePath ((</>))
 
+import Synapse.Self.IO
+  ( Cookies
+  , Headers
+  , MethodPath
+  , ResolvedDefaults(..)
+  , emptyResolvedDefaults
+  , loadDefaults
+  , merge
+  , resolveAll
+  )
 import Synapse.Self.Resolve
 import Synapse.Self.Resolve.Default (defaultRegistry)
 import Synapse.Self.Resolve.Env (envResolver)

@@ -40,6 +40,16 @@ import System.IO (hPutStrLn, stderr, hFlush, stdout)
 
 import Synapse.Schema.Types
 import Synapse.Monad (SynapseM, SynapseEnv(..), SynapseError(..), BackendErrorType(..), TransportContext(..), TransportErrorCategory(..), initEnv, runSynapseM, throwNav, throwTransport, throwParse, throwBackend, withRequestContext)
+import qualified Synapse.Self as Self
+  ( CredentialRef(..)
+  , ResolveError(..)
+  , ResolvedDefaults(..)
+  , defaultRegistry
+  , loadDefaults
+  , merge
+  , resolveAll
+  )
+import qualified Control.Exception as E
 import qualified Synapse.Log as Log
 import qualified Katip
 import Synapse.Algebra.Navigate
@@ -179,6 +189,77 @@ resolveToken opts backend =
           pure $ if T.null tok then Nothing else Just tok
 
 -- ============================================================================
+-- Env Construction (SELF-2 read path)
+-- ============================================================================
+
+-- | Render a 'Self.ResolveError' as a human-readable message naming the
+-- failing URI and the underlying reason.
+renderResolveError :: Self.ResolveError -> String
+renderResolveError = \case
+  Self.ResolveUnknownScheme scheme ->
+    "unknown credential scheme: " <> T.unpack scheme
+    <> " (no resolver registered; known schemes: literal, env, file)"
+  Self.ResolveNotFound (Self.CredentialRef uri) ->
+    "credential not found: " <> T.unpack uri
+  Self.ResolveBackendError (Self.CredentialRef uri) msg ->
+    "credential backend error for " <> T.unpack uri <> ": " <> T.unpack msg
+  Self.ResolveParseError msg ->
+    "malformed credential reference: " <> T.unpack msg
+
+-- | Build a fully-wired 'SynapseEnv' for a backend invocation.
+--
+-- SELF-2 read path:
+--
+-- 1. Legacy token resolution (--token / --token-file / ~/.plexus/tokens/<b>)
+-- 2. Collect CLI --cookie / --header flags and SYNAPSE_COOKIE_*/HEADER_* env
+-- 3. Load stored defaults from @~\/.plexus\/\<backend\>\/defaults.json@
+-- 4. Resolve every 'CredentialRef' through the default registry
+--    (literal / env / file)
+-- 5. Wrap the legacy token (if any) as a CLI @access_token@ cookie so it
+--    flows through the same 'Self.merge' and wins over any stored default
+--    — preserving the pre-SELF-2 precedence of the --token flag.
+-- 6. Merge CLI overrides onto resolved stored defaults (CLI wins per key).
+--
+-- On resolve failure: print a clear message and 'exitFailure'. We never
+-- build a half-authenticated 'SynapseEnv'.
+buildEnv :: Text -> Int -> Text -> Log.Logger -> SynapseOpts -> IO SynapseEnv
+buildEnv host port backend logger opts = do
+  -- Legacy token path (unchanged semantically; SELF-3 consolidates).
+  mToken <- resolveToken opts backend
+  (cliCookieList, cliHeaderList) <- collectRequestContext opts
+
+  -- SELF-2: load + resolve + merge.
+  stored <- E.catch (Self.loadDefaults backend) $ \e -> do
+    hPutStrLn stderr $ "Error: " <> show (e :: E.IOException)
+    exitFailure
+  resolved <- Self.resolveAll Self.defaultRegistry stored []
+  resolvedDefaults <- case resolved of
+    Left err -> do
+      hPutStrLn stderr $ "Error resolving defaults for backend '"
+        <> T.unpack backend <> "': " <> renderResolveError err
+      exitFailure
+    Right rd -> pure rd
+
+  -- Fold CLI flags (and the legacy --token / SYNAPSE_TOKEN / token file)
+  -- into the CLI-side maps so the unified 'Self.merge' produces the final
+  -- cookie + header set.
+  let cliCookiesBase = Map.fromList cliCookieList
+      cliCookies = case mToken of
+        Just tok -> Map.insert "access_token" tok cliCookiesBase
+        Nothing  -> cliCookiesBase
+      cliHeaders = Map.fromList cliHeaderList
+      (mergedCookies, mergedHeaders) =
+        Self.merge resolvedDefaults cliCookies cliHeaders
+
+  -- 'seToken = Nothing' here: any access_token cookie already sits in the
+  -- merged cookie map. Transport's mergeUpgradeHeaders joins them into a
+  -- single Cookie header exactly as before.
+  env0 <- initEnv host port backend logger Nothing
+  pure $ withRequestContext (Map.toList mergedCookies)
+                             (Map.toList mergedHeaders)
+                             env0
+
+-- ============================================================================
 -- Argument Splitting
 -- ============================================================================
 -- Main
@@ -281,10 +362,7 @@ runWithDiscovery discovery backendName args = do
         Nothing -> do
           -- Protocol handshake failed when verifying backend
           logger <- makeLoggerFromOpts opts
-          token <- resolveToken opts backendName
-          (cks, hdrs) <- collectRequestContext opts
-          env0 <- initEnv (soHost opts) (soPort opts) backendName logger token
-          let env = withRequestContext cks hdrs env0
+          env <- buildEnv (soHost opts) (soPort opts) backendName logger opts
           result <- runSynapseM env (throwBackend (ProtocolHandshakeFailed (backendHost backend) (backendPort backend)) [])
           case result of
             Left err -> do
@@ -299,10 +377,7 @@ runWithDiscovery discovery backendName args = do
       -- where the protocol handshake failed
       maybeDirectBackend <- getBackendAt (soHost opts) (soPort opts)
       logger <- makeLoggerFromOpts opts
-      token <- resolveToken opts backendName
-      (cks, hdrs) <- collectRequestContext opts
-      env0 <- initEnv (soHost opts) (soPort opts) backendName logger token
-      let env = withRequestContext cks hdrs env0
+      env <- buildEnv (soHost opts) (soPort opts) backendName logger opts
       case maybeDirectBackend of
         Nothing -> do
           -- Protocol handshake failed at the specified host:port
@@ -332,10 +407,7 @@ run backend host port args = do
   let opts = argOpts args
   logger <- makeLoggerFromOpts opts
   Log.logInfo logger Log.SubsystemCLI $ "Synapse starting: backend=" <> backend <> ", host=" <> host <> ", port=" <> T.pack (show port)
-  token <- resolveToken opts backend
-  (cks, hdrs) <- collectRequestContext opts
-  env0 <- initEnv host port backend logger token
-  let env = withRequestContext cks hdrs env0
+  env <- buildEnv host port backend logger opts
   rendererCfg <- defaultRendererConfig
   Log.logDebug logger Log.SubsystemCLI "Running dispatch..."
   result <- runSynapseM env (dispatch args rendererCfg)

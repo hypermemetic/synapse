@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Unit tests for Synapse.Self (SELF-1, SELF-7).
+-- | Unit tests for Synapse.Self (SELF-1, SELF-2, SELF-7).
 --
 -- Covers:
 --   - StoredDefaults roundtrip encode/decode with mixed URI schemes
@@ -11,9 +11,12 @@
 --   - Deterministic key ordering from encodeDefaults
 --   - Empty resolver registry returns ResolveUnknownScheme
 --   - SELF-7: literalResolver, envResolver, fileResolver, defaultRegistry
+--   - SELF-2: loadDefaults / resolveAll / merge
 module Main where
 
-import Control.Exception (bracket, bracket_, finally)
+import Control.Exception (bracket, bracket_, finally, try)
+import qualified Control.Exception as E
+import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
@@ -21,7 +24,8 @@ import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Data.Text.IO as TIO
 import System.Directory
-  ( getHomeDirectory
+  ( createDirectoryIfMissing
+  , getHomeDirectory
   , getTemporaryDirectory
   , removeFile
   , removePathForcibly
@@ -368,6 +372,181 @@ main = hspec $ do
         Map.lookup "X-Env"     resolved `shouldBe` Just (Right "from-env")
         Map.lookup "X-File"    resolved `shouldBe` Just (Right "from-file")
 
+  -- ==========================================================================
+  -- SELF-2: loadDefaults / resolveAll / merge
+  -- ==========================================================================
+
+  describe "loadDefaults" $ do
+    it "returns emptyStoredDefaults when the file is absent" $
+      withBackendDefaults "synapse-self-test-missing" Nothing $ \_ -> do
+        sd <- loadDefaults "synapse-self-test-missing"
+        sd `shouldBe` emptyStoredDefaults
+
+    it "reads and decodes a well-formed defaults.json" $ do
+      let sd = StoredDefaults
+            { sdVersion = 1
+            , sdCookies = Map.fromList
+                [ ("access_token", CredentialRef "literal:jwt-abc") ]
+            , sdHeaders = Map.fromList
+                [ ("X-Trace-Id", CredentialRef "literal:trace-123") ]
+            , sdScopes  = Map.empty
+            }
+      withBackendDefaults "synapse-self-test-ok" (Just (encodeDefaults sd))
+        $ \_ -> do
+          loaded <- loadDefaults "synapse-self-test-ok"
+          loaded `shouldBe` sd
+
+    it "raises an IOError naming the file path on malformed JSON" $ do
+      withBackendDefaults "synapse-self-test-bad" (Just "not json at all")
+        $ \path -> do
+          result <- try (loadDefaults "synapse-self-test-bad")
+            :: IO (Either IOError StoredDefaults)
+          case result of
+            Left ioErr -> do
+              let msg = show ioErr
+              msg `shouldSatisfy` containsSubstring path
+              -- A decoder message should appear somewhere — either the
+              -- aeson error text or our own "failed to parse" prefix.
+              msg `shouldSatisfy` containsSubstring "parse"
+            Right sd ->
+              expectationFailure
+                ("expected IOError, got successful parse: " <> show sd)
+
+    it "raises an IOError on unknown version" $ do
+      let badVersion = BS8.pack "{\"version\": 99, \"defaults\": {}}"
+      withBackendDefaults "synapse-self-test-ver" (Just badVersion) $ \_ -> do
+        result <- try (loadDefaults "synapse-self-test-ver")
+          :: IO (Either IOError StoredDefaults)
+        case result of
+          Left ioErr ->
+            show ioErr `shouldSatisfy` containsSubstring "unsupported version"
+          Right sd ->
+            expectationFailure
+              ("expected IOError, got: " <> show sd)
+
+  describe "resolveAll" $ do
+    let testMethod = ["foo", "bar"] :: MethodPath
+
+    it "returns empty resolved defaults for empty stored defaults" $ do
+      r <- resolveAll defaultRegistry emptyStoredDefaults testMethod
+      r `shouldBe` Right emptyResolvedDefaults
+
+    it "resolves literal-only cookies and headers end-to-end" $ do
+      let sd = StoredDefaults
+            { sdVersion = 1
+            , sdCookies = Map.fromList
+                [ ("access_token", CredentialRef "literal:abc")
+                , ("session",      CredentialRef "literal:xyz")
+                ]
+            , sdHeaders = Map.fromList
+                [ ("X-Trace", CredentialRef "literal:t-1") ]
+            , sdScopes  = Map.empty
+            }
+      r <- resolveAll defaultRegistry sd testMethod
+      case r of
+        Right rd -> do
+          rdCookies rd `shouldBe` Map.fromList
+            [("access_token", "abc"), ("session", "xyz")]
+          rdHeaders rd `shouldBe` Map.fromList [("X-Trace", "t-1")]
+        Left err -> expectationFailure ("expected Right, got " <> show err)
+
+    it "short-circuits on the first unknown scheme" $ do
+      -- Registry without the 'keychain' scheme.
+      let sd = StoredDefaults
+            { sdVersion = 1
+            , sdCookies = Map.fromList
+                [ ("access_token", CredentialRef "keychain://svc/token")
+                , ("session",      CredentialRef "literal:should-not-leak")
+                ]
+            , sdHeaders = Map.empty
+            , sdScopes  = Map.empty
+            }
+      r <- resolveAll defaultRegistry sd testMethod
+      r `shouldBe` Left (ResolveUnknownScheme "keychain")
+
+    it "reports ResolveNotFound for env:// with an unset variable" $
+      withoutEnv "SYNAPSE_SELF_TEST_MISSING_VAR_2B" $ do
+        let ref = CredentialRef "env://SYNAPSE_SELF_TEST_MISSING_VAR_2B"
+            sd  = StoredDefaults
+              { sdVersion = 1
+              , sdCookies = Map.empty
+              , sdHeaders = Map.fromList [("X-K", ref)]
+              , sdScopes  = Map.empty
+              }
+        r <- resolveAll defaultRegistry sd testMethod
+        case r of
+          Left (ResolveNotFound (CredentialRef uri)) ->
+            uri `shouldSatisfy` T.isInfixOf "SYNAPSE_SELF_TEST_MISSING_VAR_2B"
+          other ->
+            expectationFailure ("expected ResolveNotFound, got " <> show other)
+
+    it "does not partial-resolve: failure in cookies discards header refs" $
+      withoutEnv "SYNAPSE_SELF_TEST_MISSING_VAR_2C" $ do
+        let sd = StoredDefaults
+              { sdVersion = 1
+              , sdCookies = Map.fromList
+                  [ ("c", CredentialRef "env://SYNAPSE_SELF_TEST_MISSING_VAR_2C") ]
+              , sdHeaders = Map.fromList
+                  [ ("H", CredentialRef "literal:header-value") ]
+              , sdScopes  = Map.empty
+              }
+        r <- resolveAll defaultRegistry sd testMethod
+        case r of
+          Left _  -> pure ()
+          Right v -> expectationFailure
+            ("expected Left, got Right " <> show v)
+
+    it "threads MethodPath (v1 ignores it; any path resolves equivalently)" $ do
+      let sd = StoredDefaults
+            { sdVersion = 1
+            , sdCookies = Map.fromList [("k", CredentialRef "literal:v")]
+            , sdHeaders = Map.empty
+            , sdScopes  = Map.empty
+            }
+      r1 <- resolveAll defaultRegistry sd []
+      r2 <- resolveAll defaultRegistry sd ["some", "method"]
+      r1 `shouldBe` r2
+
+  describe "merge" $ do
+    it "is identity when CLI maps are empty" $ do
+      let rd = ResolvedDefaults
+            { rdCookies = Map.fromList [("a", "1"), ("b", "2")]
+            , rdHeaders = Map.fromList [("X", "x")]
+            }
+      merge rd Map.empty Map.empty `shouldBe`
+        (rdCookies rd, rdHeaders rd)
+
+    it "passes CLI values through when defaults are empty" $ do
+      let cliC = Map.fromList [("c", "v")]
+          cliH = Map.fromList [("H", "hv")]
+      merge emptyResolvedDefaults cliC cliH `shouldBe` (cliC, cliH)
+
+    it "gives CLI priority over stored defaults on per-key conflict" $ do
+      let rd = ResolvedDefaults
+            { rdCookies = Map.fromList
+                [ ("access_token", "from-stored")
+                , ("other",        "stored-only")
+                ]
+            , rdHeaders = Map.fromList [("X-Trace", "stored-trace")]
+            }
+          cliC = Map.fromList [("access_token", "from-cli")]
+          cliH = Map.fromList [("X-Trace", "cli-trace")]
+          (mergedC, mergedH) = merge rd cliC cliH
+      Map.lookup "access_token" mergedC `shouldBe` Just "from-cli"
+      Map.lookup "other"        mergedC `shouldBe` Just "stored-only"
+      Map.lookup "X-Trace"      mergedH `shouldBe` Just "cli-trace"
+
+    it "unions disjoint key sets without loss" $ do
+      let rd = ResolvedDefaults
+            { rdCookies = Map.fromList [("a", "1")]
+            , rdHeaders = Map.fromList [("X", "x")]
+            }
+          cliC = Map.fromList [("b", "2")]
+          cliH = Map.fromList [("Y", "y")]
+          (mergedC, mergedH) = merge rd cliC cliH
+      mergedC `shouldBe` Map.fromList [("a", "1"), ("b", "2")]
+      mergedH `shouldBe` Map.fromList [("X", "x"), ("Y", "y")]
+
 -- | Set an env var for the duration of an action, restoring any prior
 -- value (or unsetting if it was unset).
 withEnv :: String -> String -> IO a -> IO a
@@ -409,3 +588,33 @@ withTempFileContents contents action = do
 isRight :: Either a b -> Bool
 isRight (Right _) = True
 isRight _         = False
+
+-- | True when the 'show'n error message contains the given substring.
+containsSubstring :: String -> String -> Bool
+containsSubstring needle = T.isInfixOf (T.pack needle) . T.pack
+
+-- | Stage @~\/.plexus\/\<backend\>\/defaults.json@ with the given bytes
+-- (or clear it) for the duration of the action, then restore.
+--
+-- We write a unique-per-test backend subdir so parallel tests don't
+-- collide and so we never perturb a real backend's defaults. The action
+-- receives the absolute file path so it can assert against it.
+withBackendDefaults :: String -> Maybe BS.ByteString -> (String -> IO a) -> IO a
+withBackendDefaults backend mBytes action = do
+  home <- getHomeDirectory
+  let dir  = home </> ".plexus" </> backend
+      path = dir </> "defaults.json"
+  createDirectoryIfMissing True dir
+  -- Snapshot prior state so we can restore it.
+  priorExists <- E.try (BS.readFile path) :: IO (Either E.IOException BS.ByteString)
+  -- Clear any existing file first, then install the test bytes (if any).
+  E.handle (\(_ :: E.IOException) -> pure ()) (removeFile path)
+  case mBytes of
+    Nothing -> pure ()
+    Just bytes -> BS.writeFile path bytes
+  finally
+    (action path)
+    (do E.handle (\(_ :: E.IOException) -> pure ()) (removeFile path)
+        case priorExists of
+          Right bs -> BS.writeFile path bs
+          Left _   -> pure ())

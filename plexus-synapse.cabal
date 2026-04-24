@@ -40,6 +40,7 @@ library
     Synapse.Self
     Synapse.Self.Types
     Synapse.Self.Resolve
+    Synapse.Self.IO
     Synapse.Self.Resolve.Literal
     Synapse.Self.Resolve.Env
     Synapse.Self.Resolve.File
