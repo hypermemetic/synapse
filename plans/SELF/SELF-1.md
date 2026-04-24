@@ -1,27 +1,30 @@
 ---
 id: SELF-1
-title: "Synapse.Self: shared defaults store module (types + file format)"
+title: "Synapse.Self: shared defaults store module (types, file format, resolver registry)"
 status: Pending
 type: task
 blocked_by: []
-unlocks: [SELF-2, SELF-4]
+unlocks: [SELF-2, SELF-4, SELF-7]
 ---
 
 ## Context
 
-synapse today reads a JWT from `~/.plexus/tokens/<backend>` as a one-off special case. It also accepts arbitrary `--cookie KEY=VALUE` and `--header KEY=VALUE` flags per invocation, but there's no way to persist those. Every run starts with an empty slate for non-JWT credentials.
+synapse today reads a JWT from `~/.plexus/tokens/<backend>` as a one-off special case, in plaintext, inheriting the user's umask. We're generalizing this into a per-backend defaults store for cookies and headers — AND we're making the on-disk file a **manifest of credential references**, not a plaintext credential store.
 
-We want a general per-backend **defaults store**: a single on-disk file per backend that holds default cookies and headers, read by synapse at invocation time, writable via a `_self` subcommand. The existing JWT convention collapses into this store as a single cookie default. Shared between synapse and synapse-cc via direct library import (synapse-cc already depends on `plexus-synapse`).
+Values in the file are URIs (`keychain://…`, `env://…`, `file://…`, `vault://…`, `literal:…` as escape hatch) that a resolver registry turns into concrete values at dispatch time. This lets the same config shape support dev laptops (OS keychain), CI (env vars), and production (vault/cloud secret manager) without file format divergence.
+
+Shared between synapse and synapse-cc via direct library import (`plexus-synapse` is already a synapse-cc dep; SELF-6 closes the loop).
 
 ## Goal
 
-Introduce a `Synapse.Self` module in the `plexus-synapse` library defining:
-- The on-disk file format (one JSON file per backend)
-- The in-memory `StoredDefaults` type
+Introduce the `Synapse.Self` module family defining:
+- The on-disk file format (one JSON file per backend, values are URIs)
+- The in-memory `StoredDefaults` / `CredentialRef` types
+- The `Resolver` typeclass and `ResolverRegistry` for scheme dispatch
 - Pure encode/decode functions
 - The path convention
 
-Zero IO wiring yet. Zero CLI wiring. Zero migration. This ticket establishes the contract that downstream tickets consume.
+No IO wiring yet, no CLI wiring, no actual resolvers — those come in SELF-2 (read path), SELF-4 (CLI), SELF-7 (core resolvers), SELF-8 (keychain).
 
 ## File layout
 
@@ -29,51 +32,106 @@ Zero IO wiring yet. Zero CLI wiring. Zero migration. This ticket establishes the
 ~/.plexus/<backend>/defaults.json
 ```
 
-## File format (JSON)
+## File format
 
 ```json
 {
   "version": 1,
   "defaults": {
     "cookies": {
-      "access_token": "eyJ..."
+      "access_token": "keychain://uscis/access_token"
     },
     "headers": {
-      "X-Trace-Id": "abc"
+      "X-Trace-Id": "literal:abc123",
+      "X-API-Key": "env://USCIS_API_KEY"
     }
   },
   "scopes": {}
 }
 ```
 
-- `defaults` — backend-wide defaults applied to every method call.
-- `scopes` — reserved for future per-namespace / per-method overrides (e.g. `"admin": { "cookies": {...} }` or `"admin.users.delete": {...}`). **v1 ignores this field on read**, but the schema accepts it so future tickets (SELF-7+) can land without a breaking migration.
-- `version` — integer; current schema version. Decoders reject unknown versions loudly rather than silently.
+- `defaults.cookies` / `defaults.headers` — map of name → credential-reference URI.
+- `scopes` — reserved for future per-namespace / per-method overrides; v1 parsed-but-ignored.
+- `version` — integer; unknown versions rejected loudly.
+
+## URI scheme contract
+
+Every stored value is one of:
+
+| Form | Example | Meaning |
+|---|---|---|
+| Opaque | `literal:<rawValue>` | Value verbatim after `literal:`. No URL-encoding; JWTs / base64 fit cleanly. |
+| Hierarchical | `scheme://authority/path[?query]` | Scheme determines resolution; interpretation is scheme-specific. |
+
+Schemes reserved in v1:
+- `literal:` — opaque, escape hatch
+- `env://<VAR>` — environment variable
+- `file://<path>` — file contents, trailing whitespace trimmed
+- `keychain://<service>/<account>` — OS credential store
+- `vault://`, `aws-secrets://`, `gcp-secret://` — reserved; not implemented until there's a concrete user
+
+Parsing: split on first `:`; if the remainder begins with `//`, parse as hierarchical URI; otherwise treat as opaque. Invalid schemes surface at resolve-time, not parse-time — the file parses as long as the shape is right.
+
+## Types
+
+```haskell
+-- Synapse.Self.Types
+data StoredDefaults = StoredDefaults
+  { sdVersion :: Int
+  , sdCookies :: Map Text CredentialRef
+  , sdHeaders :: Map Text CredentialRef
+  , sdScopes  :: Map Text ScopedDefaults   -- parsed, v1 unused
+  }
+
+newtype CredentialRef = CredentialRef { unCredentialRef :: Text }
+  -- raw URI; parsed on demand by the resolver registry
+
+-- Synapse.Self.Resolve
+class Resolver r where
+  scheme  :: Proxy r -> Text                                 -- e.g. "keychain"
+  resolve :: r -> ParsedUri -> IO (Either ResolveError Text)
+
+data ResolverRegistry = ResolverRegistry
+  { schemes :: Map Text (ParsedUri -> IO (Either ResolveError Text)) }
+
+data ResolveError
+  = ResolveUnknownScheme Text
+  | ResolveNotFound CredentialRef      -- e.g. keychain item missing, env unset
+  | ResolveBackendError CredentialRef Text
+  | ResolveParseError Text
+  deriving (Show)
+```
 
 ## Acceptance
 
-- [ ] New module `Synapse.Self` in `plexus-synapse` library, exported.
-- [ ] `StoredDefaults` record type with `cookies :: Map Text Text`, `headers :: Map Text Text`, `scopes :: Map Text ScopedDefaults` (v1 scopes are a parsed-but-unused passthrough).
-- [ ] `defaultsPath :: Text -> FilePath` — given a backend name, returns `~/.plexus/<backend>/defaults.json`.
-- [ ] `encodeDefaults :: StoredDefaults -> ByteString` / `decodeDefaults :: ByteString -> Either Text StoredDefaults`. JSON, deterministic key ordering, two-space indent.
-- [ ] Unknown version → `Left "unsupported version: N, expected 1"`.
-- [ ] Missing `defaults` object → treated as empty (not error). Missing file is a separate concern — handled in SELF-2.
-- [ ] Unit tests: roundtrip encode/decode, version-mismatch rejection, unknown-top-level-key tolerance (forward compat).
-- [ ] Export list reviewed — only what SELF-2/4/6 need is public.
+- [ ] `Synapse.Self.Types` exports `StoredDefaults`, `CredentialRef`, `ScopedDefaults`.
+- [ ] `Synapse.Self.Resolve` exports `Resolver`, `ResolverRegistry`, `ResolveError`, `ParsedUri`, and the parsing helper `parseUri :: CredentialRef -> Either Text ParsedUri`.
+- [ ] `defaultsPath :: Text -> FilePath` — returns `~/.plexus/<backend>/defaults.json`.
+- [ ] `encodeDefaults :: StoredDefaults -> ByteString` / `decodeDefaults :: ByteString -> Either Text StoredDefaults`. Deterministic key order, two-space indent.
+- [ ] Unknown `version` → `Left "unsupported version: N, expected 1"`.
+- [ ] Missing `defaults` treated as empty (not error).
+- [ ] `parseUri` handles both opaque (`literal:…`) and hierarchical (`scheme://…`) forms; returns structured `ParsedUri { scheme, opaque / authority+path / query }`.
+- [ ] Unit tests:
+  - Roundtrip encode/decode of a file with mixed URI schemes
+  - Version mismatch rejected
+  - Unknown top-level fields ignored (forward compat)
+  - `parseUri` recognizes `literal:foo`, `env://VAR`, `keychain://svc/account`, `file:///abs/path`, rejects bare strings without scheme
+- [ ] Empty resolver registry `mempty` compiles and returns `ResolveUnknownScheme` for every lookup. (Actual resolvers land in SELF-7/SELF-8.)
+- [ ] Export list reviewed — only what SELF-2/4/7/8 need is public.
 
 ## Out of scope
 
-- Reading from disk (SELF-2).
-- Writing to disk (SELF-5).
-- `_self` subcommand (SELF-4).
-- Migration from `~/.plexus/tokens/<backend>` (SELF-3).
-- Resolution precedence vs CLI flags (SELF-2).
-- Scoped resolution logic (future ticket; v1 stops at the backend level).
+- Reading defaults.json from disk (SELF-2).
+- Writing defaults.json (SELF-5).
+- `_self` CLI subcommand (SELF-4).
+- Any concrete resolver implementation (SELF-7 core, SELF-8 keychain).
+- Migration of legacy tokens file (SELF-3).
+- Scoped resolution logic — scopes field is carried through but unused in v1.
 
 ## Notes
 
-Keeping the scopes field in the schema on day one means the "method-level defaults" capability doesn't require a v2 migration — it just requires the resolver to start reading the field. That's the "architecture could integrate method level" part of the spec.
+Separating types from resolvers (two modules) lets the registry accept resolvers defined outside `plexus-synapse`. A future `plexus-vault` crate could provide a `VaultResolver` without modifying the core — register via `ResolverRegistry.insert "vault" resolveVault`.
 
-JSON rather than TOML because the Haskell JSON story (aeson) is already in the synapse dependency set. No new deps.
+Opaque `literal:` prefers simplicity (no escaping) over URI purity. Users setting arbitrary string values don't fight URL encoding.
 
-The file lives in a per-backend directory (`~/.plexus/<backend>/`) rather than a flat file, so future siblings (logs, cache, per-backend config) have a natural home.
+The `ResolveError` constructors are the operator-facing error messages that `_self resolve` (SELF-4) surfaces when a reference can't be dereferenced — "keychain item 'uscis/access_token' not found" is more actionable than "error 127."

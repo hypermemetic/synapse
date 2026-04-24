@@ -1,57 +1,63 @@
 ---
 id: SELF-2
-title: "Read path: resolve stored defaults and merge with CLI flags"
+title: "Read path: load defaults, dispatch URI resolution, merge with CLI flags"
 status: Pending
 type: task
-blocked_by: [SELF-1]
+blocked_by: [SELF-1, SELF-7]
 unlocks: [SELF-3, SELF-6]
 ---
 
 ## Context
 
-SELF-1 defines the file format and pure types. This ticket wires them into synapse's request-building path so that stored defaults are applied to every RPC call, with CLI `--cookie` / `--header` flags as overrides.
+SELF-1 defines the file format (URIs), types, and resolver registry. SELF-7 lands the core resolvers (`literal`, `env`, `file`). This ticket wires both into synapse's request-building path so stored defaults are loaded from disk, their URI values dispatched through the resolver registry, and the results merged with CLI `--cookie` / `--header` overrides before dispatch.
 
 ## Goal
 
-synapse reads `~/.plexus/<backend>/defaults.json` at invocation time, merges its contents with the CLI-provided flags (most-specific wins), and sends the resulting cookie + header set on the WebSocket upgrade.
+synapse reads `~/.plexus/<backend>/defaults.json`, resolves every `CredentialRef` through the registry, merges with CLI-provided flags (CLI wins), and sends the resulting cookie + header set on the WebSocket upgrade.
 
 ## Resolution chain
 
-Most specific to least specific, per key:
+Most-specific wins, per key:
 
 ```
-1. --cookie / --header CLI flag        (highest)
-2. Stored defaults, scope match        (future: method > namespace > backend)
-3. Stored defaults, backend level      (v1 stops here)
-4. Absent                              (lowest)
+1. --cookie / --header CLI flag          (highest — wraps as literal: internally)
+2. Stored defaults, scope match           (future: method > namespace > backend)
+3. Stored defaults, backend level         (v1 stops here)
+4. Absent                                 (lowest)
 ```
 
-For v1 only the backend level of stored defaults exists (SELF-1). The resolver structure must pass `method_path` through so SELF-7+ can add scope matching without refactoring.
+After merging, every ref is resolved through the registry; resolve failures surface at dispatch time with the URI that failed + the scheme-specific reason.
 
 ## Acceptance
 
-- [ ] `Synapse.Self.loadDefaults :: Text -> IO StoredDefaults` — reads from disk, returns empty defaults if the file is absent (NOT an error). Parse errors surface as IO exceptions with a clear message.
-- [ ] `Synapse.Self.resolve :: StoredDefaults -> MethodPath -> Cookies -> Headers -> (Cookies, Headers)` — pure. Takes stored + CLI overrides, produces the effective set for dispatch. Currently ignores `MethodPath` (backend-level only) but threads it through so future scoped resolution plugs in.
-- [ ] `Synapse.Transport` (or equivalent request builder) calls `loadDefaults` once per invocation, merges with CLI-provided cookies/headers, hands the merged set to the WS upgrade request construction.
-- [ ] If the stored defaults contain `cookies.access_token`, the existing "JWT as cookie" path MUST observe it. In other words, for backends using cookie-auth, users drop their JWT into `defaults.json` and everything else works unchanged. (The legacy `~/.plexus/tokens/<backend>` lookup continues to work until SELF-3 removes it.)
-- [ ] `Synapse.Self.resolveToken` helper — convenience that extracts `cookies.access_token` from the stored defaults for code that today explicitly wants the JWT (e.g. if `--token` CLI flag is absent and `SYNAPSE_TOKEN` env is unset, look here before falling back to the legacy `tokens/<backend>` file).
+- [ ] `Synapse.Self.loadDefaults :: Text -> IO StoredDefaults` — reads from disk, returns empty defaults if the file is absent (NOT an error). Parse errors surface as IO exceptions with clear message + file path.
+- [ ] `Synapse.Self.resolveAll :: ResolverRegistry -> StoredDefaults -> MethodPath -> IO (Either ResolveError ResolvedDefaults)` — takes the store, dispatches every `CredentialRef` through the registry, returns a `ResolvedDefaults` with concrete string values. First error surfaces with the ref that failed; no partial resolution (avoid half-auth'd requests).
+- [ ] `Synapse.Self.merge :: ResolvedDefaults -> Cookies -> Headers -> (Cookies, Headers)` — pure. Merges CLI overrides onto resolved stored values; CLI wins per-key.
+- [ ] The `MethodPath` is threaded through `resolveAll` so SELF-7+ can add scope matching without refactoring. v1 ignores it (backend-level only).
+- [ ] `Synapse.Transport` (or equivalent request-builder) calls `loadDefaults` + `resolveAll` once per invocation, then `merge` with CLI flags, then hands the final set to the WS upgrade.
+- [ ] Resolve errors DO NOT abort the invocation when the failed ref happens to be a header that isn't critical — but DO abort when a cookie marked as required-by-the-backend (e.g. the auth cookie) fails. For v1 simplicity: any resolve failure aborts with a clear error. A future "optional refs" feature can relax this.
+- [ ] If stored defaults contain `cookies.access_token` resolving to a valid JWT-shaped value, the existing cookie-auth path observes it — no special-casing of the token case; it's just a named cookie default.
+- [ ] CLI `--cookie KEY=VALUE` and `--header KEY=VALUE` are internally wrapped as `CredentialRef "literal:VALUE"` so the resolution + merge code is unified.
 - [ ] Tests:
   - Empty defaults + CLI flags → CLI flags pass through
-  - Populated defaults + no CLI flags → stored values applied
-  - Populated defaults + CLI flag with same key → CLI wins
+  - Populated defaults with `literal:` values only + no CLI flags → stored values applied after resolution
+  - CLI flag with same key as a stored ref → CLI wins
+  - Stored ref with unknown scheme → `ResolveUnknownScheme`, dispatch aborts
+  - Stored ref with scheme present but resolution fails (e.g. env var unset) → `ResolveNotFound`, dispatch aborts, error names both the CredentialRef URI and the variable name
   - Malformed JSON → parse error surfaced clearly with file path
   - Missing file → empty defaults, no error
-- [ ] Existing synapse integration tests continue to pass.
+- [ ] Existing synapse integration tests continue to pass with their current configurations.
 
 ## Out of scope
 
-- Migrating the `~/.plexus/tokens/<backend>` file (SELF-3).
-- Writing to `defaults.json` (SELF-5).
-- `_self` CLI surface (SELF-4).
-- Scoped resolution (namespace / method) — structure is in place, implementation deferred.
+- Migrating the legacy `~/.plexus/tokens/<backend>` file (SELF-3).
+- Writing `defaults.json` (SELF-5).
+- `_self` CLI subcommand (SELF-4).
+- Scope-level resolution — structure is in place; implementation deferred.
+- Optional/best-effort refs — v1 treats every resolve failure as fatal.
 
 ## Notes
 
-`loadDefaults` on every invocation is fine — these are small files read once per process. No need for caching or watching.
+`loadDefaults` on every invocation is fine. These are small files, read once per process. The expensive part is `resolveAll` — which for `keychain://` might prompt the user for Keychain access. That's fine for a CLI tool; it happens once per session in practice (Keychain caches the unlock decision).
 
-Priority of the CLI override is deliberately the same as synapse's existing behavior for `--token` vs `SYNAPSE_TOKEN` vs `--token-file` — "most specific wins." Users should not find this surprising.
+Wrapping CLI flags as `literal:` refs internally keeps the merge logic trivial and uniform. No special casing of "this value came from a flag" vs "this value came from a file."

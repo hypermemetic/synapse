@@ -1,6 +1,6 @@
 ---
 id: SELF-4
-title: "`_self` subcommand: show / set / unset / clear / import-token"
+title: "`_self` subcommand: show / set / unset / clear / import-token / upgrade-to-keychain / resolve"
 status: Pending
 type: task
 blocked_by: [SELF-1]
@@ -9,62 +9,94 @@ unlocks: [SELF-5]
 
 ## Context
 
-Stored defaults are useless if you can only read them. Users need a first-class way to inspect and edit the on-disk state without reaching for a text editor. The `_self` namespace is synapse's "this CLI's view of itself talking to a backend" surface — a natural home for manipulating the local defaults store.
+The defaults store is opaque without an inspection + edit surface. `_self` is the subcommand tree that exposes it.
 
-Debugging incidents like the recent InvalidSignature — where a 16-day-old expired token was silently resent 7 times per generation — becomes trivial if `synapse _self uscis show` prints the effective cookies/headers with decoded claim summaries for any JWTs.
+The URI-based storage model (SELF-1) means users need two workflows: (a) "set a value" — the common case, where they just paste a JWT or token — and (b) "set a reference" — where they explicitly store `keychain://…` or `env://…`. The CLI should make both ergonomic without hiding the underlying URI model.
 
 ## Goal
 
-Introduce the `_self` subcommand tree for managing `~/.plexus/<backend>/defaults.json`.
+Introduce `_self` for managing `~/.plexus/<backend>/defaults.json` with full visibility into stored URIs, their resolved values, and credential lifecycle (expiry, posture).
 
 ## Surface
 
 ```
-synapse _self <backend> show
-    → prints effective defaults; for values that parse as JWTs, also
-      prints summary: iss, aud, sub, exp (with "expired N days ago"
-      or "valid for N hours" marker). Does NOT print raw signatures.
+synapse _self <backend> show [--json]
+    → prints effective defaults as a table. For each entry:
+      * the key, the stored URI, and the resolved value
+      * for resolved values that look like JWTs: decoded summary
+        (alg, kid, iss, aud, sub, exp with human-relative rendering)
+      * explicit indication of resolution source (keychain/env/file/literal)
+      * resolution failures shown inline with the ResolveError reason
+      * JWT signatures NEVER printed
 
-synapse _self <backend> set cookie <name> <value>
-synapse _self <backend> set header <name> <value>
-    → atomically updates defaults.json. Creates the file if missing.
-      Reads <value> from stdin if passed as "-".
+synapse _self <backend> set cookie <name> <value-or-uri>
+synapse _self <backend> set header <name> <value-or-uri>
+    → if <value-or-uri> matches a known scheme (literal:, keychain://,
+      env://, file://), stored as-is.
+      Otherwise wrapped as literal:<value>.
+      Supports "-" to read from stdin.
+
+synapse _self <backend> set-from-stdin cookie <name>
+synapse _self <backend> set-from-stdin header <name>
+    → reads entire stdin, stores as literal:<value>. Explicit form
+      for when value might accidentally start with "scheme:".
+
+synapse _self <backend> set-secret cookie <name>
+synapse _self <backend> set-secret header <name>
+    → reads stdin, pushes to OS keychain (service=plexus,
+      account=<backend>/<kind>/<name>), stores keychain://<…> reference.
+      Requires SELF-8.
 
 synapse _self <backend> unset cookie <name>
 synapse _self <backend> unset header <name>
-    → removes the named entry; no-op if already absent.
+    → removes the entry. Also offers to delete keychain items
+      if the removed ref was keychain:// (prompt; --yes to skip).
 
-synapse _self <backend> clear
-    → deletes defaults.json entirely (not just empties it). Prompts
-      for confirmation unless --yes is passed.
+synapse _self <backend> resolve cookie <name>
+synapse _self <backend> resolve header <name>
+    → prints the URI + resolved value + JWT summary (if applicable).
+      Debugging aid: identifies exactly which resolver ran.
 
-synapse _self <backend> import-token <path>
-    → reads a JWT from the given file (or stdin if "-"), stores it as
-      cookies.access_token. Convenience for the common case.
+synapse _self <backend> upgrade-to-keychain [cookie|header] [<name>]
+    → for literal: refs, push the value into keychain, rewrite the
+      ref as keychain://. Applies to all entries or a single named
+      one. Requires SELF-8.
+
+synapse _self <backend> clear [--yes]
+    → deletes defaults.json entirely. Prompts for confirmation
+      unless --yes. Does NOT touch keychain items (use unset for that).
+
+synapse _self <backend> import-token <path-or-->
+    → convenience for the common case. Reads a JWT from file or
+      stdin. By default stores as literal: (preserves behavior).
+      With --to-keychain, pushes to keychain first.
 ```
 
 ## Acceptance
 
-- [ ] New top-level subcommand `_self` in synapse's CLI option parser. Subcommand dispatch handles the verbs above.
-- [ ] `show` output is human-readable. Cookies and headers are printed as a table. JWT summaries are clearly labeled and MUST NOT print the signature bytes; only header claims (`alg`, `kid`) and payload claims (`iss`, `aud`, `sub`, `exp`, `iat`, `sid`, `preferred_username`, `email` if present).
-- [ ] For JWT `exp`: print both the raw timestamp AND a human-relative interpretation (`expired 16d ago` / `valid for 4m 32s`).
-- [ ] `set cookie` / `set header` / `unset cookie` / `unset header` / `clear` / `import-token` all write through `Synapse.Self.writeDefaults` (lands in SELF-5 with atomic + chmod 600).
-- [ ] Errors printed to stderr with clear messages, non-zero exit code. Malformed defaults file blocks read/write with pointer to the file path.
-- [ ] Help text for each subcommand accessible via `synapse _self <backend> --help` etc.
-- [ ] Integration test: end-to-end `set` → `show` → `unset` → `clear` round trip against a tmp HOME.
-- [ ] `_self` also works with synapse-cc (SELF-6 surfaces this).
+- [ ] New `_self` top-level subcommand tree in synapse's option parser. Dispatch handles the verbs above.
+- [ ] `show` output is human-readable (and `--json` form for programmatic use). JWT summaries label each claim clearly; expiry renders as "expired 16d ago" or "valid for 4m 32s"; signatures never printed.
+- [ ] `show` indicates the resolver for each value: `keychain` / `env` / `file` / `literal` — with the raw URI adjacent.
+- [ ] `show` surfaces `ResolveError`s inline with the URI that failed and the scheme-specific reason: "env var USCIS_JWT not set" / "keychain item uscis/access_token not found".
+- [ ] `set` with heuristic: auto-literal unless the value parses as a known scheme. `set-from-stdin` bypasses the heuristic.
+- [ ] `set-secret` + `upgrade-to-keychain` gated on SELF-8 availability; emit a friendly error if keychain resolver isn't registered on the current platform.
+- [ ] All write operations route through `Synapse.Self.writeDefaults` (SELF-5 semantics: atomic, chmod 600).
+- [ ] `resolve` prints the resolved value to stdout, error to stderr; non-zero exit on failure.
+- [ ] Help text accessible via `synapse _self <backend> --help`, `synapse _self <backend> <verb> --help`.
+- [ ] Integration test: end-to-end round trip `set → show → resolve → unset → clear` against a tmp HOME.
+- [ ] `_self` also available in synapse-cc (SELF-6 surfaces it via shared command handlers).
 
 ## Out of scope
 
-- Atomic-write + chmod semantics (SELF-5).
-- Migrating legacy token file (SELF-3).
-- Scoped defaults (namespace / method) — `set` at namespace/method level is a future extension; v1 is backend-level only.
-- Interactive "login" flow (the user explicitly scoped this out: "I don't need synapse to know how to fetch the token, just how to store it").
+- Atomic-write + chmod (SELF-5).
+- Migrating legacy tokens file (SELF-3).
+- Scoped defaults commands (namespace / method level) — v1 is backend-level.
+- Interactive login / token fetching — the user has scoped this out entirely.
 
 ## Notes
 
-`_self` naming intentionally mirrors `_info`, `_meta` etc. — underscore-prefix methods that are about the CLI/backend relationship rather than the application schema.
+`set` heuristic: a string matches "known scheme" if it begins with `literal:`, `env://`, `file://`, `keychain://`, `vault://`, or any registered scheme. Bare strings become `literal:…`. This keeps the common case (paste a JWT, call it done) frictionless while not hiding the URI model.
 
-The JWT decoding for `show` is small: split on `.`, base64-decode payload, JSON-parse, filter allowed claims. Do NOT verify the signature (we have no key). Presentation-only.
+The `upgrade-to-keychain` command is the bridge for users who start with the migrated-from-tokens-file `literal:` refs and want better security posture. One command turns `literal:<jwt>` into `keychain://…` with the JWT pushed into the OS keychain.
 
-Consider a `--json` flag on `show` for programmatic consumption. Low priority; note it if not done.
+Consider ordering: `show` is the highest-value command day one. Every incident (like the recent InvalidSignature one) becomes "run `_self show`, see the expired JWT flagged, refresh it" instead of a multi-hour debug session.

@@ -1,6 +1,6 @@
 ---
 id: SELF-5
-title: "Safe write: atomic + chmod 600 on defaults.json"
+title: "Safe write: atomic rename + mode-sensitive chmod on defaults.json"
 status: Pending
 type: task
 blocked_by: [SELF-4]
@@ -9,40 +9,46 @@ unlocks: []
 
 ## Context
 
-`defaults.json` holds session cookies and bearer tokens — reusable credential material. Today's `~/.plexus/tokens/<backend>` file inherits the user's umask (typically 644 on macOS), meaning anyone on the machine with read access to the home directory can grab the JWT. That was a latent issue for the legacy path; we should not carry it forward.
-
-Additionally, any write sequence (read → modify → write) needs to be crash-safe. A partially-written `defaults.json` corrupts the store and blocks future reads until the user hand-edits it.
+`defaults.json` after SELF is a manifest of credential references. Some refs (`literal:…`) still carry raw values; others (`keychain://…`, `env://…`, `file://…`) do not. The file's sensitivity depends on its contents. Write safety (atomicity) and permissions (chmod) both matter, but the policy around mode can be refined once we know whether any `literal:` refs are present.
 
 ## Goal
 
-Every write to `defaults.json` is (a) atomic via write-to-temp + rename, and (b) chmod 600 after write. Reads refuse to proceed if permissions are wider than the user expects.
+Every write to `defaults.json` is (a) atomic via write-to-temp + rename, and (b) chmod-enforced when the file contains literal credentials. Reads warn loudly if permissions are wider than recommended.
 
 ## Acceptance
 
 - [ ] `Synapse.Self.writeDefaults :: Text -> StoredDefaults -> IO ()`:
-  1. Create parent directory `~/.plexus/<backend>/` if missing (mode 700).
-  2. Write encoded JSON to `~/.plexus/<backend>/.defaults.json.tmp` (or similar).
-  3. `chmod 600` on the temp file.
-  4. `rename` temp → `defaults.json` (atomic on POSIX).
-  5. On any failure, remove the temp file before propagating the error.
-- [ ] Parent directory created with mode 700 (drwx------). If it already exists with wider permissions, log a WARN and continue. Do NOT chmod an existing directory — user may have deliberate structure.
-- [ ] `loadDefaults` checks the file's mode on Unix. If world/group readable (mode & 0o077 != 0), log a WARN naming the file and the recommended fix (`chmod 600 <path>`). Do not refuse to read — just warn, so inherited-from-legacy files don't hard-break.
-- [ ] Legacy tokens file migration (SELF-3) writes the new file through `writeDefaults`, inheriting these semantics.
+  1. Create parent directory `~/.plexus/<backend>/` if missing, mode 0700.
+  2. Encode `StoredDefaults` to JSON.
+  3. Write to `~/.plexus/<backend>/.defaults.json.tmp`.
+  4. Inspect the encoded content: if ANY value starts with `literal:`, the file is "sensitive" → chmod 0600 on the temp file before rename. Otherwise, chmod 0644 is acceptable (manifest-only; no secrets in-file).
+  5. Atomic `rename` temp → `defaults.json`.
+  6. On any failure, remove the temp file before propagating the error.
+- [ ] Parent directory created mode 0700 when freshly created. Existing directory with wider permissions: WARN, do not chmod (user may have structure).
+- [ ] `loadDefaults` checks the file's mode on Unix:
+  - If the file contains any `literal:` values AND mode has group/world bits set (`mode & 0o077 != 0`): WARN naming the file and recommending `chmod 600 <path>`. Read succeeds.
+  - If the file contains only non-literal refs: any mode is fine; no warning.
+  - Windows: skip mode semantics (not applicable).
+- [ ] Legacy tokens migration (SELF-3) writes through `writeDefaults`, inheriting the chmod policy. Since the migration produces a `literal:` entry, the migrated file ends up at 0600.
 - [ ] Tests:
-  - Write on a fresh home: file exists with mode 600.
-  - Write when parent dir exists: file has mode 600, parent dir untouched.
-  - Simulated write failure (e.g. disk full): temp file cleaned up, no partial `defaults.json`.
-  - Read of a world-readable file: WARN emitted, read succeeds.
-- [ ] Windows: skip chmod semantics (not applicable). Atomic rename is still required. Note the permission enforcement gap in the module doc.
+  - Write file with `literal:` ref → file mode 0600.
+  - Write file with only `keychain://` refs → file mode 0644.
+  - Simulated write failure (disk full, permission denied) → temp file cleaned up, no partial `defaults.json`.
+  - Read world-readable file with `literal:` content → WARN emitted; read succeeds.
+  - Read world-readable file with only `keychain://` refs → no warning.
+- [ ] Windows: atomic rename still required. Permission enforcement noted as platform-gap in the module doc.
 
 ## Out of scope
 
-- Encryption of the file at rest (separate concern; OS-level disk encryption is the assumed primitive).
-- Key-derivation / password-protecting the file (out of scope for synapse; left to OS keychain integrations if users want it).
-- Access control beyond the user: the file is owner-only; group/world excluded. Users needing team-shared defaults use env vars or CI secrets, not this file.
+- Encryption at rest (OS disk encryption is the assumed primitive).
+- Password-protecting the file.
+- Key-derivation from a passphrase.
+- Team-shared defaults (out of scope; users use env vars / CI secrets for that, wired via `env://` refs).
 
 ## Notes
 
-The temp-file-then-rename pattern is the canonical POSIX atomic-write. On macOS and Linux this is safe across power loss (within fsync constraints — acceptable for this use case). The parent directory's mode-700 creation is defense in depth: even if someone chmod'd the file wider later, the directory still gatekeeps access.
+The mode policy is deliberately content-aware. A file with only `keychain://` refs is strictly a manifest — readable by anyone and still safe. Enforcing 0600 on a non-sensitive manifest is busywork without benefit. Enforcing it when `literal:` values are present keeps the security posture of the legacy tokens file without surprise over-locking.
 
-"Warn don't refuse" on permissive-mode read is the right tradeoff for a dev tool. Users upgrading from the legacy 644 file will get one WARN per invocation until they `chmod 600`; escalating to hard-refuse would be user-hostile during the migration window.
+Users who want a uniformly 0600 posture regardless of contents can set `umask 077` in their shell; the temp file respects umask before our explicit chmod.
+
+Atomic write is non-negotiable. Half-written `defaults.json` during an abrupt kill (CTRL-C mid-`_self set`) would corrupt the store and require hand-editing.
