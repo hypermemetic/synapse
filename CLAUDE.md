@@ -84,6 +84,33 @@ Arguments are derived from JSON Schema. The CLI accepts simple values:
 - Booleans: `--ephemeral true`
 - Raw JSON override: `-p '{"custom": "params"}'`
 
+## Credentials & `_self`
+
+Per-backend credential defaults live at `~/.plexus/<backend>/defaults.json`. Each cookie/header value is a **credential-reference URI** resolved at request time — never a raw secret in the file unless using the `literal:` escape hatch.
+
+```bash
+# Inspect; decodes JWTs and flags expired tokens
+synapse _self <backend> show
+
+# Set values (bare value auto-wraps as literal:)
+synapse _self <backend> set cookie access_token "eyJ..."
+synapse _self <backend> set header X-API-Key "env://MY_API_KEY"
+
+# Import a JWT file; clear the whole store
+synapse _self <backend> import-token ~/jwt.txt
+synapse _self <backend> clear --yes
+```
+
+**URI schemes:** `literal:` (verbatim), `env://VAR` (env var), `file:///path` (file contents, trailing newline stripped), `keychain://svc/acct` (OS keychain — macOS implementation pending SELF-8; the URI parses and appears in `show` but resolution errors cleanly).
+
+**Priority chain** on each invocation: `--token` / `SYNAPSE_TOKEN` env / `--token-file` / stored `cookies.access_token` — first match wins. CLI `--cookie`/`--header` flags override stored values per key.
+
+**Legacy migration:** the pre-SELF `~/.plexus/tokens/<backend>` file auto-migrates to `defaults.json` (as `literal:<jwt>`) on first read. Migration is deliberate about preserving current security posture; users opt into keychain storage via `_self upgrade-to-keychain` once SELF-8 lands.
+
+**Shared with synapse-cc:** the `Synapse.Self` module family is the canonical implementation. `synapse-cc _self …` is the identical subcommand tree, backed by the same handler.
+
+Related tickets: `plans/SELF/SELF-1..8.md` (1–7 Complete; 8 deferred for user-attended keychain rollout).
+
 ## Low-Level Plexus RPC
 
 For debugging or when synapse isn't available, use `websocat` directly.

@@ -229,6 +229,90 @@ synapse substrate cone chat -p '{
 
 Path parameters (`--path`, `--working_dir`, etc.) expand `~`, resolve relative paths, and substitute `$ENV` variables automatically.
 
+## Credentials & Headers
+
+Synapse sends a JWT as `Cookie: access_token=<jwt>` on WebSocket upgrade when one is available, plus any extra cookies or headers you specify. All of these come from a single per-backend defaults file with a priority chain for per-invocation overrides.
+
+### Defaults store
+
+Each backend has a JSON file at `~/.plexus/<backend>/defaults.json` holding default cookies and headers. Values are **credential-reference URIs**, not raw secrets — synapse resolves them at request time.
+
+```json
+{
+  "version": 1,
+  "defaults": {
+    "cookies": {
+      "access_token": "literal:eyJhbGc..."
+    },
+    "headers": {
+      "X-API-Key": "env://MY_API_KEY"
+    }
+  },
+  "scopes": {}
+}
+```
+
+Supported schemes:
+
+| Scheme | Example | Meaning |
+|---|---|---|
+| `literal:` | `literal:eyJ...` | Raw value verbatim after the colon. |
+| `env://` | `env://MY_JWT` | Read from environment variable. |
+| `file://` | `file:///abs/path` | File contents (trailing newline stripped). |
+| `keychain://` | `keychain://uscis/access_token` | OS keychain item (macOS; other platforms pending). |
+
+File mode is content-aware: `0600` if any `literal:` value is present, `0644` if the file is a pure manifest of references.
+
+### Managing defaults: the `_self` subcommand
+
+```bash
+# Inspect current state — decodes JWTs, flags expired tokens
+synapse _self <backend> show
+
+# Set a value (auto-wrapped as literal: unless you provide a scheme)
+synapse _self <backend> set cookie access_token "eyJ..."
+synapse _self <backend> set header X-API-Key "env://MY_API_KEY"
+
+# Read from stdin (always literal:, bypasses the scheme heuristic)
+cat my-jwt.txt | synapse _self <backend> set-from-stdin cookie access_token
+
+# Import a JWT file into cookies.access_token
+synapse _self <backend> import-token ~/Downloads/jwt.txt
+
+# Resolve a single value (debug): prints the resolved concrete value
+synapse _self <backend> resolve cookie access_token
+
+# Remove entries
+synapse _self <backend> unset cookie access_token
+synapse _self <backend> clear --yes
+```
+
+`show` decodes JWT-shaped values and prints `alg`, `kid`, `iss`, `aud`, `sub`, `exp` (with human-relative rendering like `"expired 15d 23h ago"` or `"valid for 4m 32s"`), `iat`, `preferred_username`, `email`. Signatures are never printed.
+
+### Per-invocation overrides
+
+Four CLI paths populate credentials at call time, highest priority first:
+
+```bash
+# --token takes a JWT, sends it as Cookie: access_token=<jwt>
+synapse --token eyJ... <backend> <method>
+
+# SYNAPSE_TOKEN env
+SYNAPSE_TOKEN=eyJ... synapse <backend> <method>
+
+# --token-file reads from a path
+synapse --token-file ~/tokens/uscis <backend> <method>
+
+# --cookie / --header add arbitrary key/values on the upgrade request
+synapse --cookie session=abc --header X-Trace-Id=xyz <backend> <method>
+```
+
+Invocation flags override the defaults store per key. CLI flags apply only to that one call; they don't write to disk.
+
+### Legacy token file
+
+The pre-SELF convention was `~/.plexus/tokens/<backend>` holding a raw JWT. On the first `loadDefaults` call for a backend that has a legacy file but no `defaults.json`, synapse auto-migrates: the JWT becomes `cookies.access_token = literal:<jwt>` in the new file, and the legacy file is deleted. An INFO log line names both paths and suggests upgrading to keychain storage.
+
 ## Output Rendering
 
 Synapse renders streaming responses through a Mustache template pipeline:
