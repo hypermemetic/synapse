@@ -1,7 +1,7 @@
 ---
 id: SELF-4
 title: "`_self` subcommand: show / set / unset / clear / import-token / upgrade-to-keychain / resolve"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-1]
 unlocks: [SELF-5]
@@ -100,3 +100,16 @@ synapse _self <backend> import-token <path-or-->
 The `upgrade-to-keychain` command is the bridge for users who start with the migrated-from-tokens-file `literal:` refs and want better security posture. One command turns `literal:<jwt>` into `keychain://…` with the JWT pushed into the OS keychain.
 
 Consider ordering: `show` is the highest-value command day one. Every incident (like the recent InvalidSignature one) becomes "run `_self show`, see the expired JWT flagged, refresh it" instead of a multi-hour debug session.
+
+## Verdict (2026-04-24)
+
+Landed as `Synapse.Self.Command` with every verb wired through a single `runSelfCommand :: SelfCommand -> IO ExitCode` entry point. The library-side ADT + handler split means SELF-6 (`synapse-cc _self`) gets the full surface for free — no duplication.
+
+Highlights:
+- `show` renders a two-section (Cookies / Headers) human-readable table, inlines the JWT summary (alg, kid, iss, aud, sub, exp with "expired 16d 4h ago" prose, iat, preferred_username, email) for any resolved value that's JWT-shaped, and surfaces `ResolveError`s inline with the failing URI + reason. Signatures are never printed — not even in `--json`.
+- `set` heuristic is a static prefix list (`knownSchemes`); SELF-4 can't consult the runtime registry because SELF-8's keychain resolver wires in dynamically.
+- `set-secret` / `upgrade-to-keychain` / `import-token --to-keychain` all route to one `keychainUnavailable` helper that prints a consistent "SELF-8 pending" message and exits with code 2 (distinct from the generic-error code 1).
+- `writeDefaults` landed as a stub in `Synapse.Self.IO` (plain `BS.writeFile` + `createDirectoryIfMissing`); SELF-5 will tighten to atomic + chmod 600 in place without changing the call sites.
+- `app/Main.hs` routing uses a legacy-subcommand allowlist (`template` / `scan` / `debug` / `validate` / `test` / `--help` / `-h`). Everything else under `_self` routes to the SELF-4 parser, which lets `synapse _self <backend>` (no verb) fall into the new help surface naturally.
+
+Tests: 92 `self-test` examples, 30 new. Covers the set-value heuristic, JWT decode (incl. `aud` as array and padding-stripped URL-safe base64), `renderRelativeExpiry` prose, keychain-gated exit codes, and a full `set → show → resolve → unset → clear` round-trip against a temp HOME.
