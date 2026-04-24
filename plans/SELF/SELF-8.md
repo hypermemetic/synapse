@@ -1,7 +1,7 @@
 ---
 id: SELF-8
 title: "keychain:// resolver (macOS Keychain; Linux Secret Service; Windows Credential Manager)"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-1]
 unlocks: []

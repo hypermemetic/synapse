@@ -1,7 +1,7 @@
 ---
 id: SELF-4
 title: "`_self` subcommand: show / set / unset / clear / import-token / upgrade-to-keychain / resolve"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-1]
 unlocks: [SELF-5]

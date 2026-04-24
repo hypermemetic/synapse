@@ -1,7 +1,7 @@
 ---
 id: SELF-5
 title: "Safe write: atomic rename + mode-sensitive chmod on defaults.json"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-4]
 unlocks: []

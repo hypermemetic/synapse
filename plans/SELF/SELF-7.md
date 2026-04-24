@@ -1,7 +1,7 @@
 ---
 id: SELF-7
 title: "Core resolvers: literal, env, file"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-1]
 unlocks: [SELF-2]

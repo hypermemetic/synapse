@@ -1,7 +1,7 @@
 ---
 id: SELF-3
 title: "Remove ~/.plexus/tokens/<backend>; migrate to literal: ref on first read"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-2]
 unlocks: [SELF-6]

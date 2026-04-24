@@ -1,7 +1,7 @@
 ---
 id: SELF-2
 title: "Read path: load defaults, dispatch URI resolution, merge with CLI flags"
-status: Pending
+status: Ready
 type: task
 blocked_by: [SELF-1, SELF-7]
 unlocks: [SELF-3, SELF-6]

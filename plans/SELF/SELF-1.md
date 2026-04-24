@@ -1,7 +1,7 @@
 ---
 id: SELF-1
 title: "Synapse.Self: shared defaults store module (types, file format, resolver registry)"
-status: Pending
+status: Ready
 type: task
 blocked_by: []
 unlocks: [SELF-2, SELF-4, SELF-7]
