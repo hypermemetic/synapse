@@ -1,7 +1,7 @@
 ---
 id: SELF-7
 title: "Core resolvers: literal, env, file"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-1]
 unlocks: [SELF-2]
@@ -55,3 +55,24 @@ These three cover 90% of CI/CD and dev workflows. Keychain (SELF-8) is the other
 `literal:` is deliberately opaque (no `//`, no URL-encoding) to keep it as dumb as possible — the common case is "paste a JWT, don't make me think about encoding."
 
 `env://` using the authority slot for variable names is a slight RFC stretch — authority is supposed to be host:port. But it reads right and everyone understands it. Alternatives like `env:VAR` (opaque) or `env:///VAR` (path) are uglier for no gain.
+
+## Verdict (2026-04-24)
+
+Landed in commit `874906df` — `feat(SELF-7): core resolvers — literal, env, file`.
+
+Shipped:
+
+- `Synapse.Self.Resolve.Literal` — `literalResolver :: ResolveFn`, opaque-only dispatch, body returned verbatim.
+- `Synapse.Self.Resolve.Env` — `envResolver :: ResolveFn`, hierarchical dispatch via `System.Environment.lookupEnv`; unset → `ResolveNotFound`.
+- `Synapse.Self.Resolve.File` — `fileResolver :: ResolveFn`, path = `authority ++ path`, `~`/`~/` expansion via `getHomeDirectory`, single trailing `\n` stripped, `isDoesNotExistError` → `ResolveNotFound`, everything else → `ResolveBackendError`.
+- `Synapse.Self.Resolve.Default` — `defaultRegistry :: ResolverRegistry` pre-registers the three under `"literal"`, `"env"`, `"file"`.
+- `Synapse.Self` re-exports the resolver functions and `defaultRegistry`.
+
+Deviations from the ticket spec:
+
+- Ticket called for `literalResolver :: Resolver` (typeclass). The SELF-1 API that landed stores bare `ResolveFn`s in the registry and keeps `Resolver` only as a convenience class for instance-style declarations (the registry itself never uses it). Shipping `ResolveFn`s matches how `registerResolver` expects them and avoids forcing a typeclass dance on every caller. The typeclass remains available for anyone who wants it.
+- Shape-mismatches (e.g. `literal://foo`, `env:FOO`, `file:/x`) return `ResolveBackendError` rather than a new error constructor. The scheme is registered, so `ResolveUnknownScheme` would be wrong; `ResolveParseError` is for malformed URIs (which these are not). `ResolveBackendError` with a clear message was the best fit with the existing four-constructor taxonomy.
+
+Tests: 23 new specs in `test/SelfSpec.hs` under `describe` blocks `literalResolver`, `envResolver`, `fileResolver`, `defaultRegistry`. Suite total 48 examples, all green. `parse-test` and `bidir-test` spot-checked — both still green.
+
+Out of scope (untouched): SELF-2 read-path wiring, keychain (SELF-8), other backends.
