@@ -38,10 +38,12 @@ import Test.Hspec
 
 import Synapse.Self
 import qualified SelfCommandSpec
+import qualified SelfSafeWriteSpec
 
 main :: IO ()
 main = hspec $ do
   describe "Synapse.Self.Command (SELF-4)" SelfCommandSpec.spec
+  SelfSafeWriteSpec.spec
 
   describe "defaultsPath" $ do
     it "returns ~/.plexus/<backend>/defaults.json" $ do
