@@ -37,6 +37,9 @@ library
     Synapse.CLI.Transform
     Synapse.CLI.Similarity
     Synapse.Backend.Discovery
+    Synapse.Self
+    Synapse.Self.Types
+    Synapse.Self.Resolve
     Synapse.Self.Commands
     Synapse.Self.Template
     Synapse.Self.Pattern
@@ -359,6 +362,23 @@ test-suite deprecation-test
     aeson >= 2.0 && < 2.3,
     containers >= 0.6 && < 0.8,
     directory >= 1.3 && < 1.4,
+    hspec >= 2.10 && < 2.12
+  hs-source-dirs:   test
+  default-language: GHC2021
+  default-extensions:
+    OverloadedStrings
+  ghc-options:      -threaded
+
+test-suite self-test
+  type:             exitcode-stdio-1.0
+  main-is:          SelfSpec.hs
+  build-depends:
+    base >= 4.17 && < 5,
+    plexus-synapse,
+    text >= 2.0 && < 2.2,
+    bytestring >= 0.11 && < 0.13,
+    containers >= 0.6 && < 0.8,
+    aeson >= 2.2 && < 2.3,
     hspec >= 2.10 && < 2.12
   hs-source-dirs:   test
   default-language: GHC2021
