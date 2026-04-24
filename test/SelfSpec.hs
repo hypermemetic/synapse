@@ -37,9 +37,12 @@ import qualified System.IO as IO
 import Test.Hspec
 
 import Synapse.Self
+import qualified SelfCommandSpec
 
 main :: IO ()
 main = hspec $ do
+  describe "Synapse.Self.Command (SELF-4)" SelfCommandSpec.spec
+
   describe "defaultsPath" $ do
     it "returns ~/.plexus/<backend>/defaults.json" $ do
       defaultsPath "substrate" `shouldBe` "~/.plexus/substrate/defaults.json"

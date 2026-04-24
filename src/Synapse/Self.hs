@@ -53,6 +53,9 @@ module Synapse.Self
   , loadDefaults
   , resolveAll
   , merge
+
+    -- * Write path (SELF-4 stub; SELF-5 tightens)
+  , writeDefaults
   ) where
 
 import Data.Text (Text)
@@ -68,6 +71,7 @@ import Synapse.Self.IO
   , loadDefaults
   , merge
   , resolveAll
+  , writeDefaults
   )
 import Synapse.Self.Resolve
 import Synapse.Self.Resolve.Default (defaultRegistry)

@@ -28,6 +28,10 @@ module Synapse.Self.IO
   , loadDefaults
   , resolveAll
   , merge
+
+    -- * Write path (stub; SELF-5 tightens to atomic + chmod 600)
+  , writeDefaults
+  , absDefaultsPath
   ) where
 
 import Control.Exception (IOException, throwIO, try)
@@ -36,8 +40,8 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
-import System.Directory (doesFileExist, getHomeDirectory)
-import System.FilePath ((</>))
+import System.Directory (createDirectoryIfMissing, doesFileExist, getHomeDirectory)
+import System.FilePath ((</>), takeDirectory)
 import System.IO.Error (ioeGetErrorString, isDoesNotExistError, userError)
 
 import Synapse.Self.Resolve
@@ -49,6 +53,7 @@ import Synapse.Self.Types
   ( CredentialRef
   , StoredDefaults(..)
   , decodeDefaults
+  , encodeDefaults
   , emptyStoredDefaults
   )
 
@@ -88,9 +93,8 @@ emptyResolvedDefaults = ResolvedDefaults
 -- ============================================================================
 
 -- | Compute the absolute path to a backend's defaults file, expanding @~@
--- via 'getHomeDirectory'. Kept internal: 'Synapse.Self.defaultsPath'
--- returns the tilde-prefixed form for pure code; this is the IO-side
--- expansion.
+-- via 'getHomeDirectory'. 'Synapse.Self.defaultsPath' returns the
+-- tilde-prefixed form for pure code; this is the IO-side expansion.
 absDefaultsPath :: Text -> IO FilePath
 absDefaultsPath backend = do
   home <- getHomeDirectory
@@ -198,3 +202,24 @@ merge ResolvedDefaults{..} cliCookies cliHeaders =
   ( Map.union cliCookies rdCookies
   , Map.union cliHeaders rdHeaders
   )
+
+-- ============================================================================
+-- writeDefaults (SELF-4 stub; SELF-5 tightens)
+-- ============================================================================
+
+-- | Write a 'StoredDefaults' to disk for @backend@.
+--
+-- __Stub semantics (SELF-4):__ plain 'BS.writeFile' after
+-- 'createDirectoryIfMissing' on the parent. No atomicity, no @chmod 600@.
+-- SELF-5 replaces the body with atomic-write + mode-tightening while
+-- keeping this signature intact so @_self@ command handlers need no
+-- change at that time.
+--
+-- Callers must not rely on partial-write behavior here: the SELF-5
+-- version will be atomic, and code written against this stub that
+-- assumes otherwise will silently break when SELF-5 lands.
+writeDefaults :: Text -> StoredDefaults -> IO ()
+writeDefaults backend sd = do
+  path <- absDefaultsPath backend
+  createDirectoryIfMissing True (takeDirectory path)
+  BS.writeFile path (encodeDefaults sd)

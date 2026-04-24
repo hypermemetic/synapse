@@ -70,7 +70,9 @@ import Synapse.Renderer (RendererConfig, defaultRendererConfig, renderItem, pret
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 import System.FilePath ((</>))
 import qualified Synapse.Self.Commands as Self
+import qualified Synapse.Self.Command as SelfCmd
 import Synapse.Backend.Discovery (Backend(..), BackendDiscovery(..), registryDiscovery, pingBackends, getBackendAt, registerWithRegistry)
+import System.Exit (ExitCode(..), exitWith)
 
 -- ============================================================================
 -- Types
@@ -322,9 +324,49 @@ main = do
     Just backend
       -- Handle --help/-h if it somehow ends up as the backend
       | backend `elem` ["--help", "-h"] -> TIO.putStr cliHeader
-      -- Handle _self meta-commands (use discovered primary backend)
-      | backend == "_self" -> runWithDiscovery discovery hostBackend args
+      -- Handle _self meta-commands
+      | backend == "_self" ->
+          -- SELF-4 verbs (synapse _self <backend> <verb>) dispatch through
+          -- a dedicated parser on the raw argPath. Legacy _self
+          -- subcommands (template / scan / debug / validate / test) keep
+          -- the original path through runWithDiscovery.
+          if isSelfV4Invocation (argPath args)
+            then runSelfV4 (argPath args)
+            else runWithDiscovery discovery hostBackend args
       | otherwise -> runWithDiscovery discovery backend args
+
+-- | Legacy @_self@ subcommands that predate SELF-4. These keep their
+-- original dispatch path through 'Synapse.Self.Commands.dispatch'.
+--
+-- Anything else under @_self@ is treated as SELF-4 (@_self \<backend\>
+-- ...@) and routes through 'Synapse.Self.Command.runSelfCommand'.
+legacySelfSubcommands :: [Text]
+legacySelfSubcommands =
+  [ "template", "scan", "debug", "validate", "test"
+  , "--help", "-h"  -- Legacy help path is also handled by the old dispatcher
+  ]
+
+-- | True when @_self@ was invoked in the SELF-4 shape — anything other
+-- than a legacy subcommand as the first positional. The SELF-4 parser
+-- handles its own help / error messaging from there, so even
+-- @_self \<backend\>@ (no verb) routes here: optparse emits a
+-- "Missing: COMMAND" message listing the SELF-4 verbs.
+isSelfV4Invocation :: [Text] -> Bool
+isSelfV4Invocation []          = False  -- No args at all: legacy help.
+isSelfV4Invocation (first : _) = first `notElem` legacySelfSubcommands
+
+-- | Re-parse the post-@_self@ token stream through the SELF-4
+-- optparse-applicative parser, then run the resulting command.
+runSelfV4 :: [Text] -> IO ()
+runSelfV4 rest = do
+  let argv = map T.unpack rest
+      parserInfo = SelfCmd.selfCommandInfo
+      pr = execParserPure defaultPrefs parserInfo argv
+  cmd <- handleParseResult pr
+  code <- SelfCmd.runSelfCommand cmd
+  case code of
+    ExitSuccess   -> pure ()
+    ExitFailure _ -> exitWith code
 
 -- | Print a backend in the list
 printBackend :: Backend -> IO ()
