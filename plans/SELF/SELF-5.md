@@ -1,7 +1,7 @@
 ---
 id: SELF-5
 title: "Safe write: atomic rename + mode-sensitive chmod on defaults.json"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-4]
 unlocks: []
@@ -52,3 +52,29 @@ The mode policy is deliberately content-aware. A file with only `keychain://` re
 Users who want a uniformly 0600 posture regardless of contents can set `umask 077` in their shell; the temp file respects umask before our explicit chmod.
 
 Atomic write is non-negotiable. Half-written `defaults.json` during an abrupt kill (CTRL-C mid-`_self set`) would corrupt the store and require hand-editing.
+
+## Verdict (2026-04-24)
+
+Landed as `feat(SELF-5): atomic write + mode-aware chmod on defaults.json`
+(commit `332a1284`). `writeDefaults` now writes to a hidden sibling
+`.defaults.json.tmp`, chmods `0600` iff the encoded output contains any
+`literal:` substring (`0644` otherwise), then atomic-renames into place;
+`bracketOnError` removes the temp file on any mid-write failure so no
+partial `defaults.json` can exist. A freshly created parent dir gets
+`0700`; a pre-existing wide dir triggers a stderr WARN without touching
+its mode. `loadDefaults` sniffs mode on Unix after a successful read and
+emits a stderr WARN (with a `chmod 600 <path>` recommendation) on
+world/group-accessible files that carry `literal:` content; manifests
+with only `env://` / `keychain://` / `file://` refs stay silent at any
+mode. Windows skips the POSIX steps — atomic rename still happens.
+
+Scope held exactly to the ticket. Out of scope for this ticket and
+explicitly deferred: SELF-3 tokens migration, SELF-6 codegen dedup,
+SELF-8 keychain integration. No keychain resolver added, no external
+`security` binary invoked, no test touches the real OS keychain.
+
+Test count: 102 self-test specs pass (92 pre-existing + 10 new).
+Smoke-tested manually: `HOME=/tmp/self5smoke synapse _self testbk set
+cookie access_token "literal:hello"` produces `0700` on
+`~/.plexus/testbk/` and `0600` on `defaults.json`; the same flow with a
+`keychain://svc/tok` value yields `0644`.
