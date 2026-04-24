@@ -1,7 +1,7 @@
 ---
 id: SELF-2
 title: "Read path: load defaults, dispatch URI resolution, merge with CLI flags"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-1, SELF-7]
 unlocks: [SELF-3, SELF-6]
@@ -61,3 +61,11 @@ After merging, every ref is resolved through the registry; resolve failures surf
 `loadDefaults` on every invocation is fine. These are small files, read once per process. The expensive part is `resolveAll` — which for `keychain://` might prompt the user for Keychain access. That's fine for a CLI tool; it happens once per session in practice (Keychain caches the unlock decision).
 
 Wrapping CLI flags as `literal:` refs internally keeps the merge logic trivial and uniform. No special casing of "this value came from a flag" vs "this value came from a file."
+
+## Verdict (2026-04-24)
+
+Complete. `Synapse.Self.IO` lands `loadDefaults` / `resolveAll` / `merge` / `ResolvedDefaults` / `MethodPath` / `Cookies` / `Headers`; re-exported from `Synapse.Self`. Transport wiring consolidated into a single `buildEnv` helper in `app/Main.hs` that subsumes the three prior `initEnv + withRequestContext` sites. The helper threads the full SELF-2 pipeline — `loadDefaults backend` → `resolveAll defaultRegistry stored []` → `merge` with CLI `--cookie` / `--header` / `SYNAPSE_COOKIE_*` / `SYNAPSE_HEADER_*` entries. The legacy `--token` / `--token-file` / `~/.plexus/tokens/<backend>` path is preserved by wrapping the resolved JWT as an `access_token` CLI cookie pre-merge, so it still wins over any stored default and flows through `Transport.mergeUpgradeHeaders` unchanged. Resolve failures abort the invocation with a clear message naming the URI and underlying `ResolveError`.
+
+Tests extended in `test/SelfSpec.hs`: 15 new specs across `loadDefaults`, `resolveAll`, and `merge` describe-blocks (covering missing file → empty, malformed JSON IOError with path, unknown version, literal-only happy path, unknown scheme short-circuit, `env://` with unset var reporting `ResolveNotFound`, no-partial-resolution invariant, `MethodPath` threading, and the four CLI-override / disjoint-union / empty-map merge cases). `cabal test plexus-synapse:self-test` passes 62/62; regression pass on `bidir-test` (51) and `parse-test` (5). Implementation did not require any refactor of `Synapse.Transport` itself — the merged cookie+header set flows through the existing `mergeUpgradeHeaders` code as-is.
+
+Out-of-scope items (legacy `~/.plexus/tokens/<backend>` consolidation, `defaults.json` writer, `_self` subcommand, scope-level resolution, optional refs) remain deferred to SELF-3 / SELF-5 / SELF-4 / future work per the ticket.
