@@ -56,10 +56,15 @@ module Synapse.Self
 
     -- * Write path (SELF-4 stub; SELF-5 tightens)
   , writeDefaults
+
+    -- * Token sugar (SELF-6)
+  , resolveToken
   ) where
 
+import qualified Control.Exception as E
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Map.Strict as Map
 import System.FilePath ((</>))
 
 import Synapse.Self.IO
@@ -90,3 +95,35 @@ import Synapse.Self.Types
 defaultsPath :: Text -> FilePath
 defaultsPath backend =
   "~" </> ".plexus" </> T.unpack backend </> "defaults.json"
+
+-- | Resolve the @cookies.access_token@ entry from a backend's defaults
+-- store. Returns 'Nothing' when the file is missing, the cookie is
+-- absent, or the ref fails to resolve.
+--
+-- This is the \"sugar\" seam SELF-6 uses to collapse
+-- @SynapseCC.Auth.resolveToken@'s final fallback onto 'Synapse.Self'.
+-- It is deliberately conservative:
+--
+--   * IO errors on 'loadDefaults' (permissions, corrupt JSON, etc.)
+--     swallow to 'Nothing'. Callers that care can still use
+--     'loadDefaults' + 'resolveRef' directly for loud behavior.
+--   * Resolve errors swallow to 'Nothing' for the same reason.
+--   * An empty resolved value is treated as \"not set\" ('Nothing').
+--
+-- The loud variant (exit on IO / resolve failure) lives in
+-- @buildEnv@ in the synapse executable because that path *must* fail
+-- an unauthenticated request rather than silently drop the token.
+-- Here — the fallback path, invoked only after explicit CLI / env
+-- sources have been exhausted — a soft 'Nothing' is the right default.
+resolveToken :: Text -> IO (Maybe Text)
+resolveToken backend = do
+  eStored <- E.try (loadDefaults backend) :: IO (Either E.IOException StoredDefaults)
+  case eStored of
+    Left _ -> pure Nothing
+    Right stored -> case Map.lookup "access_token" (sdCookies stored) of
+      Nothing  -> pure Nothing
+      Just ref -> do
+        r <- resolveRef defaultRegistry ref
+        case r of
+          Right tok | not (T.null tok) -> pure (Just tok)
+          _                            -> pure Nothing
