@@ -32,7 +32,7 @@ import Options.Applicative
 import System.Environment (getEnvironment)
 import Data.Version (showVersion)
 import qualified Paths_plexus_synapse as Meta
-import System.Directory (doesFileExist, getHomeDirectory)
+import System.Directory (getHomeDirectory)
 import System.Exit (exitFailure, exitSuccess)
 import System.FilePath ((</>))
 import System.IO (hPutStrLn, stderr, hFlush, stdout)
@@ -163,32 +163,34 @@ collectRequestContext opts = do
                    ]
   pure (soCookies opts ++ envCookies, soHeaders opts ++ envHeaders)
 
--- | Resolve the auth token to use for this invocation.
+-- | Resolve the auth token to use for this invocation from CLI-only
+-- sources.
 --
 -- Priority:
 --   1. --token <jwt>           (explicit, highest priority)
 --   2. --token-file <path>     (explicit file)
---   3. ~/.plexus/tokens/<backend>  (per-backend default)
 --
--- Token files contain just the raw JWT, optionally with a trailing newline.
+-- Any persistent per-backend default (including the former
+-- @~\/.plexus\/tokens\/\<backend\>@, now auto-migrated by
+-- 'Synapse.Self.loadDefaults' on first read) lives in
+-- @~\/.plexus\/\<backend\>\/defaults.json@ as a
+-- @cookies.access_token@ ref and is loaded through the SELF-2 pipeline
+-- in 'buildEnv'. This function therefore only consults
+-- invocation-scoped flags; returning 'Nothing' means "no CLI override",
+-- not "no token available".
+--
+-- Token files contain just the raw JWT, optionally with a trailing
+-- newline.
 resolveToken :: SynapseOpts -> Text -> IO (Maybe Text)
-resolveToken opts backend =
+resolveToken opts _backend =
   case soToken opts of
     Just tok -> pure (Just tok)
-    Nothing  -> do
-      mPath <- case soTokenFile opts of
-        Just path -> pure (Just (T.unpack path))
-        Nothing   -> do
-          home <- getHomeDirectory
-          let defaultPath = home </> ".plexus" </> "tokens" </> T.unpack backend
-          exists <- doesFileExist defaultPath
-          pure $ if exists then Just defaultPath else Nothing
-      case mPath of
-        Nothing   -> pure Nothing
-        Just path -> do
-          contents <- TIO.readFile path
-          let tok = T.strip contents
-          pure $ if T.null tok then Nothing else Just tok
+    Nothing  -> case soTokenFile opts of
+      Nothing   -> pure Nothing
+      Just path -> do
+        contents <- TIO.readFile (T.unpack path)
+        let tok = T.strip contents
+        pure $ if T.null tok then Nothing else Just tok
 
 -- ============================================================================
 -- Env Construction (SELF-2 read path)
@@ -212,7 +214,8 @@ renderResolveError = \case
 --
 -- SELF-2 read path:
 --
--- 1. Legacy token resolution (--token / --token-file / ~/.plexus/tokens/<b>)
+-- 1. CLI token resolution (--token / --token-file; persistent defaults
+--    live in ~/.plexus/<b>/defaults.json and are loaded in step 3)
 -- 2. Collect CLI --cookie / --header flags and SYNAPSE_COOKIE_*/HEADER_* env
 -- 3. Load stored defaults from @~\/.plexus\/\<backend\>\/defaults.json@
 -- 4. Resolve every 'CredentialRef' through the default registry
@@ -1127,10 +1130,10 @@ optsParser = do
    <> help "Filter logs by subsystem: discovery, transport, rpc, schema, cache, navigation (can specify multiple, default: all)" )
   soToken <- optional $ T.pack <$> strOption
     ( long "token" <> short 't' <> metavar "JWT"
-   <> help "JWT sent as Cookie: access_token=<jwt> on WebSocket upgrade" )
+   <> help "JWT sent as Cookie: access_token=<jwt> on WebSocket upgrade (overrides any access_token in ~/.plexus/<backend>/defaults.json)" )
   soTokenFile <- optional $ T.pack <$> strOption
     ( long "token-file" <> metavar "PATH"
-   <> help "Path to token file (default lookup: ~/.plexus/tokens/<backend>)" )
+   <> help "Path to file containing a raw JWT (overrides any access_token in ~/.plexus/<backend>/defaults.json)" )
   soCookies <- many (parseKv <$> strOption
     ( long "cookie" <> metavar "KEY=VALUE"
    <> help "Extra cookie attached to WS upgrade (repeatable; SAFE-S04/REQ-5)" ))

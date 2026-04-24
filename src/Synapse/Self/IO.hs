@@ -51,6 +51,7 @@ import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import qualified Data.Text.Encoding as TE
 import System.Directory
   ( createDirectoryIfMissing
   , doesDirectoryExist
@@ -73,7 +74,7 @@ import Synapse.Self.Resolve
   , resolveRef
   )
 import Synapse.Self.Types
-  ( CredentialRef
+  ( CredentialRef(..)
   , StoredDefaults(..)
   , decodeDefaults
   , encodeDefaults
@@ -145,6 +146,11 @@ absDefaultsPath backend = do
 -- check is skipped entirely (no POSIX mode semantics).
 loadDefaults :: Text -> IO StoredDefaults
 loadDefaults backend = do
+  -- SELF-3: on entry, migrate the legacy ~/.plexus/tokens/<backend> file
+  -- to the new defaults.json (or delete it if it's stale / empty). After
+  -- migration completes (or is a no-op), the body below reads the new
+  -- file naturally — no double-work for the caller.
+  migrateIfNeeded backend
   path <- absDefaultsPath backend
   exists <- doesFileExist path
   if not exists
@@ -166,6 +172,91 @@ loadDefaults backend = do
           Right sd -> do
             warnIfInsecureMode path bs
             pure sd
+
+-- ============================================================================
+-- migrateIfNeeded (SELF-3: legacy ~/.plexus/tokens/<backend> → defaults.json)
+-- ============================================================================
+
+-- | Compute the absolute path to the legacy per-backend token file
+-- (@~\/.plexus\/tokens\/\<backend\>@).
+--
+-- This is the /only/ call site in synapse that references
+-- @~\/.plexus\/tokens\/@. Every other read-path has been routed through
+-- 'loadDefaults'; the legacy path lives here solely so first-boot
+-- migration can drain it. Grep enforcement: after SELF-3,
+-- @git grep -n 'plexus\/tokens'@ should return zero hits outside this
+-- function (and the ticket's own plans\/ docs).
+legacyTokenPath :: Text -> IO FilePath
+legacyTokenPath backend = do
+  home <- getHomeDirectory
+  pure (home </> ".plexus" </> "tokens" </> T.unpack backend)
+
+-- | First-boot migration of the legacy plaintext token file into a
+-- @defaults.json@ manifest with a @literal:\<jwt\>@ ref.
+--
+-- Runs at the top of every 'loadDefaults' invocation but is effectively
+-- a no-op in steady state (fast path: the legacy file does not exist).
+-- Three cases:
+--
+-- 1. New file absent, legacy absent → nothing to do.
+-- 2. New file present, legacy present → legacy is stale; delete it
+--    unread and leave the new file untouched. Log INFO.
+-- 3. New file absent, legacy present → migrate:
+--    * Read the legacy file; trim leading\/trailing whitespace.
+--    * If the trimmed contents are empty: delete legacy silently and
+--      return (the existing 'loadDefaults' body then sees no file and
+--      returns 'emptyStoredDefaults').
+--    * Otherwise: construct a 'StoredDefaults' with
+--      @cookies.access_token = CredentialRef "literal:\<jwt\>"@,
+--      write it via 'writeDefaults' (SELF-5 atomic + 0600 chmod),
+--      delete the legacy file, and log INFO suggesting
+--      @synapse _self \<backend\> upgrade-to-keychain@.
+--
+-- Security note: migration target is deliberately @literal:@, not
+-- @keychain:\/\/@. A silent permission escalation would surprise users
+-- and could trigger an OS keychain prompt. Opt-in upgrade is the
+-- @_self \<backend\> upgrade-to-keychain@ verb.
+migrateIfNeeded :: Text -> IO ()
+migrateIfNeeded backend = do
+  newPath <- absDefaultsPath backend
+  legacyPath <- legacyTokenPath backend
+  newExists <- doesFileExist newPath
+  legacyExists <- doesFileExist legacyPath
+  case (newExists, legacyExists) of
+    (_, False) -> pure ()  -- no legacy → nothing to do
+    (True, True) -> do
+      -- Stale legacy file: new defaults.json wins. Delete the legacy
+      -- file unread so it doesn't masquerade as authoritative state.
+      E.handle (\(_ :: IOException) -> pure ()) (removeFile legacyPath)
+      hPutStrLn stderr $
+        "[INFO] removed stale legacy token file " <> legacyPath
+        <> " (superseded by defaults.json)"
+    (False, True) -> do
+      -- Real migration. Read, trim, decide empty vs non-empty.
+      readResult <- try (BS.readFile legacyPath)
+        :: IO (Either IOException BS.ByteString)
+      case readResult of
+        Left _ -> pure ()  -- unreadable legacy file: leave it; next run retries
+        Right raw -> do
+          let trimmed = T.strip (TE.decodeUtf8 raw)
+          if T.null trimmed
+            then
+              -- Empty / whitespace-only legacy: drop it silently. No
+              -- new file is created — the existing 'loadDefaults' body
+              -- returns 'emptyStoredDefaults'.
+              E.handle (\(_ :: IOException) -> pure ()) (removeFile legacyPath)
+            else do
+              let sd = emptyStoredDefaults
+                    { sdCookies = Map.singleton "access_token"
+                        (CredentialRef ("literal:" <> trimmed))
+                    }
+              writeDefaults backend sd
+              E.handle (\(_ :: IOException) -> pure ()) (removeFile legacyPath)
+              hPutStrLn stderr $
+                "[INFO] migrated legacy token file " <> legacyPath
+                <> " to " <> newPath
+                <> " (stored as literal:). Consider: synapse _self "
+                <> T.unpack backend <> " upgrade-to-keychain"
 
 -- | Emit a stderr WARN when the file contains a @literal:@ value AND
 -- its mode is group-\/world-accessible. Silent on Windows (mode is

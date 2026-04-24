@@ -383,6 +383,7 @@ test-suite self-test
   main-is:          SelfSpec.hs
   other-modules:
     SelfCommandSpec
+    SelfMigrationSpec
     SelfSafeWriteSpec
   build-depends:
     base >= 4.17 && < 5,

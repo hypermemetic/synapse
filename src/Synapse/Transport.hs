@@ -73,7 +73,7 @@ renderProtocolError :: Text -> Text
 renderProtocolError msg =
   case extractErrCode msg of
     Just (-32001) -> "Authentication required: " <> extractErrMessage msg
-                  <> "\nHint: pass --token <jwt>, set SYNAPSE_TOKEN, or place the JWT at ~/.plexus/tokens/<backend>"
+                  <> "\nHint: pass --token <jwt>, set SYNAPSE_TOKEN, or store an access_token ref in ~/.plexus/<backend>/defaults.json (see `synapse _self`)"
     Just (-32602) -> "Invalid parameters: " <> extractErrMessage msg
                   <> "\nHint: run with --help for the method to see expected params"
     Just (-32601) -> "Method not found: " <> extractErrMessage msg
