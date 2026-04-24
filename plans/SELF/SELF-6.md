@@ -1,7 +1,7 @@
 ---
 id: SELF-6
 title: "synapse-cc integration: import Synapse.Self, delete SynapseCC.Auth, expose `synapse-cc _self`"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-2, SELF-3]
 unlocks: []
