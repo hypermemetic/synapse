@@ -1,6 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- | Unit tests for Synapse.Self (SELF-1).
+-- | Unit tests for Synapse.Self (SELF-1, SELF-7).
 --
 -- Covers:
 --   - StoredDefaults roundtrip encode/decode with mixed URI schemes
@@ -10,13 +10,26 @@
 --   - parseUri shape coverage (literal, env, keychain, file, bare-string reject)
 --   - Deterministic key ordering from encodeDefaults
 --   - Empty resolver registry returns ResolveUnknownScheme
+--   - SELF-7: literalResolver, envResolver, fileResolver, defaultRegistry
 module Main where
 
+import Control.Exception (bracket, bracket_, finally)
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.Map.Strict as Map
 import Data.Text (Text)
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
+import qualified Data.Text.IO as TIO
+import System.Directory
+  ( getHomeDirectory
+  , getTemporaryDirectory
+  , removeFile
+  , removePathForcibly
+  )
+import System.Environment (lookupEnv, setEnv, unsetEnv)
+import System.FilePath ((</>))
+import System.IO (hClose, openTempFile)
+import qualified System.IO as IO
 import Test.Hspec
 
 import Synapse.Self
@@ -185,6 +198,213 @@ main = hspec $ do
                   mempty
       result <- resolveRef reg (CredentialRef "s://anything")
       result `shouldBe` Right "second"
+
+  -- ==========================================================================
+  -- SELF-7: core resolvers
+  -- ==========================================================================
+
+  describe "literalResolver" $ do
+    let reg = registerResolver "literal" literalResolver mempty
+
+    it "returns the body verbatim for literal:foo" $ do
+      result <- resolveRef reg (CredentialRef "literal:foo")
+      result `shouldBe` Right "foo"
+
+    it "returns empty string for literal: (empty body)" $ do
+      result <- resolveRef reg (CredentialRef "literal:")
+      result `shouldBe` Right ""
+
+    it "preserves leading/trailing spaces (literal: foo )" $ do
+      result <- resolveRef reg (CredentialRef "literal: foo ")
+      result `shouldBe` Right " foo "
+
+    it "preserves interior colons (JWT-style)" $ do
+      result <- resolveRef reg (CredentialRef "literal:eyJhbGciOi.JJWT.sig")
+      result `shouldBe` Right "eyJhbGciOi.JJWT.sig"
+
+    it "rejects hierarchical literal:// as backend error" $ do
+      result <- resolveRef reg (CredentialRef "literal://foo")
+      case result of
+        Left (ResolveBackendError _ _) -> pure ()
+        other -> expectationFailure
+          ("expected ResolveBackendError, got " <> show other)
+
+  describe "envResolver" $ do
+    let reg = registerResolver "env" envResolver mempty
+        testVar = "SYNAPSE_SELF_TEST_VAR_7F3A"
+
+    it "returns the variable value when set" $
+      withEnv testVar "hello-env" $ do
+        result <- resolveRef reg (CredentialRef ("env://" <> T.pack testVar))
+        result `shouldBe` Right "hello-env"
+
+    it "preserves whitespace inside variable values" $
+      withEnv testVar " spaced " $ do
+        result <- resolveRef reg (CredentialRef ("env://" <> T.pack testVar))
+        result `shouldBe` Right " spaced "
+
+    it "reports ResolveNotFound when the variable is unset" $
+      withoutEnv testVar $ do
+        result <- resolveRef reg (CredentialRef ("env://" <> T.pack testVar))
+        result `shouldBe` Left
+          (ResolveNotFound (CredentialRef ("env://" <> T.pack testVar)))
+
+    it "reports ResolveBackendError for env:// with no variable name" $ do
+      result <- resolveRef reg (CredentialRef "env://")
+      case result of
+        Left (ResolveBackendError _ _) -> pure ()
+        other -> expectationFailure
+          ("expected ResolveBackendError, got " <> show other)
+
+    it "reports ResolveBackendError for opaque env:VAR" $ do
+      result <- resolveRef reg (CredentialRef "env:FOO")
+      case result of
+        Left (ResolveBackendError _ _) -> pure ()
+        other -> expectationFailure
+          ("expected ResolveBackendError, got " <> show other)
+
+  describe "fileResolver" $ do
+    let reg = registerResolver "file" fileResolver mempty
+
+    it "reads file contents and strips a single trailing newline" $
+      withTempFileContents "hello\n" $ \path -> do
+        result <- resolveRef reg
+          (CredentialRef ("file://" <> T.pack path))
+        result `shouldBe` Right "hello"
+
+    it "preserves interior newlines and whitespace" $
+      withTempFileContents "a\n  b  \nc\n" $ \path -> do
+        result <- resolveRef reg
+          (CredentialRef ("file://" <> T.pack path))
+        result `shouldBe` Right "a\n  b  \nc"
+
+    it "returns contents verbatim when there is no trailing newline" $
+      withTempFileContents "no-newline" $ \path -> do
+        result <- resolveRef reg
+          (CredentialRef ("file://" <> T.pack path))
+        result `shouldBe` Right "no-newline"
+
+    it "strips only one trailing newline (leaves the rest)" $
+      withTempFileContents "two\n\n" $ \path -> do
+        result <- resolveRef reg
+          (CredentialRef ("file://" <> T.pack path))
+        result `shouldBe` Right "two\n"
+
+    it "returns ResolveNotFound for a missing file" $ do
+      tmp <- getTemporaryDirectory
+      let path = tmp </> "synapse-self-does-not-exist-7f3a"
+          ref  = CredentialRef ("file://" <> T.pack path)
+      result <- resolveRef reg ref
+      result `shouldBe` Left (ResolveNotFound ref)
+
+    it "returns ResolveBackendError when the path is a directory" $ do
+      tmp <- getTemporaryDirectory
+      result <- resolveRef reg
+        (CredentialRef ("file://" <> T.pack tmp))
+      case result of
+        Left (ResolveBackendError _ _) -> pure ()
+        other -> expectationFailure
+          ("expected ResolveBackendError, got " <> show other)
+
+    it "expands ~ to the user's home directory" $ do
+      home <- getHomeDirectory
+      -- Write a tmp file directly under $HOME so the ~ expansion test
+      -- doesn't depend on any specific subdir layout.
+      let name = ".synapse-self-test-7f3a"
+          path = home </> name
+      bracket_
+        (TIO.writeFile path "tilde-ok\n")
+        (removePathForcibly path)
+        $ do
+          result <- resolveRef reg
+            (CredentialRef (T.pack ("file://~/" <> name)))
+          result `shouldBe` Right "tilde-ok"
+
+    it "reports ResolveBackendError for opaque file:path" $ do
+      result <- resolveRef reg (CredentialRef "file:/tmp/x")
+      case result of
+        Left (ResolveBackendError _ _) -> pure ()
+        other -> expectationFailure
+          ("expected ResolveBackendError, got " <> show other)
+
+  describe "defaultRegistry" $ do
+    it "dispatches literal: via the default registry" $ do
+      result <- resolveRef defaultRegistry (CredentialRef "literal:abc")
+      result `shouldBe` Right "abc"
+
+    it "dispatches env:// via the default registry" $
+      withEnv "SYNAPSE_SELF_TEST_DEFAULT_REG" "reg-ok" $ do
+        result <- resolveRef defaultRegistry
+          (CredentialRef "env://SYNAPSE_SELF_TEST_DEFAULT_REG")
+        result `shouldBe` Right "reg-ok"
+
+    it "dispatches file:// via the default registry" $
+      withTempFileContents "file-ok\n" $ \path -> do
+        result <- resolveRef defaultRegistry
+          (CredentialRef ("file://" <> T.pack path))
+        result `shouldBe` Right "file-ok"
+
+    it "returns ResolveUnknownScheme for unregistered schemes" $ do
+      result <- resolveRef defaultRegistry
+        (CredentialRef "keychain://svc/account")
+      result `shouldBe` Left (ResolveUnknownScheme "keychain")
+
+    it "end-to-end: resolves a StoredDefaults with one entry per scheme" $
+      withEnv "SYNAPSE_SELF_TEST_E2E_ENV" "from-env" $
+      withTempFileContents "from-file\n" $ \path -> do
+        let sd = StoredDefaults
+              { sdVersion = 1
+              , sdCookies = Map.empty
+              , sdHeaders = Map.fromList
+                  [ ("X-Literal", CredentialRef "literal:from-literal")
+                  , ("X-Env",     CredentialRef "env://SYNAPSE_SELF_TEST_E2E_ENV")
+                  , ("X-File",    CredentialRef ("file://" <> T.pack path))
+                  ]
+              , sdScopes  = Map.empty
+              }
+        -- Resolve every header ref end-to-end via defaultRegistry.
+        resolved <- traverse (resolveRef defaultRegistry) (sdHeaders sd)
+        Map.lookup "X-Literal" resolved `shouldBe` Just (Right "from-literal")
+        Map.lookup "X-Env"     resolved `shouldBe` Just (Right "from-env")
+        Map.lookup "X-File"    resolved `shouldBe` Just (Right "from-file")
+
+-- | Set an env var for the duration of an action, restoring any prior
+-- value (or unsetting if it was unset).
+withEnv :: String -> String -> IO a -> IO a
+withEnv name value action = do
+  prior <- lookupEnv name
+  bracket_
+    (setEnv name value)
+    (case prior of
+       Just v  -> setEnv name v
+       Nothing -> unsetEnv name)
+    action
+
+-- | Ensure an env var is unset for the duration of an action, restoring
+-- it afterwards.
+withoutEnv :: String -> IO a -> IO a
+withoutEnv name action = do
+  prior <- lookupEnv name
+  bracket_
+    (unsetEnv name)
+    (case prior of
+       Just v  -> setEnv name v
+       Nothing -> pure ())
+    action
+
+-- | Write @contents@ to a fresh temp file, pass its path to @action@,
+-- and unlink the file on the way out.
+withTempFileContents :: Text -> (FilePath -> IO a) -> IO a
+withTempFileContents contents action = do
+  tmpDir <- getTemporaryDirectory
+  bracket
+    (openTempFile tmpDir "synapse-self-test.txt")
+    (\(path, h) -> hClose h `finally` removeFile path)
+    (\(path, h) -> do
+        IO.hSetEncoding h IO.utf8
+        TIO.hPutStr h contents
+        hClose h
+        action path)
 
 isRight :: Either a b -> Bool
 isRight (Right _) = True

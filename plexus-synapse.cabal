@@ -40,6 +40,10 @@ library
     Synapse.Self
     Synapse.Self.Types
     Synapse.Self.Resolve
+    Synapse.Self.Resolve.Literal
+    Synapse.Self.Resolve.Env
+    Synapse.Self.Resolve.File
+    Synapse.Self.Resolve.Default
     Synapse.Self.Commands
     Synapse.Self.Template
     Synapse.Self.Pattern
@@ -379,6 +383,8 @@ test-suite self-test
     bytestring >= 0.11 && < 0.13,
     containers >= 0.6 && < 0.8,
     aeson >= 2.2 && < 2.3,
+    directory >= 1.3 && < 1.4,
+    filepath >= 1.4 && < 1.6,
     hspec >= 2.10 && < 2.12
   hs-source-dirs:   test
   default-language: GHC2021

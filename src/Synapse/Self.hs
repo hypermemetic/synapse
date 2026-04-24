@@ -37,6 +37,12 @@ module Synapse.Self
   , lookupResolver
   , resolveRef
   , ResolveError(..)
+
+    -- * Core resolvers
+  , literalResolver
+  , envResolver
+  , fileResolver
+  , defaultRegistry
   ) where
 
 import Data.Text (Text)
@@ -44,6 +50,10 @@ import qualified Data.Text as T
 import System.FilePath ((</>))
 
 import Synapse.Self.Resolve
+import Synapse.Self.Resolve.Default (defaultRegistry)
+import Synapse.Self.Resolve.Env (envResolver)
+import Synapse.Self.Resolve.File (fileResolver)
+import Synapse.Self.Resolve.Literal (literalResolver)
 import Synapse.Self.Types
 
 -- | Path to a backend\'s defaults file: @~\/.plexus\/\<backend\>\/defaults.json@.
