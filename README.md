@@ -18,6 +18,12 @@ Synapse is the command-line frontend for [Plexus RPC](../plexus-protocol/) — a
                   └─────────────┘
 ```
 
+## Two problem domains synapse solves
+
+1. **Schema-driven invocation.** Method discovery, parameter parsing, help text, and output rendering are all derived live from the backend's JSON Schema. No codegen, no static config — change the backend, the CLI follows.
+
+2. **Credential lifecycle.** Per-backend defaults at `~/.plexus/<backend>/defaults.json` hold cookies and headers as **credential-reference URIs** (`literal:`, `env://`, `file://`, `keychain://`) resolved at request time. JWT decoding surfaces expiry inline (`expired 16d ago`), legacy `~/.plexus/tokens/<backend>` files auto-migrate, and the `_self` subcommand lets you inspect, set, and rotate credentials without ever pasting them into a shell. See [Credentials & Headers](#credentials--headers).
+
 ## The Full Picture: Define → Call
 
 ### 1. Define a method in Rust
