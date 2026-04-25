@@ -259,9 +259,24 @@ Supported schemes:
 | `literal:` | `literal:eyJ...` | Raw value verbatim after the colon. |
 | `env://` | `env://MY_JWT` | Read from environment variable. |
 | `file://` | `file:///abs/path` | File contents (trailing newline stripped). |
-| `keychain://` | `keychain://uscis/access_token` | OS keychain item (macOS; other platforms pending). |
+| `keychain://` | `keychain://uscis/access_token` | OS keychain item (macOS via `security` CLI; Linux/Windows return a "not implemented" error). |
 
 File mode is content-aware: `0600` if any `literal:` value is present, `0644` if the file is a pure manifest of references.
+
+#### Threat model for `keychain://`
+
+The keychain resolver shells out to `/usr/bin/security`. Items it creates have ACLs scoped to the `security` binary itself, not to synapse — meaning **any process running as your user can read them silently** by shelling out to `security` with the matching service/account. What `keychain://` actually protects against:
+
+- Other users on the same machine
+- Plaintext-on-disk leaks (the file contains only URIs; `defaults.json` becomes commit-safe when no `literal:` refs are present)
+- Disk theft (the keychain DB is encrypted at rest, unlocked at login)
+
+What it does **not** protect against:
+
+- Any process running as you that knows the service/account (`security find-generic-password -s plexus -a <…> -w` works without a prompt)
+- A compromised synapse binary
+
+This is the standard tradeoff for "shell out to `security`" tools (cargo, gcloud, aws-cli all do the same). If you need per-process sandboxing, the upgrade path is to use the Security framework C API directly with code-signing-anchored ACLs — not implemented in v1.
 
 ### Managing defaults: the `_self` subcommand
 

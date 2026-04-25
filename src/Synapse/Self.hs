@@ -42,6 +42,10 @@ module Synapse.Self
   , literalResolver
   , envResolver
   , fileResolver
+  , keychainResolver
+  , storeInKeychain
+  , deleteFromKeychain
+  , isKeychainPlatform
   , defaultRegistry
 
     -- * Read path (SELF-2): load, resolve, merge
@@ -82,6 +86,12 @@ import Synapse.Self.Resolve
 import Synapse.Self.Resolve.Default (defaultRegistry)
 import Synapse.Self.Resolve.Env (envResolver)
 import Synapse.Self.Resolve.File (fileResolver)
+import Synapse.Self.Resolve.Keychain
+  ( deleteFromKeychain
+  , isKeychainPlatform
+  , keychainResolver
+  , storeInKeychain
+  )
 import Synapse.Self.Resolve.Literal (literalResolver)
 import Synapse.Self.Types
 

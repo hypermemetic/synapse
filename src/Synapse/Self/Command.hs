@@ -92,13 +92,27 @@ import Synapse.Self
   , StoredDefaults(..)
   , defaultRegistry
   , defaultsPath
+  , deleteFromKeychain
   , emptyStoredDefaults
+  , isKeychainPlatform
   , loadDefaults
   , parseUri
   , resolveRef
+  , storeInKeychain
   , writeDefaults
   )
 import qualified Synapse.Self.IO as SelfIO
+
+-- | Keychain service name for items created by @_self@ verbs.
+-- Constant across backends — the per-backend key lives in the account.
+keychainService :: Text
+keychainService = "plexus"
+
+-- | Keychain account name for a given (backend, kind, name).
+-- Convention: @\<backend\>\/\<kind\>\/\<name\>@.
+keychainAccountFor :: Text -> SelfKind -> Text -> Text
+keychainAccountFor backend k name =
+  backend <> "/" <> renderKind k <> "/" <> name
 
 -- ============================================================================
 -- ADT
@@ -265,10 +279,14 @@ runSelfCommand = \case
   CmdShow b jsonMode            -> runShow b jsonMode
   CmdSet b k n v                -> runSet b k n (wrapAsLiteralIfNeeded v)
   CmdSetFromStdin b k n         -> runSetFromStdin b k n
-  CmdSetSecret _ _ _            -> keychainUnavailable "set-secret"
+  CmdSetSecret b k n
+    | isKeychainPlatform        -> runSetSecret b k n
+    | otherwise                 -> keychainUnavailable "set-secret"
   CmdUnset b k n yes noKeychain -> runUnset b k n yes noKeychain
   CmdResolve b k n              -> runResolve b k n
-  CmdUpgrade _ _ _              -> keychainUnavailable "upgrade-to-keychain"
+  CmdUpgrade b mk mn
+    | isKeychainPlatform        -> runUpgrade b mk mn
+    | otherwise                 -> keychainUnavailable "upgrade-to-keychain"
   CmdClear b yes                -> runClear b yes
   CmdImportToken b path toKc    -> runImportToken b path toKc
 
@@ -532,8 +550,20 @@ runUnset backend k name yes noKeychain = do
               then pure True
               else promptYesNo "Also delete keychain item? [Y/n] " True
           if shouldDelete
-            then TIO.putStrLn $ "(keychain deletion skipped: SELF-8 pending; "
-                 <> "please remove the keychain entry manually for now.)"
+            then case parseUri ref of
+              Right (ParsedUri "keychain"
+                       (HierarchicalBody svc path _)) ->
+                case T.stripPrefix "/" path of
+                  Just account | not (T.null account) -> do
+                    r <- deleteFromKeychain svc account
+                    case r of
+                      Right () -> TIO.putStrLn "Deleted keychain item."
+                      Left err -> TIO.hPutStrLn stderr $
+                        "Warning: keychain delete failed: " <> err
+                  _ -> TIO.hPutStrLn stderr
+                    "Warning: malformed keychain URI — cannot delete item."
+              _ -> TIO.hPutStrLn stderr
+                "Warning: could not parse keychain URI — skipped delete."
             else TIO.putStrLn "(kept the keychain entry on disk)"
         else pure ()
       pure ExitSuccess
@@ -630,30 +660,166 @@ runClear backend yes = do
 -- import-token
 -- ---------------------------------------------------------------------------
 
--- | Implement @import-token@. Reads a file (or stdin if @"-"@), stores
--- the result as @literal:\<contents\>@ under @cookies.access_token@.
---
--- @--to-keychain@ is gated on SELF-8 and errors out until then.
+-- | Implement @import-token@. Reads a file (or stdin if @"-"@). By
+-- default stores the content as @literal:\<contents\>@ under
+-- @cookies.access_token@. With @--to-keychain@ on a supported platform,
+-- pushes the token into the OS keychain and stores a @keychain://@
+-- reference instead.
 runImportToken :: Text -> Text -> Bool -> IO ExitCode
 runImportToken backend path toKeychain
-  | toKeychain = keychainUnavailable "import-token --to-keychain"
-  | otherwise  = do
+  | toKeychain, not isKeychainPlatform =
+      keychainUnavailable "import-token --to-keychain"
+  | otherwise = do
       token <- readTokenSource path
       let trimmed = T.strip token
       if T.null trimmed
         then do
           TIO.hPutStrLn stderr "Error: token source is empty."
           pure (ExitFailure 1)
-        else do
+        else if toKeychain
+          then do
+            let account = keychainAccountFor backend Cookie "access_token"
+            r <- storeInKeychain keychainService account trimmed
+            case r of
+              Left err -> do
+                TIO.hPutStrLn stderr $ "Error: " <> err
+                pure (ExitFailure 1)
+              Right () -> do
+                sd <- loadOrExit backend
+                let refUri = "keychain://" <> keychainService
+                           <> "/" <> account
+                    m  = sdCookies sd
+                    m' = Map.insert "access_token"
+                           (CredentialRef refUri) m
+                writeDefaults backend (sd { sdCookies = m' })
+                TIO.putStrLn $
+                  "Imported access_token for backend `" <> backend
+                  <> "` (stored in keychain as " <> refUri <> ")."
+                pure ExitSuccess
+          else do
+            sd <- loadOrExit backend
+            let m  = sdCookies sd
+                m' = Map.insert "access_token"
+                       (CredentialRef ("literal:" <> trimmed)) m
+            writeDefaults backend (sd { sdCookies = m' })
+            TIO.putStrLn $ "Imported access_token for backend `" <> backend
+              <> "` (stored as literal:). "
+              <> "Consider `_self " <> backend
+              <> " upgrade-to-keychain` for a more secure posture."
+            pure ExitSuccess
+
+-- ---------------------------------------------------------------------------
+-- set-secret
+-- ---------------------------------------------------------------------------
+
+-- | Implement @set-secret@. Reads stdin, pushes the value into the OS
+-- keychain under @service=plexus@ and
+-- @account=\<backend\>\/\<kind\>\/\<name\>@, then stores a
+-- @keychain://@ reference in @defaults.json@.
+--
+-- Called only when 'isKeychainPlatform' is True; the dispatch in
+-- 'runSelfCommand' routes non-macOS to 'keychainUnavailable'.
+runSetSecret :: Text -> SelfKind -> Text -> IO ExitCode
+runSetSecret backend k name = do
+  raw <- T.pack <$> getContents
+  let value = T.strip raw
+  if T.null value
+    then do
+      TIO.hPutStrLn stderr "Error: stdin is empty; nothing to store."
+      pure (ExitFailure 1)
+    else do
+      let account = keychainAccountFor backend k name
+      r <- storeInKeychain keychainService account value
+      case r of
+        Left err -> do
+          TIO.hPutStrLn stderr $ "Error: " <> err
+          pure (ExitFailure 1)
+        Right () -> do
           sd <- loadOrExit backend
-          let m  = sdCookies sd
-              m' = Map.insert "access_token"
-                     (CredentialRef ("literal:" <> trimmed)) m
-          writeDefaults backend (sd { sdCookies = m' })
-          TIO.putStrLn $ "Imported access_token for backend `" <> backend
-            <> "` (stored as literal:). "
-            <> "Consider `upgrade-to-keychain` once SELF-8 lands for a more secure posture."
+          let refUri = "keychain://" <> keychainService <> "/" <> account
+              m  = kindMap k sd
+              m' = Map.insert name (CredentialRef refUri) m
+          writeDefaults backend (setKindMap k m' sd)
+          TIO.putStrLn $ "Stored " <> renderKind k <> " `" <> name
+            <> "` as " <> refUri
           pure ExitSuccess
+
+-- ---------------------------------------------------------------------------
+-- upgrade-to-keychain
+-- ---------------------------------------------------------------------------
+
+-- | Implement @upgrade-to-keychain@. For each matching @literal:@ ref,
+-- push the value into the OS keychain and rewrite the stored ref as
+-- @keychain://@. Non-literal refs are left alone (they're already
+-- indirect). Scope:
+--
+-- * @upgrade-to-keychain@                 — every literal: entry, both kinds
+-- * @upgrade-to-keychain cookie@          — every literal: cookie
+-- * @upgrade-to-keychain cookie NAME@     — that single entry
+--
+-- Called only when 'isKeychainPlatform' is True; dispatch routes
+-- non-macOS to 'keychainUnavailable'.
+runUpgrade :: Text -> Maybe SelfKind -> Maybe Text -> IO ExitCode
+runUpgrade backend mKind mName = do
+  sd <- loadOrExit backend
+  let kindsToWalk = case mKind of
+        Just k  -> [k]
+        Nothing -> [Cookie, Header]
+  (sd', upgraded, skipped, errs) <-
+    foldlIOM (sd, 0 :: Int, 0 :: Int, [] :: [Text]) kindsToWalk $
+      \(accSd, u, s, es) k -> do
+        let m = kindMap k accSd
+            entries = case mName of
+              Just n  -> [(kn, v) | (kn, v) <- Map.toAscList m, kn == n]
+              Nothing -> Map.toAscList m
+        foldlIOM (accSd, u, s, es) entries $ \(iterSd, iu, isk, ies) (kn, ref) ->
+          case stripLiteralPrefix ref of
+            Nothing -> pure (iterSd, iu, isk + 1, ies)
+            Just value -> do
+              let account = keychainAccountFor backend k kn
+              r <- storeInKeychain keychainService account value
+              case r of
+                Left err ->
+                  pure (iterSd, iu, isk, ("`" <> kn <> "`: " <> err) : ies)
+                Right () -> do
+                  let refUri = "keychain://" <> keychainService
+                             <> "/" <> account
+                      m'     = Map.insert kn (CredentialRef refUri)
+                                 (kindMap k iterSd)
+                      iterSd' = setKindMap k m' iterSd
+                  pure (iterSd', iu + 1, isk, ies)
+  -- Only rewrite the file if anything changed.
+  if upgraded > 0
+    then writeDefaults backend sd'
+    else pure ()
+  case mName of
+    Just n | upgraded == 0 && null errs ->
+      TIO.hPutStrLn stderr $
+        "No literal: entry named `" <> n <> "` to upgrade."
+    _ -> pure ()
+  TIO.putStrLn $ T.concat
+    [ "Upgraded ", T.pack (show upgraded), " ref(s) to keychain; skipped "
+    , T.pack (show skipped), " non-literal entries."
+    ]
+  case errs of
+    [] -> pure ()
+    _  -> do
+      TIO.hPutStrLn stderr "Some entries failed:"
+      mapM_ (\e -> TIO.hPutStrLn stderr $ "  - " <> e) (reverse errs)
+  pure (if null errs then ExitSuccess else ExitFailure 1)
+
+-- | Return @Just value@ if a 'CredentialRef' is @literal:\<value\>@,
+-- else 'Nothing'.
+stripLiteralPrefix :: CredentialRef -> Maybe Text
+stripLiteralPrefix (CredentialRef uri) = T.stripPrefix "literal:" uri
+
+-- | Monadic left fold for IO, no external library. Accumulator threads
+-- through each step; returns the final accumulator.
+foldlIOM :: acc -> [a] -> (acc -> a -> IO acc) -> IO acc
+foldlIOM acc []     _  = pure acc
+foldlIOM acc (x:xs) f  = do
+  acc' <- f acc x
+  foldlIOM acc' xs f
 
 -- | Read a token from a path. @"-"@ means stdin; all other strings are
 -- paths on disk. A trailing newline is preserved here — the caller

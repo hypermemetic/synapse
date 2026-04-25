@@ -1,11 +1,31 @@
 ---
 id: SELF-8
 title: "keychain:// resolver (macOS Keychain; Linux Secret Service; Windows Credential Manager)"
-status: Ready
+status: Complete
 type: task
 blocked_by: [SELF-1]
 unlocks: []
 ---
+
+## Verdict (2026-04-24)
+
+**COMPLETE — macOS landed; Linux/Windows stubbed; tests opt-in.**
+
+- `Synapse.Self.Resolve.Keychain` shells out to `/usr/bin/security`. Exit code 44 → `ResolveNotFound`; other failures → `ResolveBackendError` with stderr.
+- `defaultRegistry` registers `keychain` on every platform — Linux/Windows return a clear "not implemented" error so `_self show` lists `keychain://` refs without "unknown scheme" confusion.
+- `Synapse.Self.Command` now fully implements:
+  - `set-secret` — stores stdin in keychain under `service=plexus`, `account=<backend>/<kind>/<name>`; writes the `keychain://` ref to `defaults.json`
+  - `upgrade-to-keychain` — finds every `literal:` ref (or scoped subset), pushes value to keychain, rewrites the ref. Mode flips from 0600 → 0644 once no `literal:` remains.
+  - `import-token --to-keychain` — convenience wrapper over set-secret targeting `cookies.access_token`
+  - `unset` — when removing a `keychain://` ref, prompts (or `--yes`) to also delete the keychain item, calling `deleteFromKeychain` for real
+- Linux/Windows: `runSetSecret` and `runUpgrade` route through `keychainUnavailable` (verbose error with workaround tips). `keychainResolver` returns `ResolveBackendError` "not implemented on \<platform\>".
+- Tests live in a separate, opt-in test-suite `keychain-test` gated on the `build-keychain-tests` cabal flag. Default `cabal test` does NOT touch the keychain. To run: `cabal test plexus-synapse:keychain-test -f build-keychain-tests`.
+- `self-test` adjustments: removed the three "SELF-8 pending" exit-code assertions in `SelfCommandSpec.hs` (the verbs no longer always error); changed two `keychain://` references in `SelfSpec.hs` to `vault://` since `keychain` is now registered in `defaultRegistry`. 108 specs passing.
+- End-to-end smoke test on macOS: set-secret → show (decoded JWT, no token bytes in output) → upgrade-to-keychain (literal flips to keychain, mode 0600 → 0644) → unset (deletes keychain item) → clear. All clean, no stuck keychain entries.
+
+## Threat-model honesty
+
+The implementation shells out to `security`. Items are accessible by any process running as the user via the same shell-out — there is **no per-process sandbox**. README + CLAUDE.md updated to call this out explicitly. The upgrade path to per-app ACLs would be Security framework FFI with a code-signed identity; out of scope for v1.
 
 ## Context
 

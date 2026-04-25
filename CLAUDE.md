@@ -101,15 +101,15 @@ synapse _self <backend> import-token ~/jwt.txt
 synapse _self <backend> clear --yes
 ```
 
-**URI schemes:** `literal:` (verbatim), `env://VAR` (env var), `file:///path` (file contents, trailing newline stripped), `keychain://svc/acct` (OS keychain — macOS implementation pending SELF-8; the URI parses and appears in `show` but resolution errors cleanly).
+**URI schemes:** `literal:` (verbatim), `env://VAR` (env var), `file:///path` (file contents, trailing newline stripped), `keychain://svc/acct` (OS keychain via macOS `security` CLI — Linux/Windows stubbed). The keychain resolver gives you encryption at rest and a commit-safe manifest, but **not per-process sandboxing**: any process running as your user can read the items via `security find-generic-password`. Same tradeoff as cargo / gcloud / aws-cli.
 
 **Priority chain** on each invocation: `--token` / `SYNAPSE_TOKEN` env / `--token-file` / stored `cookies.access_token` — first match wins. CLI `--cookie`/`--header` flags override stored values per key.
 
-**Legacy migration:** the pre-SELF `~/.plexus/tokens/<backend>` file auto-migrates to `defaults.json` (as `literal:<jwt>`) on first read. Migration is deliberate about preserving current security posture; users opt into keychain storage via `_self upgrade-to-keychain` once SELF-8 lands.
+**Legacy migration:** the pre-SELF `~/.plexus/tokens/<backend>` file auto-migrates to `defaults.json` (as `literal:<jwt>`) on first read. Migration is deliberate about preserving current security posture; users opt into keychain storage via `synapse _self <backend> upgrade-to-keychain` (SELF-8, macOS only).
 
 **Shared with synapse-cc:** the `Synapse.Self` module family is the canonical implementation. `synapse-cc _self …` is the identical subcommand tree, backed by the same handler.
 
-Related tickets: `plans/SELF/SELF-1..8.md` (1–7 Complete; 8 deferred for user-attended keychain rollout).
+Related tickets: `plans/SELF/SELF-1..8.md` (all Complete).
 
 ## Low-Level Plexus RPC
 

@@ -357,8 +357,8 @@ main = hspec $ do
 
     it "returns ResolveUnknownScheme for unregistered schemes" $ do
       result <- resolveRef defaultRegistry
-        (CredentialRef "keychain://svc/account")
-      result `shouldBe` Left (ResolveUnknownScheme "keychain")
+        (CredentialRef "vault://svc/account")
+      result `shouldBe` Left (ResolveUnknownScheme "vault")
 
     it "end-to-end: resolves a StoredDefaults with one entry per scheme" $
       withEnv "SYNAPSE_SELF_TEST_E2E_ENV" "from-env" $
@@ -458,18 +458,20 @@ main = hspec $ do
         Left err -> expectationFailure ("expected Right, got " <> show err)
 
     it "short-circuits on the first unknown scheme" $ do
-      -- Registry without the 'keychain' scheme.
+      -- Use 'vault' — not registered in defaultRegistry (reserved for
+      -- a future resolver). The test asserts that resolveAll bails on
+      -- the first unknown scheme and does not attempt subsequent refs.
       let sd = StoredDefaults
             { sdVersion = 1
             , sdCookies = Map.fromList
-                [ ("access_token", CredentialRef "keychain://svc/token")
+                [ ("access_token", CredentialRef "vault://svc/token")
                 , ("session",      CredentialRef "literal:should-not-leak")
                 ]
             , sdHeaders = Map.empty
             , sdScopes  = Map.empty
             }
       r <- resolveAll defaultRegistry sd testMethod
-      r `shouldBe` Left (ResolveUnknownScheme "keychain")
+      r `shouldBe` Left (ResolveUnknownScheme "vault")
 
     it "reports ResolveNotFound for env:// with an unset variable" $
       withoutEnv "SYNAPSE_SELF_TEST_MISSING_VAR_2B" $ do

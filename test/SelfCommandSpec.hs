@@ -156,18 +156,14 @@ spec = do
       let future = addUTCTime (3 * 3600) now
       renderRelativeExpiry now future `shouldBe` "valid for 3h"
 
-  describe "runSelfCommand: keychain-gated verbs" $ do
-    it "set-secret exits non-zero with a friendly message" $ do
-      code <- runSelfCommand (CmdSetSecret "b" Cookie "access_token")
-      code `shouldBe` ExitFailure 2
-
-    it "upgrade-to-keychain exits non-zero with a friendly message" $ do
-      code <- runSelfCommand (CmdUpgrade "b" Nothing Nothing)
-      code `shouldBe` ExitFailure 2
-
-    it "import-token --to-keychain exits non-zero with a friendly message" $ do
-      code <- runSelfCommand (CmdImportToken "b" "-" True)
-      code `shouldBe` ExitFailure 2
+  -- SELF-8: keychain-touching verbs (set-secret, upgrade-to-keychain,
+  -- import-token --to-keychain) live behind an opt-in test-suite
+  -- (plexus-synapse:keychain-test, gated on the `build-keychain-tests`
+  -- cabal flag). They shell out to the `security` CLI on macOS, which
+  -- we don't want firing during a default `cabal test` run. The
+  -- keychain-unavailable error paths (non-macOS platforms) are verified
+  -- there too, so this block is intentionally empty.
+  pure ()
 
   -- ==========================================================================
   -- Integration: round-trip against a tmp HOME
